@@ -20,13 +20,62 @@ static void dt_addtok( char ***tok , int *ntok , char *s )
    (*tok)[(*ntok)++] = strdup(s) ;
 }
 
-/*! Read a file into lines of tokens.  Blank lines and '#' comments are
-    dropped; a line ending in '\' continues onto the next one, so a table can
-    be wrapped the same way it would be on a command line. */
+/*! Cut a line at its comment: a '#' at the start of a word (the line's start,
+    or after white space), outside a quoted word.  A '#' inside a word is text,
+    so AFNI labels like face#0 and selectors like stats+tlrc[face#0_Coef] can
+    be written as they are. */
+
+static void dt_strip_comment( char *buf )
+{
+   char *c=buf ;
+   while( *c != '\0' ){
+     while( *c != '\0' && isspace((int)*c) ) c++ ;
+     if( *c == '\0' ) return ;
+     if( *c == '#' ){ *c = '\0' ; return ; }
+     if( *c == '"' || *c == '\'' ){              /* a quoted word: to its closing quote */
+       char q=*c++ ;
+       while( *c != '\0' && *c != q ) c++ ;
+       if( *c == q ) c++ ;
+     }
+     while( *c != '\0' && !isspace((int)*c) ) c++ ;
+   }
+}
+
+/*! Split on white space.  A word that begins with a quote ("..." or '...')
+    runs to the matching quote, white space and '#' included, and the quotes
+    are removed: "face#0", "two words".  A quote inside a word is text, as in
+    AFNI's x.1D' (transposed).  Returns 1 on an unclosed quote, 2 on text right
+    after a closing quote. */
+
+static int dt_split( char *acc , char ***tok , int *ntok )
+{
+   char *c=acc , *w ; size_t n=strlen(acc)+1 ;
+   w=(char *)malloc(n) ;
+   while( *c != '\0' ){
+     int k=0 ;
+     while( *c != '\0' && isspace((int)*c) ) c++ ;
+     if( *c == '\0' ) break ;
+     if( *c == '"' || *c == '\'' ){
+       char q=*c++ ;
+       while( *c != '\0' && *c != q ) w[k++]=*c++ ;
+       if( *c != q ){ free(w) ; return 1 ; }
+       c++ ;
+       if( *c != '\0' && !isspace((int)*c) ){ free(w) ; return 2 ; }
+     } else
+       while( *c != '\0' && !isspace((int)*c) ) w[k++]=*c++ ;
+     w[k]='\0' ; dt_addtok( tok , ntok , w ) ;
+   }
+   free(w) ; return 0 ;
+}
+
+/*! Read a file into lines of tokens.  Blank lines and comments (see
+    dt_strip_comment) are dropped; quotes group text (see dt_split); a line
+    ending in '\' continues onto the next one, so a table can be wrapped the
+    same way it would be on a command line. */
 
 static dt_line * dt_read_lines( char *fname , int *nline_out )
 {
-   FILE *fp ; char buf[16384] , acc[65536] ; char *cpt ;
+   FILE *fp ; char buf[16384] , acc[65536] ;
    dt_line *ln=NULL ; int nline=0 , lnum=0 , acc_start=0 ; int pending=0 ;
 
    fp = fopen( fname , "r" ) ;
@@ -38,7 +87,7 @@ static dt_line * dt_read_lines( char *fname , int *nline_out )
      int len ;
      lnum++ ;
 
-     cpt = strchr(buf,'#') ; if( cpt != NULL ) *cpt = '\0' ;  /* strip comment */
+     dt_strip_comment(buf) ;
 
      /* trailing backslash means 'continued on the next line' */
      for( len=strlen(buf) ; len > 0 && isspace((int)buf[len-1]) ; len-- ) ;
@@ -54,8 +103,9 @@ static dt_line * dt_read_lines( char *fname , int *nline_out )
      if( pending ) continue ;             /* keep accumulating */
 
      { char **tok=NULL ; int ntok=0 ;
-       for( cpt = strtok(acc,DT_SEP) ; cpt != NULL ; cpt = strtok(NULL,DT_SEP) )
-         dt_addtok( &tok , &ntok , cpt ) ;
+       int rc = dt_split( acc , &tok , &ntok ) ;
+       if( rc == 1 ) ERROR_exit("dataTable file '%s': line %d has a quote that is never closed",fname,acc_start) ;
+       if( rc == 2 ) ERROR_exit("dataTable file '%s': line %d has text right after a closing quote (quote the whole value)",fname,acc_start) ;
 
        if( ntok > 0 ){
          ln = (dt_line *)realloc( ln , sizeof(dt_line)*(nline+1) ) ;
@@ -446,6 +496,20 @@ THD_datatable * THD_datatable_select_rows( THD_datatable *dt ,
    dt_finish(out) ; return out ;
 }
 
+/*! A cell as it must be written to read back: quoted if it is empty, holds
+    white space, or begins with a quote or a '#' (which would start a comment). */
+
+static void dt_print_cell( FILE *fp , const char *s , int last )
+{
+   int need = (s[0] == '\0' || s[0] == '#' || s[0] == '"' || s[0] == '\'') , ii ; char q='"' ;
+   for( ii=0 ; s[ii] != '\0' ; ii++ ) if( isspace((int)s[ii]) ) need = 1 ;
+   if( strchr(s,'"') != NULL ) q = '\'' ;
+   if( need ){
+     char b[THD_MAX_NAME+4] ; snprintf(b,sizeof(b),"%c%s%c",q,s,q) ;
+     fprintf(fp,"%-16s%s",b,last ? "\n" : " ") ;
+   } else fprintf(fp,"%-16s%s",s,last ? "\n" : " ") ;
+}
+
 void THD_datatable_print( THD_datatable *dt , FILE *fp )
 {
    int ii , jj ;
@@ -455,11 +519,10 @@ void THD_datatable_print( THD_datatable *dt , FILE *fp )
    fprintf(fp,"# dataTable from %s: %d rows x %d columns\n",
            (dt->source != NULL) ? dt->source : "?" , dt->nrow , dt->ncol) ;
    for( jj=0 ; jj < dt->ncol ; jj++ )
-     fprintf(fp,"%-16s%s",dt->cname[jj],
-             (jj==dt->ncol-1) ? "\n" : "") ;
+     dt_print_cell( fp , dt->cname[jj] , jj==dt->ncol-1 ) ;
    for( ii=0 ; ii < dt->nrow ; ii++ ){
      for( jj=0 ; jj < dt->ncol ; jj++ )
-       fprintf(fp,"%-16s%s",DT_CELL(dt,ii,jj),(jj==dt->ncol-1) ? "\n" : "") ;
+       dt_print_cell( fp , DT_CELL(dt,ii,jj) , jj==dt->ncol-1 ) ;
    }
    fprintf(fp,"# numeric columns:") ;
    for( jj=0 ; jj < dt->ncol ; jj++ )

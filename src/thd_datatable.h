@@ -63,11 +63,20 @@ typedef struct {
 #define DT_NROW(dt)      ( (dt)->nrow )
 #define DT_NCOL(dt)      ( (dt)->ncol )
 
+/*-- design matrices: a table can name each row's X.xmat.1D in a column (Xmat);
+     thd_xmat.h reads them and adds THD_datatable_expand_xmat_items() and
+     THD_datatable_add_xmat_columns().  They live in thd_xmat.c, so programs
+     that do not use design matrices do not link it. --*/
+
 /*-- reading --*/
 
 /*! Read a table from a file.  The header is the first non-comment line, and
     the column count comes from it, so 'InputFile' may sit in any column.  A
-    line ending in backslash continues onto the next.  '#' begins a comment. */
+    line ending in backslash continues onto the next.  '#' at the start of a
+    word begins a comment; inside a word it is text (face#0,
+    stats+tlrc[face#0_Coef]).  A word that begins with a quote, "..." or '...',
+    runs to the matching quote, so a value can hold spaces or start with '#';
+    a quote inside a word is text, as in AFNI's x.1D' (transposed). */
 extern THD_datatable * THD_read_datatable_file( char *fname ) ;
 
 /*! Read a table from the command line, starting at argv[nopt].  Handles both
