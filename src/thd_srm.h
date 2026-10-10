@@ -152,6 +152,19 @@ typedef struct {
                                 the penalty terms are of order lambda*s2*k*nseg*
                                 nview and cancel, so the trace can wobble by
                                 about 1e-7 of that once converged.             */
+   const unsigned char * const *obs ;
+                             /* [nview] each ntime: 1 where the view was
+                                observed, 0 where it is missing (a censored
+                                time point of that subject only); NULL, or a
+                                NULL entry, means all observed.  Missing
+                                values are never read.  The fit then uses each
+                                view where it was observed: DET averages, at
+                                each t, the views observed there; PROB's
+                                posterior of s_t uses the precision of those
+                                views only, and each rho2_i is a mean over the
+                                view's own observed samples.  Centering is over
+                                observed samples.  Shared W only (a W per run
+                                with missing data is SRM_ERR_ARG).  [NULL]    */
    int          kernel ;     /* SRM_KERNEL_*                        [AUTO]
                                 Every W the fit makes lies in the span of
                                 Z_i = [X_i | W_i at the start], so W_i = Z_i C_i
@@ -350,6 +363,14 @@ extern int SRM_run_deviation( const SRM_model *m , int iview , int irun ,
 extern int SRM_shared_from_projections( const SRM_model *m , int nsel , const int *iview ,
                                         float * const *proj , int ntime_new , int weighted ,
                                         float *s_out ) ;
+
+/*! SRM_shared_from_projections when views have missing time points: obs[j] (ntime_new; NULL =
+    all observed) for proj[j].  At each t only the views observed there count: their mean, or (PROB,
+    weighted) the posterior mean with precision Sigma_s^-1 + sum 1/rho2 over them.  A t with no view
+    gives 0.  obs NULL is SRM_shared_from_projections. */
+extern int SRM_shared_from_projections_obs( const SRM_model *m , int nsel , const int *iview ,
+                                            float * const *proj , const unsigned char * const *obs ,
+                                            int ntime_new , int weighted , float *s_out ) ;
 
 /*! x_hat = W_i s + mu_i, nvox[iview] x ntime_new. */
 extern int SRM_reconstruct( const SRM_model *m , int iview , const float *s ,
@@ -591,6 +612,13 @@ extern int SRM_reconstruction_r2( const SRM_model *m , int iview , const float *
 extern int SRM_segment_match( const float *a , const float *b , int nfeat ,
                               int ntime , int win ,
                               double *accuracy , double *chance ) ;
+
+/*! SRM_segment_match with a validity mask (ntime; NULL = all valid): a window that contains a
+    sample with valid 0 (missing in the subject, or with no reference) is neither scored nor a
+    candidate.  accuracy and chance are over the scored windows.  SRM_ERR_ARG if none is left. */
+extern int SRM_segment_match_obs( const float *a , const float *b , int nfeat , int ntime ,
+                                  int win , const unsigned char *valid ,
+                                  double *accuracy , double *chance ) ;
 
 /*! Item identification, the item-axis analogue of segment matching.  a and b
     are nfeat x nitem projections of the same items from two sources.  Item j

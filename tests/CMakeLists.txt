@@ -173,6 +173,18 @@ if(ENABLE_TESTS)
   target_link_libraries(thd_srm_unit PRIVATE $<TARGET_NAME_IF_EXISTS:OpenMP::OpenMP_C> m)
   target_compile_definitions(thd_srm_unit PRIVATE "$<IF:$<TARGET_EXISTS:OpenMP::OpenMP_C>,USE_OMP,>")
   add_test(NAME thd_srm:unit COMMAND thd_srm_unit)
+
+  # Design matrices (X.xmat.1D): reading, the helpers, and the table summary columns.
+  add_executable(
+    thd_xmat_unit
+    ${CMAKE_SOURCE_DIR}/src/thd_xmat.c
+    ${CMAKE_SOURCE_DIR}/src/thd_datatable.c
+    ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_xmat.c
+  )
+  target_include_directories(thd_xmat_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(thd_xmat_unit PRIVATE AFNI::mri NIFTI::nifti2 NIFTI::nifticdf m)
+  add_test(NAME thd_xmat:unit COMMAND thd_xmat_unit)
+  set_tests_properties(thd_xmat:unit PROPERTIES LABELS "3dSRM;xmat;unit")
   set_tests_properties(thd_srm:unit PROPERTIES LABELS "3dSRM;numeric;unit"
                        ENVIRONMENT "OMP_NUM_THREADS=4")
 

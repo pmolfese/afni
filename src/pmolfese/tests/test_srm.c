@@ -2331,6 +2331,233 @@ static int test_gram( void )
    return 0 ;
 }
 
+/*------------------------------------------------------------------------*/
+/* Missing data: each view observed at its own time points                 */
+
+/* the PROB marginal log-likelihood over the observed entries only, without the 2 pi constant: at each t
+   the observed views' data are N(0, W_o Sigma W_o' + Psi_o) */
+static double brute_loglik_obs( const SRM_model *m , float * const *x , unsigned char * const *obs )
+{
+   int t , i , j , a , b , u , v , D0=0 ; double ll=0.0 ;
+   for( i=0 ; i<m->nview ; i++ ) D0+=m->nvox[i] ;
+   for( t=0 ; t<m->ntime ; t++ ){
+     int D=0 , *vi=(int *)malloc(sizeof(int)*D0) , *fi=(int *)malloc(sizeof(int)*D0) ; double *C , *y , ld=0.0 , q2=0.0 ;
+     for( i=0 ; i<m->nview ; i++ ) if( obs[i][t] ) for( j=0 ; j<m->nvox[i] ; j++ ){ vi[D]=i ; fi[D]=j ; D++ ; }
+     if( D==0 ){ free(vi) ; free(fi) ; continue ; }
+     C=(double *)calloc((size_t)D*D,sizeof(double)) ; y=(double *)calloc(D,sizeof(double)) ;
+     for( a=0 ; a<D ; a++ ) for( b=0 ; b<D ; b++ ){
+       double acc=(a==b) ? m->rho2[vi[a]] : 0.0 ;
+       for( u=0 ; u<m->nfeat ; u++ ) for( v=0 ; v<m->nfeat ; v++ )
+         acc += (double)m->w[vi[a]][fi[a]*m->nfeat+u]*m->sigma_s[u*m->nfeat+v]*m->w[vi[b]][fi[b]*m->nfeat+v] ;
+       C[a*D+b]=acc ;
+     }
+     if( chol(D,C) ){ free(C) ; free(y) ; free(vi) ; free(fi) ; return NAN ; }
+     for( a=0 ; a<D ; a++ ){
+       double r=x[vi[a]][fi[a]*m->ntime+t] ;
+       for( b=0 ; b<a ; b++ ) r-=C[a*D+b]*y[b] ;
+       y[a]=r/C[a*D+a] ; q2+=y[a]*y[a] ; ld+=2.0*log(C[a*D+a]) ;
+     }
+     ll += -0.5*(ld+q2) ;
+     free(C) ; free(y) ; free(vi) ; free(fi) ;
+   }
+   return ll ;
+}
+
+static int test_missing( void )
+{
+   int nvox[4]={30,36,33,40} , T=60 , k=3 , i , t , alg , kern ;
+   double sg[4]={0.4,0.6,0.5,0.7} ;
+   synth s ; unsigned char *obs[4] ; float *xg[4] ; srm_rng r ;
+   CHECK(synth_make(&s,4,nvox,T,k,sg,71)==0,"synth") ;
+   for( i=0 ; i<4 ; i++ ) center_rows(s.x[i],nvox[i],T) ;
+   srm_rng_init(&r,3,3) ;
+   for( i=0 ; i<4 ; i++ ){                      /* about 20% missing per view, and t=7 observed by nobody */
+     int f ;
+     obs[i]=(unsigned char *)malloc(T) ; xg[i]=(float *)malloc(sizeof(float)*nvox[i]*T) ;
+     for( t=0 ; t<T ; t++ ) obs[i][t]=(srm_unif(&r)>0.2 && t!=7) ;
+     for( f=0 ; f<nvox[i] ; f++ ) for( t=0 ; t<T ; t++ )   /* garbage where missing: it must never be read */
+       xg[i][f*T+t] = obs[i][t] ? s.x[i][f*T+t] : ((t%2) ? NAN : 1.0e30f) ;
+   }
+   for( alg=0 ; alg<2 ; alg++ ) for( kern=1 ; kern<=2 ; kern++ ){
+     SRM_params p ; SRM_model *m1=NULL , *m2=NULL , *m0=NULL , *ma=NULL ; SRM_fitinfo f1 , f2 , f0 , fa ; int it , ok=1 ;
+     unsigned char *all[4] ; float *xz[4] ;
+     SRM_params_default(&p) ; p.nfeat=k ; p.niter=40 ; p.tol=0.0 ; p.center=0 ; p.kernel=kern ;
+     p.algo = alg ? SRM_ALGO_DET : SRM_ALGO_PROB ;
+     /* everything observed is the fit without masks, bit for bit */
+     for( i=0 ; i<4 ; i++ ){ all[i]=(unsigned char *)malloc(T) ; memset(all[i],1,T) ; }
+     CHECK(SRM_fit(4,T,nvox,s.x,&p,&m0,&f0)==SRM_OK,"no masks") ;
+     p.obs=(const unsigned char * const *)all ;
+     CHECK(SRM_fit(4,T,nvox,s.x,&p,&ma,&fa)==SRM_OK,"all observed") ;
+     CHECK(memcmp(m0->s,ma->s,sizeof(float)*k*T)==0 && f0.niter_done==fa.niter_done &&
+           memcmp(f0.objective,fa.objective,sizeof(double)*(f0.niter_done+1))==0,"masks of all ones change nothing") ;
+     /* missing values are never read: garbage there gives the same fit as zeros there */
+     for( i=0 ; i<4 ; i++ ){ int f ; xz[i]=(float *)malloc(sizeof(float)*nvox[i]*T) ;
+       for( f=0 ; f<nvox[i] ; f++ ) for( t=0 ; t<T ; t++ ) xz[i][f*T+t]=obs[i][t] ? s.x[i][f*T+t] : 0.0f ; }
+     p.obs=(const unsigned char * const *)obs ;
+     CHECK(SRM_fit(4,T,nvox,xz,&p,&m1,&f1)==SRM_OK,"fit with missing data") ;
+     CHECK(SRM_fit(4,T,nvox,xg,&p,&m2,&f2)==SRM_OK,"fit with garbage where missing") ;
+     CHECK(memcmp(m1->s,m2->s,sizeof(float)*k*T)==0 && memcmp(f1.objective,f2.objective,sizeof(double)*(f1.niter_done+1))==0,
+           "missing values are never read") ;
+     for( i=0 ; i<4 ; i++ ) CHECK(memcmp(m1->w[i],m2->w[i],sizeof(float)*nvox[i]*k)==0 && ortho_error(m1->w[i],nvox[i],k)<1e-5,
+                                  "W the same, and orthonormal") ;
+     /* every step improves the objective */
+     for( it=1 ; it<=f1.niter_done ; it++ ){          /* to float rounding of the stored W, on the scale of the start */
+       double tolr=1e-7*fabs(f1.objective[0]) ;
+       if( alg ? (f1.objective[it] > f1.objective[it-1]+tolr) : (f1.objective[it] < f1.objective[it-1]-tolr) ) ok=0 ;
+     }
+     if( !ok || getenv("SRM_TEST_VERBOSE") ){ fprintf(stderr,"[missing %s kernel %d]",alg?"det":"prob",kern) ;
+       for( it=1 ; it<=f1.niter_done ; it++ ) if( (alg ? -1.0 : 1.0)*(f1.objective[it]-f1.objective[it-1]) < 0.0 )
+         fprintf(stderr," it %d: %.12g -> %.12g (rel %.2e)",it,f1.objective[it-1],f1.objective[it],
+                 fabs(f1.objective[it]-f1.objective[it-1])/fabs(f1.objective[it-1])) ;
+       fprintf(stderr,"\n") ; }
+     CHECK(ok,"the objective never gets worse with missing data (to rounding)") ;
+     /* and it is what it claims to be, at the final parameters */
+     if( !alg ){
+       double bl=brute_loglik_obs(m1,xz,obs) ;
+       if( getenv("SRM_TEST_VERBOSE") ) fprintf(stderr,"[missing prob] objective %.10g brute %.10g\n",f1.objective[f1.niter_done],bl) ;
+       CHECK(fabs(bl-f1.objective[f1.niter_done]) <= 1e-6*fabs(bl),"PROB objective = the marginal likelihood of the observed entries") ;
+     } else {
+       double sse=0.0 ; int f , c ;
+       for( i=0 ; i<4 ; i++ ) for( f=0 ; f<nvox[i] ; f++ ) for( t=0 ; t<T ; t++ ) if( obs[i][t] ){
+         double v=xz[i][f*T+t] ;
+         for( c=0 ; c<k ; c++ ) v -= (double)m1->w[i][f*k+c]*m1->s[c*T+t] ;
+         sse+=v*v ;
+       }
+       if( getenv("SRM_TEST_VERBOSE") ) fprintf(stderr,"[missing det] objective %.10g brute %.10g\n",f1.objective[f1.niter_done],sse) ;
+       CHECK(fabs(sse-f1.objective[f1.niter_done]) <= 1e-5*sse,"DET objective = the squared error over the observed entries") ;
+       for( c=0 ; c<k ; c++ ) CHECK(m1->s[c*T+7]==0.0f,"a time point nobody observed has S = 0 (DET)") ;
+     }
+     if( kern==2 ){                             /* the Gram fit agrees with the voxel fit */
+       SRM_params q=p ; SRM_model *mv=NULL ; SRM_fitinfo fv ; double num=0.0 , den=0.0 ; int c ;
+       q.kernel=SRM_KERNEL_VOXEL ;
+       CHECK(SRM_fit(4,T,nvox,xz,&q,&mv,&fv)==SRM_OK,"voxel fit with missing data") ;
+       for( c=0 ; c<k*T ; c++ ){ double d=(double)mv->s[c]-m1->s[c] ; num+=d*d ; den+=(double)mv->s[c]*mv->s[c] ; }
+       CHECK(sqrt(num/den)<1e-4,"Gram and voxel fits agree with missing data") ;
+       SRM_free_fitinfo(&fv) ; SRM_free_model(mv) ;
+     }
+#ifdef USE_OMP
+     { SRM_model *mt=NULL ; SRM_fitinfo ft ; int nmax=omp_get_max_threads() ;
+       omp_set_num_threads(1) ;
+       CHECK(SRM_fit(4,T,nvox,xz,&p,&mt,&ft)==SRM_OK,"1 thread") ;
+       omp_set_num_threads(nmax>1 ? nmax : 2) ;
+       CHECK(memcmp(mt->s,m1->s,sizeof(float)*k*T)==0,"missing-data fit identical across thread counts") ;
+       SRM_free_fitinfo(&ft) ; SRM_free_model(mt) ; }
+#endif
+     /* centering is over the observed samples only */
+     { SRM_params q=p ; SRM_model *mc=NULL ; SRM_fitinfo fc ; int f ; float *xo[4] ; double worst=0.0 ;
+       for( i=0 ; i<4 ; i++ ){ xo[i]=(float *)malloc(sizeof(float)*nvox[i]*T) ;
+         for( f=0 ; f<nvox[i] ; f++ ) for( t=0 ; t<T ; t++ ) xo[i][f*T+t]=xg[i][f*T+t]+(obs[i][t] ? 5.0f+f : 0.0f) ; }
+       q.center=1 ;
+       CHECK(SRM_fit(4,T,nvox,xo,&q,&mc,&fc)==SRM_OK,"centered fit with missing data") ;
+       for( i=0 ; i<4 ; i++ ){
+         for( f=0 ; f<nvox[i] ; f++ ){
+           double mo=0.0 ; int no=0 ;
+           for( t=0 ; t<T ; t++ ) if( obs[i][t] ){ mo+=xo[i][f*T+t] ; no++ ; }
+           mo/=no ; if( fabs(mc->mu[i][f]-mo)>worst ) worst=fabs(mc->mu[i][f]-mo) ;
+         }
+         free(xo[i]) ;
+       }
+       CHECK(worst<1e-4,"the means are over observed samples") ;
+       SRM_free_fitinfo(&fc) ; SRM_free_model(mc) ; }
+     for( i=0 ; i<4 ; i++ ){ free(all[i]) ; free(xz[i]) ; }
+     SRM_free_fitinfo(&f0) ; SRM_free_fitinfo(&fa) ; SRM_free_fitinfo(&f1) ; SRM_free_fitinfo(&f2) ;
+     SRM_free_model(m0) ; SRM_free_model(ma) ; SRM_free_model(m1) ; SRM_free_model(m2) ;
+   }
+   /* a W per run with missing data is refused, for now */
+   { SRM_params p ; SRM_model *m=NULL ; SRM_fitinfo fi ; int seg[2]={30,30} ;
+     SRM_params_default(&p) ; p.nfeat=k ; p.niter=5 ; p.center=0 ; p.nseg=2 ; p.seglen=seg ; p.coupling=10.0 ;
+     p.obs=(const unsigned char * const *)obs ;
+     CHECK(SRM_fit(4,T,nvox,s.x,&p,&m,&fi)==SRM_ERR_ARG,"missing data with a W per run is refused") ; }
+   for( i=0 ; i<4 ; i++ ){ free(obs[i]) ; free(xg[i]) ; }
+   synth_free(&s) ;
+   return 0 ;
+}
+
+/* segment matching where windows with a missing sample are dropped, written the obvious way */
+static void naive_segment_match_obs( const float *a , const float *b , int k , int T , int win ,
+                                     const unsigned char *valid , double *acc , double *chance )
+{
+   int nseg=T-win , i,j,d,w , correct=0 , nq=0 ; double chs=0.0 ;
+   double *wa=(double *)malloc(sizeof(double)*k*win) , *wb=(double *)malloc(sizeof(double)*k*win) ;
+   int *ok=(int *)malloc(sizeof(int)*nseg) ;
+   for( i=0 ; i<nseg ; i++ ){ ok[i]=1 ; for( w=0 ; w<win ; w++ ) if( !valid[i+w] ) ok[i]=0 ; }
+   for( i=0 ; i<nseg ; i++ ){
+     double best=-INFINITY ; int bj=-1 , nc=0 ;
+     if( !ok[i] ) continue ;
+     for( j=0 ; j<nseg ; j++ ){
+       double r ;
+       if( !ok[j] || (abs(i-j)<win && i!=j) ) continue ;
+       for( w=0 ; w<win ; w++ ) for( d=0 ; d<k ; d++ ){ wa[w*k+d]=a[d*T+i+w] ; wb[w*k+d]=b[d*T+j+w] ; }
+       r=naive_r(wa,wb,k*win) ; nc++ ;
+       if( r>best ){ best=r ; bj=j ; }
+     }
+     correct+=(bj==i) ; chs+=1.0/nc ; nq++ ;
+   }
+   *acc=(double)correct/nq ; *chance=chs/nq ;
+   free(wa) ; free(wb) ; free(ok) ;
+}
+
+static int test_obs_metrics( void )
+{
+   int k=4 , T=90 , win=6 , t , c , j ; srm_rng r ; float *a , *b ; unsigned char *valid , *ones ;
+   double acc , ch , acc2 , ch2 ;
+   srm_rng_init(&r,11,2) ;
+   a=(float *)malloc(sizeof(float)*k*T) ; b=(float *)malloc(sizeof(float)*k*T) ;
+   valid=(unsigned char *)malloc(T) ; ones=(unsigned char *)malloc(T) ;
+   for( t=0 ; t<k*T ; t++ ){ a[t]=(float)srm_normal(&r) ; b[t]=a[t]+0.8f*(float)srm_normal(&r) ; }
+   for( t=0 ; t<T ; t++ ){ valid[t]=(srm_unif(&r)>0.08) ; ones[t]=1 ; }
+   CHECK(SRM_segment_match(a,b,k,T,win,&acc,&ch)==SRM_OK && SRM_segment_match_obs(a,b,k,T,win,ones,&acc2,&ch2)==SRM_OK,"segment matching") ;
+   CHECK(acc==acc2 && ch==ch2,"an all-valid mask is plain segment matching") ;
+   CHECK(SRM_segment_match_obs(a,b,k,T,win,valid,&acc,&ch)==SRM_OK,"masked segment matching") ;
+   naive_segment_match_obs(a,b,k,T,win,valid,&acc2,&ch2) ;
+   CHECK(fabs(acc-acc2)<1e-12 && fabs(ch-ch2)<1e-12,"masked segment matching = windows with a missing sample dropped") ;
+   memset(valid,0,T) ;
+   CHECK(SRM_segment_match_obs(a,b,k,T,win,valid,&acc,&ch)==SRM_ERR_ARG,"nothing valid is refused") ;
+   /* the reference over the views observed at each t */
+   { int nvox[4]={30,32,28,34} , iv[3]={1,2,3} ; double sg[4]={0.3,0.5,0.4,0.6} ; synth s ;
+     SRM_params p ; SRM_model *m=NULL ; SRM_fitinfo fi ; float *P[3] , *out , *out2 ; unsigned char *ob[3] , *al[3] ;
+     int alg ;
+     CHECK(synth_make(&s,4,nvox,T,k,sg,13)==0,"synth") ;
+     for( alg=0 ; alg<2 ; alg++ ){
+       SRM_params_default(&p) ; p.nfeat=k ; p.niter=20 ; p.algo = alg ? SRM_ALGO_DET : SRM_ALGO_PROB ;
+       CHECK(SRM_fit(4,T,nvox,s.x,&p,&m,&fi)==SRM_OK,"fit") ;
+       out=(float *)malloc(sizeof(float)*k*T) ; out2=(float *)malloc(sizeof(float)*k*T) ;
+       for( j=0 ; j<3 ; j++ ){
+         P[j]=(float *)malloc(sizeof(float)*k*T) ; ob[j]=(unsigned char *)malloc(T) ; al[j]=ones ;
+         CHECK(SRM_project(m,iv[j],s.x[iv[j]],T,P[j])==SRM_OK,"project") ;
+         for( t=0 ; t<T ; t++ ) ob[j][t]=(srm_unif(&r)>0.25 || t==5) && !(t==9) ;
+       }
+       for( j=0 ; j<2 ; j++ ){                    /* weighted 0 and 1: all observed is the old call */
+         double worst=0.0 ;
+         CHECK(SRM_shared_from_projections(m,3,iv,P,T,j,out)==SRM_OK &&
+               SRM_shared_from_projections_obs(m,3,iv,P,(const unsigned char * const *)al,T,j,out2)==SRM_OK,"references") ;
+         for( t=0 ; t<k*T ; t++ ) if( fabs(out[t]-out2[t])>worst ) worst=fabs(out[t]-out2[t]) ;
+         CHECK(worst<1e-5,"all observed: the reference of SRM_shared_from_projections") ;
+       }
+       for( j=0 ; j<2 ; j++ ){                    /* with missing: each t from the views observed there */
+         double worst=0.0 ;
+         CHECK(SRM_shared_from_projections_obs(m,3,iv,P,(const unsigned char * const *)ob,T,j,out)==SRM_OK,"masked reference") ;
+         for( t=0 ; t<T ; t++ ){
+           int sel[3] , n=0 , q ;
+           for( q=0 ; q<3 ; q++ ) if( ob[q][t] ) sel[n++]=q ;
+           if( n==0 ){ for( c=0 ; c<k ; c++ ) if( out[c*T+t]!=0.0f ) worst=1.0 ; continue ; }
+           { float *Pq[3] ; int ivq[3] ; float *col=(float *)malloc(sizeof(float)*k) , *pc[3] ;
+             for( q=0 ; q<n ; q++ ){ ivq[q]=iv[sel[q]] ; pc[q]=(float *)malloc(sizeof(float)*k) ;
+               for( c=0 ; c<k ; c++ ) pc[q][c]=P[sel[q]][c*T+t] ; Pq[q]=pc[q] ; }
+             CHECK(SRM_shared_from_projections(m,n,ivq,Pq,1,j,col)==SRM_OK,"one time point") ;
+             for( c=0 ; c<k ; c++ ) if( fabs(col[c]-out[c*T+t])>worst ) worst=fabs(col[c]-out[c*T+t]) ;
+             for( q=0 ; q<n ; q++ ) free(pc[q]) ; free(col) ; }
+         }
+         CHECK(worst<1e-5,"masked reference = the reference of the views observed at that t") ;
+       }
+       for( j=0 ; j<3 ; j++ ){ free(P[j]) ; free(ob[j]) ; }
+       free(out) ; free(out2) ; SRM_free_fitinfo(&fi) ; SRM_free_model(m) ; m=NULL ;
+     }
+     synth_free(&s) ; }
+   free(a) ; free(b) ; free(valid) ; free(ones) ;
+   return 0 ;
+}
+
 static int bench( void )
 {
    int nview=8 , nvox[8] , T=300 , k=50 , i ;
@@ -2370,6 +2597,8 @@ int main( int argc , char **argv )
    if( test_procrustes()         ) return 1 ;
    if( test_multistart()         ) return 1 ;
    if( test_gram()               ) return 1 ;
+   if( test_missing()            ) return 1 ;
+   if( test_obs_metrics()        ) return 1 ;
 #ifdef USE_OMP
    if( test_thread_invariance()  ) return 1 ;
 #endif

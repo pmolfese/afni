@@ -18,6 +18,8 @@
                  instead of the identity
      --nstart N  keep the best of N random starts (default 1)
      --kernel K  auto, voxel or gram (SRM_params.kernel; default auto)
+     --obs I F   view I (0-based) is observed where the T bytes of F are 1, missing
+                 where 0 (SRM_params.obs); missing values are never read
      --tol X     relative convergence tolerance (default 0: run exactly N
                  iterations)
      --view V F  a view with V rows, stored as V x T float32 row-major in F
@@ -152,6 +154,7 @@ int main( int argc , char **argv )
    const char *vfile[4096] ;
    int segbuf[256] , nseg=0 ;
    int vrows[4096] ;
+   const char *obsfile[4096]={0} ;
 
    SRM_params_default(&p) ; p.tol=0.0 ;
    for( ii=1 ; ii<argc ; ii++ ){
@@ -166,6 +169,9 @@ int main( int argc , char **argv )
      else if( !strcmp(a,"--init") ){ NEEDS(1) ; init_prefix=argv[++ii] ; init_given=1 ; }
      else if( !strcmp(a,"--nstart") ){ NEEDS(1) ; nstart=atoi(argv[++ii]) ; }
      else if( !strcmp(a,"--tol") ){ NEEDS(1) ; p.tol=atof(argv[++ii]) ; }
+     else if( !strcmp(a,"--obs") ){ NEEDS(2) ;
+       { int iv=atoi(argv[ii+1]) ; if( iv<0 || iv>=4096 ){ fprintf(stderr,"--obs: bad view\n") ; return 2 ; }
+         obsfile[iv]=argv[ii+2] ; ii+=2 ; } }
      else if( !strcmp(a,"--kernel") ){ NEEDS(1) ; ++ii ;
        p.kernel = !strcmp(argv[ii],"gram") ? SRM_KERNEL_GRAM : !strcmp(argv[ii],"voxel") ? SRM_KERNEL_VOXEL : SRM_KERNEL_AUTO ; }
      else if( !strcmp(a,"--seed") ){ NEEDS(1) ; p.seed=(unsigned int)strtoul(argv[++ii],NULL,10) ; }
@@ -240,6 +246,14 @@ int main( int argc , char **argv )
      nvox[ii] = vrows[ii] ;
      x[ii]    = read_f32(vfile[ii],(size_t)nvox[ii]*T) ;
    }
+   { int any=0 ; unsigned char **ob=(unsigned char **)calloc(nview,sizeof(unsigned char *)) ;
+     for( ii=0 ; ii<nview ; ii++ ) if( obsfile[ii]!=NULL ){
+       FILE *fo=fopen(obsfile[ii],"rb") ;
+       ob[ii]=(unsigned char *)malloc((size_t)T) ;
+       if( fo==NULL || fread(ob[ii],1,(size_t)T,fo)!=(size_t)T ){ fprintf(stderr,"cannot read %s\n",obsfile[ii]) ; return 2 ; }
+       fclose(fo) ; any=1 ;
+     }
+     if( any ) p.obs=(const unsigned char * const *)ob ; else free(ob) ; }
 
    if( init_given ){
      int k=p.nfeat ;
