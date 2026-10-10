@@ -243,8 +243,15 @@ static void usage_3dSRM(void)
 "                                 sample. The more exact model, but PROJECTED\n"
 "                                 series are 0 at a subject's missing time\n"
 "                                 points. Each run needs at least\n"
-"                                 3 observed time points per subject. Not with\n"
-"                                 -run_coupling, -update_S, or -apply_W yet.\n"
+"                                 3 observed time points per subject (and, with\n"
+"                                 -run_coupling 0, k). With -run_coupling, each\n"
+"                                 run's W uses its observed samples (the anchor\n"
+"                                 fills in the rest). A saved model keeps how\n"
+"                                 many subjects were observed at each time point,\n"
+"                                 so -update_S adds new subjects (with or without\n"
+"                                 missing points) correctly. -apply_W z-scores\n"
+"                                 (or centers) the new data over observed samples\n"
+"                                 and writes 0 at missing ones.\n"
 "                       -censor (common to everyone) always drops. With\n"
 "                       -model_in the model's timeline is fixed, so drop is an\n"
 "                       error there.\n"
@@ -581,7 +588,11 @@ static void usage_3dSRM(void)
 "                       gets a run W, so each is scored against the others'\n"
 "                       run-W projections (and the anchor scores against the\n"
 "                       others' anchors). PREFIX.proj stays the anchor's.\n"
-"                       Not with -cv_fit or -balance yet [0: off].\n"
+"                       With -cv_fit and -balance both columns are averaged\n"
+"                       over the fits that scored the subject, and under\n"
+"                       -cv_fit reference the other groups' subjects (placed\n"
+"                       in the reference fit's S) adapt as -cv loso does [0:\n"
+"                       off].\n"
 "\n"
 "Reliability, and comparing groups or conditions:            ~1~\n"
 "\n"
@@ -677,8 +688,16 @@ static void usage_3dSRM(void)
 "                       their agreement (odd runs against even runs) gives\n"
 "                       'within'. The runs must keep the same time points. The\n"
 "                       fit then has one run, so -cv uses -cv_blocks, and the\n"
-"                       saved model describes the averaged run. Not yet with\n"
-"                       -score_by, -cenmode missing, or -run_coupling.\n"
+"                       saved model describes the averaged run. With\n"
+"                       -cenmode missing, each time point is averaged over the\n"
+"                       runs where the subject was observed (missing only if\n"
+"                       missing in every run), and 'within' uses the time\n"
+"                       points both halves observed. With -score_by, the\n"
+"                       levels are read on the runs before averaging and must\n"
+"                       agree in every repeat (so Run itself is an error);\n"
+"                       -time_labels may then also give one label per time\n"
+"                       point of the stimulus. Not with -run_coupling (there\n"
+"                       is no run left to have its own W).\n"
 "\n"
 "  How to read them together (all subjects scored on held-out data):\n"
 "    low within, low shared  : the group or condition is simply noisy.\n"
@@ -922,7 +941,6 @@ typedef struct {
    int     quiet , progress ;
    int     show_table ;
    int     ntl ; char **tl_name , **tl_file ;
-   int     free_runs ;               /* run lengths may differ across subjects (applying a saved W) */
    char   *concat ;                  /* -concat: run starts within each subject's one input */
    int     given_algo , given_niter , given_tol , given_seed , given_zscore , given_coupling , given_mask ;
 } srm_opts ;
@@ -1466,17 +1484,44 @@ static float * srm_cols_range( const float *x , int V , int T , int a , int n )
     are removed here) against the shared response sa of those samples, tied to the anchor with the fit's
     lambda (SRM_fit_view_coupled).  Returned as a one-view model, for projecting and scoring the rest. */
 static SRM_model * srm_adapt_view( const float *sa , int K , int na , const float *xa , int V , const float *anchor ,
-                                   const float *mu , double lambda , const char *who )
+                                   const float *mu , double lambda , const char *who , const unsigned char *oa )
 {
-   float *xc=(float *)malloc(sizeof(float)*(size_t)V*na) , *W=(float *)malloc(sizeof(float)*(size_t)V*K) ;
-   int f , t , rc ; SRM_model *mv ;
-   for( f=0 ; f<V ; f++ ) for( t=0 ; t<na ; t++ ) xc[(size_t)f*na+t]=xa[(size_t)f*na+t]-(mu!=NULL ? mu[f] : 0.0f) ;
-   rc=SRM_fit_view_coupled(sa,K,na,xc,V,1,&na,anchor,lambda,(float * const *)&W) ;
-   if( rc!=SRM_OK ) ERROR_exit("-cv_adapt: could not estimate the held-out run's W for Subj %s: %s",who,SRM_strerror(rc)) ;
+   float *xc , *sc , *W=(float *)malloc(sizeof(float)*(size_t)V*K) ;
+   int f , t , c , rc , n=0 , *idx=(int *)malloc(sizeof(int)*(size_t)(na>0?na:1)) ; SRM_model *mv ;
+   for( t=0 ; t<na ; t++ ) if( oa==NULL || oa[t] ) idx[n++]=t ;     /* -cenmode missing: the observed samples only */
+   if( n==0 ) memcpy(W,anchor,sizeof(float)*(size_t)V*K) ;         /* nothing observed to adapt to: the anchor */
+   else {
+     xc=(float *)malloc(sizeof(float)*(size_t)V*n) ; sc=(float *)malloc(sizeof(float)*(size_t)K*n) ;
+     for( f=0 ; f<V ; f++ ) for( t=0 ; t<n ; t++ ) xc[(size_t)f*n+t]=xa[(size_t)f*na+idx[t]]-(mu!=NULL ? mu[f] : 0.0f) ;
+     for( c=0 ; c<K ; c++ ) for( t=0 ; t<n ; t++ ) sc[(size_t)c*n+t]=sa[(size_t)c*na+idx[t]] ;
+     rc=SRM_fit_view_coupled(sc,K,n,xc,V,1,&n,anchor,lambda,(float * const *)&W) ;
+     if( rc!=SRM_OK ) ERROR_exit("-cv_adapt: could not estimate the held-out run's W for Subj %s: %s",who,SRM_strerror(rc)) ;
+     free(xc) ; free(sc) ;
+   }
    mv=SRM_model_from_w(V,K,W,mu) ;
    if( mv==NULL ) ERROR_exit("out of memory in -cv_adapt") ;
-   free(xc) ; free(W) ;
+   free(W) ; free(idx) ;
    return mv ;
+}
+
+/*! -cv_adapt where the held-out run's S is known (-cv loso; new subjects against a fixed model): subject ii's
+    run W from the run's first samples against ste there, tied to its anchor Wf; the rest scored through it
+    (sc) and through the anchor mv (res->ascore). */
+static int srm_adapt_known_s( const srm_ctx *cx , srm_cvres *res , int ii , int ff , int nfold , const int *col , int len ,
+                              const float *ste , const float *xte , const float *P , const float *Wf , const float *mu ,
+                              const SRM_model *mv , srm_want w , double *sc , float *vr )
+{
+   int K=cx->K , V=cx->sb[ii].nvox , na=srm_adapt_n(cx->o->cv_adapt,len) , nr=len-na , rc ;
+   float *sa=srm_cols_range(ste,K,len,0,na) , *sr=srm_cols_range(ste,K,len,na,nr) , *xa=srm_cols_range(xte,V,len,0,na) ;
+   float *xr=srm_cols_range(xte,V,len,na,nr) , *Pq=srm_cols_range(P,K,len,na,nr) , *Pr=(float *)malloc(sizeof(float)*(size_t)K*nr) ;
+   unsigned char *ot=srm_mask_cols(cx->sb[ii].obs,cx->T,col,len,0) , *vr_=(ot!=NULL) ? ot+na : NULL ;   /* observed, or NULL */
+   SRM_model *ma=srm_adapt_view(sa,K,na,xa,V,Wf,mu,cx->par.coupling,cx->sb[ii].label,ot) ;
+   rc=SRM_project(ma,0,xr,nr,Pr) ;
+   if( rc==SRM_OK ) rc=srm_score_one(ma,0,xr,Pr,sr,sr,K,nr,cx->o->match_window,w,vr_,sc,vr) ;
+   if( rc==SRM_OK ) srm_score_levels(cx,res,ii,ff,nfold,col+na,nr,vr_,ma,0,xr,Pr,sr,sr,w) ;
+   if( rc==SRM_OK ) rc=srm_score_one(mv,0,xr,Pq,sr,sr,K,nr,cx->o->match_window,w,vr_,res->ascore+((size_t)ii*nfold+ff)*NMET,NULL) ;
+   SRM_free_model(ma) ; free(sa) ; free(sr) ; free(xa) ; free(xr) ; free(Pq) ; free(Pr) ; free(ot) ;
+   return rc ;
 }
 
 /*! -cv_adapt under -cv run.  Run ff (columns col, len of them) was held out of the fit mf; xte and P are
@@ -1494,16 +1539,26 @@ static void srm_adapt_run_scores( const srm_ctx *cx , const SRM_model *mf , int 
    float **po=(float **)malloc(sizeof(float *)*(size_t)nsub) , *sa=(float *)malloc(sizeof(float)*(size_t)K*na) ;
    float *ref_u=(float *)malloc(sizeof(float)*(size_t)K*nr) , *ref_r=(float *)malloc(sizeof(float)*(size_t)K*nr) ;
    SRM_model **mv=(SRM_model **)malloc(sizeof(SRM_model *)*(size_t)nsub) ;
+   unsigned char **oa=(unsigned char **)calloc((size_t)nsub,sizeof(unsigned char *)) ;     /* -cenmode missing: observed, */
+   unsigned char **orr=(unsigned char **)calloc((size_t)nsub,sizeof(unsigned char *)) ;    /* first samples and the rest  */
+   const unsigned char **oo=(const unsigned char **)calloc((size_t)nsub,sizeof(unsigned char *)) ;
+   unsigned char *valid=NULL ;
    for( jj=0 ; jj<nsub ; jj++ ){
      int V=mf->nvox[jj] ;
      Pa[jj]=srm_cols_range(P[jj],K,len,0,na) ; Pq[jj]=srm_cols_range(P[jj],K,len,na,nr) ;
      xr[jj]=srm_cols_range(xte[jj],V,len,na,nr) ; all[jj]=jj ;
+     if( cx->sb[jj].obs!=NULL ){
+       unsigned char *ot=srm_mask_cols(cx->sb[jj].obs,cx->T,col,len,0) ;
+       oa[jj]=(unsigned char *)malloc((size_t)(na>0?na:1)) ; orr[jj]=(unsigned char *)malloc((size_t)nr) ;
+       memcpy(oa[jj],ot,(size_t)na) ; memcpy(orr[jj],ot+na,(size_t)nr) ; free(ot) ;
+     }
    }
-   rc=SRM_shared_from_projections(mf,nsub,all,Pa,na,0,sa) ;
+   rc=SRM_shared_from_projections_obs(mf,nsub,all,Pa,cx->anymiss ? (const unsigned char * const *)oa : NULL,na,0,sa) ;
    if( rc!=SRM_OK ) ERROR_exit("-cv_adapt: the shared response of run %d's first samples: %s",ff+1,SRM_strerror(rc)) ;
+   if( cx->anymiss ) valid=(unsigned char *)malloc((size_t)nr) ;
    for( jj=0 ; jj<nsub ; jj++ ){
      int V=mf->nvox[jj] ; float *xa=srm_cols_range(xte[jj],V,len,0,na) ;
-     mv[jj]=srm_adapt_view(sa,K,na,xa,V,mf->w[jj],mf->mu!=NULL ? mf->mu[jj] : NULL,cx->par.coupling,cx->sb[jj].label) ;
+     mv[jj]=srm_adapt_view(sa,K,na,xa,V,mf->w[jj],mf->mu!=NULL ? mf->mu[jj] : NULL,cx->par.coupling,cx->sb[jj].label,oa[jj]) ;
      free(xa) ;
      Pr[jj]=(float *)malloc(sizeof(float)*(size_t)K*nr) ;
      rc=SRM_project(mv[jj],0,xr[jj],nr,Pr[jj]) ;
@@ -1511,22 +1566,31 @@ static void srm_adapt_run_scores( const srm_ctx *cx , const SRM_model *mf , int 
    }
    for( ii=0 ; ii<nsub ; ii++ ){
      int no=0 ; float *vr=(res->vr2!=NULL) ? (float *)malloc(sizeof(float)*(size_t)mf->nvox[ii]) : NULL ;
-     for( jj=0 ; jj<nsub ; jj++ ) if( jj!=ii ) oth[no++]=jj ;
+     for( jj=0 ; jj<nsub ; jj++ ) if( jj!=ii ){ oo[no]=orr[jj] ; oth[no++]=jj ; }
+     if( valid!=NULL ){                               /* scored where the subject was observed and someone else was */
+       int t ;
+       for( t=0 ; t<nr ; t++ ){
+         int seen=0 ;
+         for( q=0 ; q<no && !seen ; q++ ) seen=(oo[q]==NULL || oo[q][t]) ;
+         valid[t]=(byte)(seen && (orr[ii]==NULL || orr[ii][t])) ;
+       }
+     }
      for( pass=0 ; pass<2 ; pass++ ){                 /* 0: the run's own Ws; 1: the anchors, on the same samples */
-       float **src = (pass==0) ? Pr : Pq ;
+       float **src = (pass==0) ? Pr : Pq ; const unsigned char * const *ooc=(valid!=NULL) ? (const unsigned char * const *)oo : NULL ;
        double *sc=((pass==0) ? res->score : res->ascore)+((size_t)ii*nfold+ff)*NMET ;
        for( q=0 ; q<no ; q++ ) po[q]=src[oth[q]] ;
-       rc=SRM_shared_from_projections(mf,no,oth,po,nr,0,ref_u) ;
-       if( rc==SRM_OK ) rc=SRM_shared_from_projections(mf,no,oth,po,nr,1,ref_r) ;
-       if( rc==SRM_OK ) rc = (pass==0) ? srm_score_one(mv[ii],0,xr[ii],Pr[ii],ref_u,ref_r,K,nr,cx->o->match_window,w,NULL,sc,vr)
-                                       : srm_score_one(mf,ii,xr[ii],Pq[ii],ref_u,ref_r,K,nr,cx->o->match_window,w,NULL,sc,NULL) ;
-       if( rc==SRM_OK && pass==0 ) srm_score_levels(cx,res,ii,ff,nfold,col+na,nr,NULL,mv[ii],0,xr[ii],Pr[ii],ref_u,ref_r,w) ;
+       rc=SRM_shared_from_projections_obs(mf,no,oth,po,ooc,nr,0,ref_u) ;
+       if( rc==SRM_OK ) rc=SRM_shared_from_projections_obs(mf,no,oth,po,ooc,nr,1,ref_r) ;
+       if( rc==SRM_OK ) rc = (pass==0) ? srm_score_one(mv[ii],0,xr[ii],Pr[ii],ref_u,ref_r,K,nr,cx->o->match_window,w,valid,sc,vr)
+                                       : srm_score_one(mf,ii,xr[ii],Pq[ii],ref_u,ref_r,K,nr,cx->o->match_window,w,valid,sc,NULL) ;
+       if( rc==SRM_OK && pass==0 ) srm_score_levels(cx,res,ii,ff,nfold,col+na,nr,valid,mv[ii],0,xr[ii],Pr[ii],ref_u,ref_r,w) ;
        if( rc!=SRM_OK ) ERROR_exit("scoring Subj %s on run %d failed: %s",cx->sb[ii].label,ff+1,SRM_strerror(rc)) ;
      }
      if( vr!=NULL ){ for( q=0 ; q<mf->nvox[ii] ; q++ ) res->vr2[ii][q]+=vr[q]/(float)nfold ; free(vr) ; }
    }
-   for( jj=0 ; jj<nsub ; jj++ ){ free(Pa[jj]) ; free(Pq[jj]) ; free(Pr[jj]) ; free(xr[jj]) ; SRM_free_model(mv[jj]) ; }
+   for( jj=0 ; jj<nsub ; jj++ ){ free(Pa[jj]) ; free(Pq[jj]) ; free(Pr[jj]) ; free(xr[jj]) ; SRM_free_model(mv[jj]) ; free(oa[jj]) ; free(orr[jj]) ; }
    free(Pa) ; free(Pq) ; free(Pr) ; free(xr) ; free(po) ; free(sa) ; free(ref_u) ; free(ref_r) ; free(mv) ; free(all) ; free(oth) ;
+   free(oa) ; free(orr) ; free(oo) ; free(valid) ;
 }
 
 /*! -cv run: leave one run (or block) out, refitting the group each time. */
@@ -1764,17 +1828,9 @@ static void srm_cv_loso( const srm_ctx *cx , const SRM_model *mfull , const srm_
        if( rc!=SRM_OK ) ERROR_exit("Subj %s, %s: could not estimate W: %s",cx->sb[ii].label,f->name[ff],SRM_strerror(rc)) ;
        mv=SRM_model_from_w(V,K,Wf,mu) ;
        rc=SRM_project(mv,0,xte,len,P) ;
-       if( o->cv_adapt>0.0 ){                          /* the run's own W from its first samples; both scored on the rest */
-         int na=srm_adapt_n(o->cv_adapt,len) , nr=len-na ;
-         float *sa=srm_cols_range(ste,K,len,0,na) , *sr=srm_cols_range(ste,K,len,na,nr) , *xa=srm_cols_range(xte,V,len,0,na) ;
-         float *xr=srm_cols_range(xte,V,len,na,nr) , *Pq=srm_cols_range(P,K,len,na,nr) , *Pr=(float *)malloc(sizeof(float)*(size_t)K*nr) ;
-         SRM_model *ma=srm_adapt_view(sa,K,na,xa,V,Wf,mu,cx->par.coupling,cx->sb[ii].label) ;
-         if( rc==SRM_OK ) rc=SRM_project(ma,0,xr,nr,Pr) ;
-         if( rc==SRM_OK ) rc=srm_score_one(ma,0,xr,Pr,sr,sr,K,nr,o->match_window,w,NULL,sc,vr) ;
-         if( rc==SRM_OK ) srm_score_levels(cx,res,ii,ff,f->nfold,col+na,nr,NULL,ma,0,xr,Pr,sr,sr,w) ;
-         if( rc==SRM_OK ) rc=srm_score_one(mv,0,xr,Pq,sr,sr,K,nr,o->match_window,w,NULL,res->ascore+((size_t)ii*f->nfold+ff)*NMET,NULL) ;
-         SRM_free_model(ma) ; free(sa) ; free(sr) ; free(xa) ; free(xr) ; free(Pq) ; free(Pr) ;
-       } else
+       if( o->cv_adapt>0.0 )                           /* the run's own W from its first samples; both scored on the rest */
+         rc=srm_adapt_known_s(cx,res,ii,ff,f->nfold,col,len,ste,xte,P,Wf,mu,mv,w,sc,vr) ;
+       else
        { unsigned char *valid=srm_mask_cols(cx->sb[ii].obs,T,col,len,0) ;
          if( rc==SRM_OK ) rc=srm_score_one(mv,0,xte,P,ste,ste,K,len,o->match_window,w,valid,sc,vr) ;
          if( rc==SRM_OK ) srm_score_levels(cx,res,ii,ff,f->nfold,col,len,valid,mv,0,xte,P,ste,ste,w) ;
@@ -1819,6 +1875,9 @@ static void srm_cv_frozen( const srm_ctx *cx , const SRM_model *m , const srm_fo
        mv=SRM_model_from_w(V,K,Wf,mu) ;
        if( mv==NULL ) ERROR_exit("out of memory scoring Subj %s",cx->sb[ii].label) ;
        rc=SRM_project(mv,0,xte,len,P) ;
+       if( rc==SRM_OK && o->cv_adapt>0.0 )               /* the run's own W from its first samples; both scored on the rest */
+         rc=srm_adapt_known_s(cx,res,ii,ff,f->nfold,col,len,ste,xte,P,Wf,mu,mv,w,sc,vr) ;
+       else
        { unsigned char *valid=srm_mask_cols(cx->sb[ii].obs,T,col,len,0) ;
          if( rc==SRM_OK ) rc=srm_score_one(mv,0,xte,P,ste,ste,K,len,o->match_window,w,valid,sc,vr) ;
          if( rc==SRM_OK ) srm_score_levels(cx,res,ii,ff,f->nfold,col,len,valid,mv,0,xte,P,ste,ste,w) ;
@@ -1908,7 +1967,7 @@ static void srm_cv_dispatch( const srm_ctx *c , const SRM_model *mfull , const s
 }
 
 /*! Running sums over the fits that score a subject. */
-typedef struct { double *ssum , *scnt , *lsum , *lcnt , *vcnt ; int *pdone ; } srm_cvacc ;
+typedef struct { double *ssum , *scnt , *lsum , *lcnt , *vcnt , *asum , *acnt ; int *pdone ; } srm_cvacc ;
 
 static void srm_cvacc_init( srm_cvacc *a , const srm_cvres *r )
 {
@@ -1916,6 +1975,7 @@ static void srm_cvacc_init( srm_cvacc *a , const srm_cvres *r )
    a->ssum=(double *)calloc(ns,sizeof(double)) ; a->scnt=(double *)calloc(ns,sizeof(double)) ;
    a->lsum=(double *)calloc(nl,sizeof(double)) ; a->lcnt=(double *)calloc(nl,sizeof(double)) ;
    a->vcnt=(double *)calloc((size_t)r->nsub,sizeof(double)) ; a->pdone=(int *)calloc((size_t)r->nsub,sizeof(int)) ;
+   a->asum=(double *)calloc(ns,sizeof(double)) ; a->acnt=(double *)calloc(ns,sizeof(double)) ;   /* -cv_adapt: the anchor's */
 }
 
 /*! Add a subset's results (its subject j is whole-table subject sel[j], with c->sb[j].nvox features).  Rg
@@ -1930,8 +1990,12 @@ static void srm_cvacc_add( srm_cvacc *a , srm_cvres *r , const srm_cvres *s , co
      for( ff=0 ; ff<s->nfold ; ff++ ){
        for( m=0 ; m<NMET ; m++ ){
          double v=s->score[((size_t)j*s->nfold+ff)*NMET+m] ; size_t q=((size_t)i*r->nfold+ff)*NMET+m ;
-         if( m==M_NSAMP ){ r->score[q]=v ; continue ; }
+         if( m==M_NSAMP ){ r->score[q]=v ; if( r->ascore!=NULL ) r->ascore[q]=v ; continue ; }
          if( isfinite(v) ){ a->ssum[q]+=v ; a->scnt[q]+=1.0 ; }
+         if( r->ascore!=NULL && s->ascore!=NULL ){
+           double u=s->ascore[((size_t)j*s->nfold+ff)*NMET+m] ;
+           if( isfinite(u) ){ a->asum[q]+=u ; a->acnt[q]+=1.0 ; }
+         }
        }
        for( l=0 ; l<s->L && s->lscore!=NULL ; l++ ) for( m=0 ; m<NMET ; m++ ){
          double v=s->lscore[(((size_t)j*s->nfold+ff)*s->L+l)*NMET+m] ; size_t q=(((size_t)i*r->nfold+ff)*r->L+l)*NMET+m ;
@@ -1961,9 +2025,10 @@ static void srm_cvacc_finish( srm_cvacc *a , srm_cvres *r , const srm_ctx *cx )
 {
    size_t q , ns=(size_t)r->nsub*r->nfold*NMET , nl=(size_t)r->nsub*r->nfold*(r->L>0?r->L:1)*NMET ; int i , z ;
    for( q=0 ; q<ns ; q++ ) if( (int)(q%NMET)!=M_NSAMP ) r->score[q] = (a->scnt[q]>0.0) ? a->ssum[q]/a->scnt[q] : NAN ;
+   if( r->ascore!=NULL ) for( q=0 ; q<ns ; q++ ) if( (int)(q%NMET)!=M_NSAMP ) r->ascore[q] = (a->acnt[q]>0.0) ? a->asum[q]/a->acnt[q] : NAN ;
    if( r->lscore!=NULL ) for( q=0 ; q<nl ; q++ ) if( (int)(q%NMET)!=M_NSAMP ) r->lscore[q] = (a->lcnt[q]>0.0) ? a->lsum[q]/a->lcnt[q] : NAN ;
    if( r->vr2!=NULL ) for( i=0 ; i<r->nsub ; i++ ) if( a->vcnt[i]>0.0 ) for( z=0 ; z<cx->sb[i].nvox ; z++ ) r->vr2[i][z]/=(float)a->vcnt[i] ;
-   free(a->ssum) ; free(a->scnt) ; free(a->lsum) ; free(a->lcnt) ; free(a->vcnt) ; free(a->pdone) ;
+   free(a->ssum) ; free(a->scnt) ; free(a->lsum) ; free(a->lcnt) ; free(a->vcnt) ; free(a->pdone) ; free(a->asum) ; free(a->acnt) ;
 }
 
 /*! k of the n values a[] at random (seeded), ascending, into out. */
@@ -2526,6 +2591,8 @@ typedef struct {
    int icol_xmat , icol_censor ;
    char **item_key ;                   /* [nitem] Item, or Item:n for the n-th repeat */
    double *relpre ;                    /* -repeated_stimulus: [nsub][2] within-subject reliability, before averaging */
+   int rep_nrun , rep_T ;              /* -repeated_stimulus: the timeline before averaging (rep_nrun 0: not averaged) */
+   int *rep_seglen , *rep_time_index ;
 } srm_data ;
 
 /*! Subjects, their runs, groups and masks, from the table. */
@@ -2724,15 +2791,12 @@ static void srm_data_shape( const srm_opts *o , srm_data *d , int need_mask , in
          }
        }
        if( ss==0 ) d->runlen[rr]=nt ;
-       else if( !o->free_runs && nt!=d->runlen[rr] )
+       else if( nt!=d->runlen[rr] )
          ERROR_exit("Subj %s, run %s has %d time points; the first subject's has %d",s->label,d->have_run?d->dx->level[1][rr]:"1",nt,d->runlen[rr]) ;
      }
      if( need_mask && s->nvox_mask<Kmin ) ERROR_exit("Subj %s has %d features; -nfeatures is %d",s->label,s->nvox_mask,Kmin) ;
    }
-   if( !d->have_run && (o->concat!=NULL || d->icol_xmat>=0) ){
-     if( o->free_runs ) ERROR_exit("an Xmat column with -apply_W is not available in this build yet") ;
-     srm_data_concat_runs(o,d) ;
-   }
+   if( !d->have_run && (o->concat!=NULL || d->icol_xmat>=0) ) srm_data_concat_runs(o,d) ;
    d->Tin=0 ;
    for( rr=0 ; rr<d->nrun ; rr++ ){ d->Tin+=d->runlen[rr] ; if( d->runlen[rr]<2 ) ERROR_exit("run %d has %d time points; need at least 2",rr+1,d->runlen[rr]) ; }
    d->c0in=(int *)calloc((size_t)d->nrun,sizeof(int)) ;
@@ -3701,7 +3765,7 @@ static void srm_rel_halves( const float *xa , const float *xb , int V , int n , 
     runs must keep the same time points (the same censoring in each). */
 static void srm_average_repeats( const srm_opts *o , srm_data *d )
 {
-   int L=d->seglen[0] , rr , ss , t , f ;
+   int L=d->seglen[0] , rr , ss , t , f , nmiss=0 ;
    if( d->nrun<2 ) ERROR_exit("-repeated_stimulus needs at least two runs of the stimulus; the data have %d",d->nrun) ;
    for( rr=1 ; rr<d->nrun ; rr++ ){
      if( d->seglen[rr]!=L ) ERROR_exit("-repeated_stimulus: run %s keeps %d time points, run %s %d; every repeat must keep the same ones",
@@ -3711,28 +3775,53 @@ static void srm_average_repeats( const srm_opts *o , srm_data *d )
          ERROR_exit("-repeated_stimulus: runs %s and %s keep different time points (censoring); every repeat must keep the same ones",
                     d->runname[0],d->runname[rr]) ;
    }
+   /* the timeline before averaging, for -score_by (labels must agree across the repeats) */
+   d->rep_nrun=d->nrun ; d->rep_T=d->T ;
+   d->rep_seglen=(int *)malloc(sizeof(int)*(size_t)d->nrun) ; memcpy(d->rep_seglen,d->seglen,sizeof(int)*(size_t)d->nrun) ;
+   d->rep_time_index=(int *)malloc(sizeof(int)*(size_t)d->T) ; memcpy(d->rep_time_index,d->time_index,sizeof(int)*(size_t)d->T) ;
    if( o->rel_within ) d->relpre=(double *)malloc(sizeof(double)*2*(size_t)d->nsub) ;
    for( ss=0 ; ss<d->nsub ; ss++ ){
      srm_subj *s=d->sb+ss ; int V=s->nvox , T=d->T ;
      float *avg=(float *)calloc((size_t)V*L,sizeof(float)) ;
+     int *cnt=(int *)malloc(sizeof(int)*(size_t)L) ;          /* runs observed at each time point (-cenmode missing) */
      if( avg==NULL ) ERROR_exit("out of memory averaging the repeats of Subj %s",s->label) ;
+     for( t=0 ; t<L ; t++ ){ cnt[t]=0 ; for( rr=0 ; rr<d->nrun ; rr++ ) cnt[t]+=(s->obs==NULL || s->obs[rr*L+t]) ; }
      if( o->rel_within ){                              /* odd runs against even runs, then corrected to all */
        float *xa=(float *)calloc((size_t)V*L,sizeof(float)) , *xb=(float *)calloc((size_t)V*L,sizeof(float)) ;
-       int na=0 , nb=0 ;
+       int *na=(int *)calloc((size_t)L,sizeof(int)) , *nb=(int *)calloc((size_t)L,sizeof(int)) , *idx=(int *)malloc(sizeof(int)*(size_t)L) , ng=0 ;
        for( rr=0 ; rr<d->nrun ; rr++ ){
-         float *h = (rr%2==0) ? xa : xb ;
-         if( rr%2==0 ) na++ ; else nb++ ;
-         for( f=0 ; f<V ; f++ ) for( t=0 ; t<L ; t++ ) h[(size_t)f*L+t]+=s->x[(size_t)f*T+rr*L+t] ;
+         float *h = (rr%2==0) ? xa : xb ; int *nh = (rr%2==0) ? na : nb ;
+         for( t=0 ; t<L ; t++ ) if( s->obs==NULL || s->obs[rr*L+t] ){
+           nh[t]++ ;
+           for( f=0 ; f<V ; f++ ) h[(size_t)f*L+t]+=s->x[(size_t)f*T+rr*L+t] ;
+         }
        }
-       for( f=0 ; f<V*L ; f++ ){ xa[f]/=na ; xb[f]/=nb ; }
-       srm_rel_halves(xa,xb,V,L,d->relpre+2*ss) ;
-       free(xa) ; free(xb) ;
+       for( t=0 ; t<L ; t++ ) if( na[t]>0 && nb[t]>0 ) idx[ng++]=t ;   /* where both halves were observed */
+       for( f=0 ; f<V ; f++ ) for( t=0 ; t<ng ; t++ ){
+         xa[(size_t)f*ng+t]=xa[(size_t)f*L+idx[t]]/na[idx[t]] ; xb[(size_t)f*ng+t]=xb[(size_t)f*L+idx[t]]/nb[idx[t]] ;
+       }
+       if( ng>=3 ) srm_rel_halves(xa,xb,V,ng,d->relpre+2*ss) ;
+       else d->relpre[2*ss]=d->relpre[2*ss+1]=NAN ;
+       free(xa) ; free(xb) ; free(na) ; free(nb) ; free(idx) ;
      }
-     for( rr=0 ; rr<d->nrun ; rr++ ) for( f=0 ; f<V ; f++ ) for( t=0 ; t<L ; t++ )
-       avg[(size_t)f*L+t]+=s->x[(size_t)f*T+rr*L+t]/(float)d->nrun ;
+     for( rr=0 ; rr<d->nrun ; rr++ ) for( t=0 ; t<L ; t++ ) if( cnt[t]>0 && (s->obs==NULL || s->obs[rr*L+t]) )
+       for( f=0 ; f<V ; f++ ) avg[(size_t)f*L+t]+=s->x[(size_t)f*T+rr*L+t]/(float)cnt[t] ;
      free(s->x) ; s->x=avg ;
+     if( s->obs!=NULL ){                               /* missing only where every repeat was */
+       byte *ob=(byte *)malloc((size_t)L) ; int no=0 , any=0 ;
+       for( t=0 ; t<L ; t++ ){ ob[t]=(byte)(cnt[t]>0) ; no+=ob[t] ; any|=!ob[t] ; }
+       free(s->obs) ; s->obs=NULL ;
+       if( no<3 ) ERROR_exit("-repeated_stimulus: Subj %s is observed at %d time points of the averaged run; need at least 3",s->label,no) ;
+       if( any ){ s->obs=ob ; nmiss++ ; } else free(ob) ;
+     }
+     free(cnt) ;
    }
-   if( !o->quiet ) INFO_message("-repeated_stimulus: the %d runs (%d time points each) are averaged for the fit",d->nrun,L) ;
+   if( !o->quiet ){
+     INFO_message("-repeated_stimulus: the %d runs (%d time points each) are averaged for the fit",d->nrun,L) ;
+     if( o->cenmode==SRM_CEN_MISSING )
+       ININFO_message("each time point over the runs where the subject was observed; %d subject%s still missing somewhere "
+                      "(missing in every run)",nmiss,nmiss==1?" is":"s are") ;
+   }
    d->T=L ; d->nrun=1 ; d->seglen[0]=L ;
 }
 
@@ -3832,10 +3921,31 @@ static void srm_xmat_time_labels( const srm_opts *o , const srm_data *d , const 
 
 /*! Build cx's factors from -score_by: on the item axis a table column; on the time axis -time_labels NAME,
     Condition from the Xmat column, or a table column (its value on the row of each run). */
+static void srm_build_labels_on( const srm_opts *o , const srm_data *d , srm_ctx *cx ) ;
+
+/*! -score_by levels of every column of every subject.  After -repeated_stimulus the labels are made on the
+    timeline before averaging, and every repeat must give a time point the same level. */
 static void srm_build_labels( const srm_opts *o , const srm_data *d , srm_ctx *cx )
 {
-   char *copy , *nm ; THD_datatable *tab=d->tab ; int T=d->T , fa , ss , t ;
+   srm_data dd ; int fa , ss , t , rr , L=d->T ;
    if( o->score_by==NULL ) return ;
+   if( d->rep_nrun==0 ){ srm_build_labels_on(o,d,cx) ; return ; }
+   dd=*d ; dd.T=d->rep_T ; dd.nrun=d->rep_nrun ; dd.seglen=d->rep_seglen ; dd.time_index=d->rep_time_index ;
+   srm_build_labels_on(o,&dd,cx) ;
+   for( fa=0 ; fa<cx->nfac ; fa++ ) for( ss=0 ; ss<d->nsub ; ss++ ){
+     int *lab=cx->lab[fa][ss] ;
+     for( t=0 ; t<L ; t++ ) for( rr=1 ; rr<d->rep_nrun ; rr++ ) if( lab[rr*L+t]!=lab[t] ){
+       const char *a = lab[t]<0 ? "(none)" : cx->fac_lev[fa][lab[t]] , *b = lab[rr*L+t]<0 ? "(none)" : cx->fac_lev[fa][lab[rr*L+t]] ;
+       ERROR_exit("-score_by %s with -repeated_stimulus: Subj %s, time point %d of the stimulus is %s in run %s but %s in run %s. "
+                  "The runs are averaged, so every repeat must give a time point the same level",
+                  cx->fac_name[fa],d->sb[ss].label,t+1,a,d->runname[0],b,d->runname[rr]) ;
+     }
+   }
+}
+
+static void srm_build_labels_on( const srm_opts *o , const srm_data *d , srm_ctx *cx )
+{
+   char *copy , *nm ; THD_datatable *tab=d->tab ; int T=d->T , fa , ss , t ;
    copy=strdup(o->score_by) ;
    for( nm=strtok(copy,",") ; nm!=NULL ; nm=strtok(NULL,",") ){
      fa=cx->nfac++ ;
@@ -3861,11 +3971,13 @@ static void srm_build_labels( const srm_opts *o , const srm_data *d , srm_ctx *c
          MRI_IMAGE *im=mri_read_1D(o->tl_file[itl]) , *fm ; float *ar ;
          if( im==NULL ) ERROR_exit("cannot read -time_labels %s file '%s'",nm,o->tl_file[itl]) ;
          fm=mri_to_float(im) ; if( fm!=im ) mri_free(im) ; ar=MRI_FLOAT_PTR(fm) ;
-         if( fm->nvox!=d->Tin && fm->nvox!=T )
-           ERROR_exit("-time_labels %s: '%s' has %d values; give one per input time point (%d) or per retained one (%d)",
-                      nm,o->tl_file[itl],fm->nvox,d->Tin,T) ;
+         { int Lrep = d->rep_nrun>0 ? d->rep_T/d->rep_nrun : 0 ;  /* -repeated_stimulus: once per stimulus time point */
+           if( fm->nvox!=d->Tin && fm->nvox!=T && fm->nvox!=Lrep )
+             ERROR_exit("-time_labels %s: '%s' has %d values; give one per input time point (%d) or per retained one (%d)%s",
+                        nm,o->tl_file[itl],fm->nvox,d->Tin,T,Lrep>0 ? ", or one per time point of the repeated stimulus" : "") ; }
          for( t=0 ; t<T ; t++ ){
-           float v=ar[(fm->nvox==d->Tin) ? d->time_index[t] : t] ; char b[32] ;
+           int Lrep = d->rep_nrun>0 ? d->rep_T/d->rep_nrun : 0 ;
+           float v=ar[(fm->nvox==d->Tin) ? d->time_index[t] : (fm->nvox==T) ? t : t%Lrep] ; char b[32] ;
            if( !isfinite(v) || v!=rintf(v) ) ERROR_exit("-time_labels %s: value %g is not a whole number (0 = unlabelled)",nm,v) ;
            if( v==0.0f ) continue ;
            snprintf(b,sizeof(b),"%d",(int)v) ;
@@ -4062,7 +4174,9 @@ static void srm_run_model_in( srm_opts *o , THD_datatable *tab , int argc , char
    if( o->update_S ){
      int *nv=(int *)malloc(sizeof(int)*(size_t)nsub) ; float **xv=(float **)malloc(sizeof(float *)*(size_t)nsub) ;
      srm_prog bar ; fit_prog fp ;
-     for( ss=0 ; ss<nsub ; ss++ ){ nv[ss]=d.sb[ss].nvox ; xv[ss]=d.sb[ss].x ; }
+     const unsigned char **ov=(const unsigned char **)calloc((size_t)nsub,sizeof(unsigned char *)) ; int anyo=0 ;
+     for( ss=0 ; ss<nsub ; ss++ ){ nv[ss]=d.sb[ss].nvox ; xv[ss]=d.sb[ss].x ; ov[ss]=d.sb[ss].obs ; anyo|=(ov[ss]!=NULL) ; }
+     par.obs = anyo ? (const unsigned char * const *)ov : NULL ;   /* -cenmode missing: each new subject where observed */
      if( m->coupled ){ par.coupling=m->coupling ; par.nseg=pv->nseg ; par.seglen=pv->seglen ; }
      if( !o->quiet ) INFO_message("updating S with %d new subject%s (up to %d iterations)",nsub,nsub>1?"s":"",par.niter) ;
      srm_prog_begin(&bar,o->progress,o->quiet,"update","iterations",par.niter) ;
@@ -4077,12 +4191,12 @@ static void srm_run_model_in( srm_opts *o , THD_datatable *tab , int argc , char
        if( m->drift>0.03 ) WARNING_message("the model's drift is %.3g: the oldest subjects' W were fitted to a noticeably different S. "
                                            "Refit from the data when you can",m->drift) ;
      }
-     free(nv) ; free(xv) ;
+     free(nv) ; free(xv) ; free(ov) ; par.obs=NULL ;
    } else {
      srm_prog bar ;
      srm_prog_begin(&bar,o->progress,o->quiet,"mapping","subjects",nsub) ;
      for( ss=0 ; ss<nsub ; ss++ ){
-       rc=SRM_model_add_view(m,d.sb[ss].x,d.sb[ss].nvox) ;
+       rc=SRM_model_add_view_obs(m,d.sb[ss].x,d.sb[ss].nvox,d.sb[ss].obs) ;   /* missing points: W, rho2 from the observed */
        if( rc!=SRM_OK ) ERROR_exit("Subj %s: could not estimate W against the model: %s",d.sb[ss].label,SRM_strerror(rc)) ;
        srm_prog_set(&bar,ss+1,NULL) ;
      }
@@ -4306,21 +4420,25 @@ static void srm_run_apply_W( srm_opts *o , THD_datatable *tab , int argc , char 
      }
      srm_data_normalize(&oq,&d1,zs,0,1) ;
      t=d1.T ;
-     if( zs==SRM_ZSCORE_NONE ){                 /* no mu in the files: center on the new data */
+     if( zs==SRM_ZSCORE_NONE ){                 /* no mu in the files: center on the new data (where observed) */
        mu=(float *)malloc(sizeof(float)*(size_t)V) ;
-       for( f=0 ; f<V ; f++ ){ double a=0.0 ; int z ; for( z=0 ; z<t ; z++ ) a+=s->x[(size_t)f*t+z] ; mu[f]=(float)(a/t) ; }
+       for( f=0 ; f<V ; f++ ){ double a=0.0 ; int z , n=0 ;
+         for( z=0 ; z<t ; z++ ) if( s->obs==NULL || s->obs[z] ){ a+=s->x[(size_t)f*t+z] ; n++ ; }
+         mu[f]=(float)(a/n) ; }
      }
      mv=SRM_model_from_w(V,K,W,mu) ;
      if( mv==NULL ) ERROR_exit("out of memory applying W for Subj %s",s->label) ;
      P=(float *)malloc(sizeof(float)*(size_t)K*(size_t)t) ;
      rc=SRM_project(mv,0,s->x,t,P) ;
      if( rc!=SRM_OK ) ERROR_exit("Subj %s: projection failed: %s",s->label,SRM_strerror(rc)) ;
+     if( s->obs!=NULL ){ int z ; for( z=0 ; z<t ; z++ ) if( !s->obs[z] ) for( c=0 ; c<K ; c++ ) P[(size_t)c*t+z]=0.0f ; }
      s->nvox=V ;
      if( !o->no_projected ){
        if( o->axis_item )
          srm_write_proj(o,s,P,K,t,"subject's NEW items in the shared space, through this subject's own W from the earlier run: one row per item, one column per component",d1.item_key,argc,argv) ;
        else
-       srm_write_proj(o,s,P,K,t,"subject's NEW data in the shared space, through this subject's own W from the earlier run: one row per retained time point, one column per component",NULL,argc,argv) ;
+       srm_write_proj(o,s,P,K,t,s->obs!=NULL ? "subject's NEW data in the shared space, through this subject's own W from the earlier run: one row per retained time point, one column per component; censored (missing, -cenmode missing) rows are 0"
+                                              : "subject's NEW data in the shared space, through this subject's own W from the earlier run: one row per retained time point, one column per component",NULL,argc,argv) ;
      }
      SRM_free_model(mv) ; free(W) ; free(mu) ; free(P) ; free(s->x) ; s->x=NULL ;
      if( st!=NULL ){ int j ; for( j=0 ; j<d1.nitem ; j++ ) free(d1.item_key[j]) ; free(d1.item_key) ; THD_free_datatable(st) ; }
@@ -4535,18 +4653,11 @@ int main( int argc , char **argv )
      ERROR_exit("-fold_column is for -axis item; with -axis time the folds are the runs (or -cv_blocks)") ;
    if( o.fold_col!=NULL && strcasecmp(o.cvmode,"none")==0 ) ERROR_exit("-fold_column needs -cv run or -cv loso") ;
    if( o.concat!=NULL && o.axis_item ) ERROR_exit("-concat splits a time series into runs; it is for -axis time") ;
-   if( o.concat!=NULL && o.apply_W!=NULL ) ERROR_exit("-concat with -apply_W is not available in this build yet") ;
    if( o.cv_adapt_given ){
      if( o.model_in!=NULL || o.apply_W!=NULL ) ERROR_exit("-cv_adapt goes with -run_coupling in a fit: not with -model_in or -apply_W") ;
      if( o.par.coupling==SRM_COUPLING_SHARED )
        ERROR_exit("-cv_adapt needs -run_coupling: with one W for all of a subject's runs there is no run W to estimate") ;
      if( strcasecmp(o.cvmode,"none")==0 ) ERROR_exit("-cv_adapt needs -cv run or -cv loso: it changes how held-out runs are scored") ;
-     if( o.cv_fit!=NULL || o.balance!=0 ) ERROR_exit("-cv_adapt with -cv_fit or -balance is not available in this build yet") ;
-   }
-   if( o.cenmode==SRM_CEN_MISSING ){
-     if( o.par.coupling!=SRM_COUPLING_SHARED ) ERROR_exit("-cenmode missing with -run_coupling is not available in this build yet") ;
-     if( o.update_S ) ERROR_exit("-cenmode missing with -update_S is not available in this build yet") ;
-     if( o.apply_W!=NULL ) ERROR_exit("-cenmode missing with -apply_W is not available in this build yet") ;
    }
    if( o.reliability!=NULL ){
      char *copy=strdup(o.reliability) , *tk ;
@@ -4573,9 +4684,7 @@ int main( int argc , char **argv )
      ERROR_exit("-reliability within needs repeats: -repeated_stimulus (every run shows the same stimulus), or -axis item with "
                 "items measured more than once") ;
    if( o.repeated_stimulus ){
-     if( o.cenmode==SRM_CEN_MISSING ) ERROR_exit("-repeated_stimulus with -cenmode missing is not available in this build yet") ;
      if( o.par.coupling!=SRM_COUPLING_SHARED ) ERROR_exit("-repeated_stimulus averages the runs, so there is no W per run (-run_coupling)") ;
-     if( o.score_by!=NULL ) ERROR_exit("-repeated_stimulus with -score_by is not available in this build yet") ;
      if( o.model_in!=NULL || o.apply_W!=NULL ) ERROR_exit("-repeated_stimulus is for fitting: not with -model_in or -apply_W") ;
    }
    if( o.cv_fit!=NULL || o.balance!=0 ){

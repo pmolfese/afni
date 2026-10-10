@@ -240,6 +240,14 @@ typedef struct SRM_model {
    double   rho_inv_sum ;
    int      nsubj_eff ;
 
+   /* The same per time point, when some view was not observed at some time
+      point (SRM_params.obs): nsubj_t[t] views were observed at t, and (PROB)
+      rho_inv_t[t] is the sum of their 1/rho2.  Both NULL when every view is
+      observed everywhere; then they are nsubj_eff and rho_inv_sum at every t.
+      The view's own a_sum terms are zero where it is missing.                */
+   double  *nsubj_t ;
+   double  *rho_inv_t ;
+
    /* Bookkeeping for SRM_update().  The gauge is fixed when the first fit is
       canonicalized and is never changed by an update, so earlier outputs
       stay comparable.  drift accumulates |S_new - S_old|^2 / |S_old|^2 over
@@ -421,6 +429,12 @@ extern int SRM_fit_view( const float *s , int nfeat , int ntime ,
     log rho2_i, whose data are gone) left out, so it is comparable between
     iterations of this call and nothing else.  It is monotone as usual.
 
+    Missing data: p->obs, if given, has one mask per NEW view (1 observed);
+    each new view then enters only where observed, as in SRM_fit().  A model
+    whose own fit had missing points carries per-time sums (nsubj_t,
+    rho_inv_t) and is updated per time point; if either side has missing
+    points the result carries them too.
+
     The model must carry its sums: a model that went through SRM_model_copy
     with a view dropped, or one never fitted, returns SRM_ERR_MISMATCH.
 
@@ -443,6 +457,11 @@ extern int SRM_update( SRM_model *m , int nnew , const int *nvox ,
     aligned with the data the model was fit to.  S is NOT changed, which is
     what makes it safe for scoring; use SRM_update() to let S absorb the view. */
 extern int SRM_model_add_view( SRM_model *m , const float *x , int nvox ) ;
+
+/*! The same, for a view observed only where obs[t] != 0 (obs NULL: all):
+    W_i, rho2 and the feature means come from the observed columns only. */
+extern int SRM_model_add_view_obs( SRM_model *m , const float *x , int nvox ,
+                                   const unsigned char *obs ) ;
 
 /*----------------------------------------------------------------------------
   Gauge
@@ -489,6 +508,8 @@ extern int SRM_procrustes_rotation( const float *a , const float *b ,
       data sigma_s k k    (PROB)                              (float, %.9g)
       data rho2 N 1       (PROB)                              (double, %.17g)
       data a_sum k T                                          (double, %.17g)
+      data nsubj_t 1 T    (missing data)                      (double, %.17g)
+      data rho_inv_t 1 T  (missing data, PROB)                (double, %.17g)
       end
 
   Floats are written with 9 significant digits and doubles with 17, so a

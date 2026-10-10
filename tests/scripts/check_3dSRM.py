@@ -106,10 +106,15 @@ def run_ours(cli, workdir, tag, algo, views, k, niter, center, init_w=None,
     return out
 
 
-def run_load_update(cli, model_file, out, new_files, new_rows, niter):
+def run_load_update(cli, model_file, out, new_files, new_rows, niter, new_obs=None):
     cmd = [str(cli), "--load-model", str(model_file), "--out", str(out), "--niter", str(niter), "--tol", "0"]
     for f, r in zip(new_files, new_rows):
         cmd += ["--update-view", str(r), str(f)]
+    for j, m in enumerate(new_obs or []):
+        if m is not None and not m.all():
+            fo = Path(f"{out}.uobs{j}.u8")
+            m.astype(np.uint8).tofile(fo)
+            cmd += ["--update-obs", str(j), str(fo)]
     subprocess.run(cmd, check=True)
 
 
@@ -599,6 +604,49 @@ def np_adapt_w(xa, sa, anchor, lam):
     return np_polar(xa @ sa.T + lam * s2 * anchor)
 
 
+def adapt_ref_run(cli, work, tag, pre, names, runs, algo, lam, frac, win, K_, niter):
+    """The -cv run -cv_adapt scores of these subjects, fitted among themselves: {(Subj, Fold): {"run": [...], "anchor": [...]}}
+    with [isc, match, chance, r2, nsamp]."""
+    n, want = len(pre), {}
+    starts = np.cumsum([0] + list(runs[:-1]))
+    for fi_, (c0, L) in enumerate(zip(starts, runs)):
+        tr = [np.delete(z, np.arange(c0, c0 + L), axis=1).astype(np.float32) for z in pre]
+        r = run_ours(cli, work, f"{tag}_f{fi_}", algo, tr, K_, niter, False, extra=["--canon"],
+                     seglen=[x for q, x in enumerate(runs) if q != fi_], coupling=lam)
+        na = int(frac * L)
+        te = [z[:, c0:c0 + L] for z in pre]
+        P = [r["w"][i].T @ te[i] for i in range(n)]
+        sa = sum(Pi[:, :na] for Pi in P) / n
+        Wr = [np_adapt_w(te[i][:, :na], sa, r["w"][i], lam) for i in range(n)]
+        xr = [te[i][:, na:] for i in range(n)]
+        for W_list in ("run", "anchor"):
+            Ws = Wr if W_list == "run" else r["w"]
+            Pr = [Ws[i].T @ xr[i] for i in range(n)]
+            for i in range(n):
+                oth = [j for j in range(n) if j != i]
+                ref_u = sum(Pr[j] for j in oth) / len(oth)
+                if algo == "prob":
+                    prec = np.linalg.inv(r["sigma"]) + (1.0 / r["rho2"][oth]).sum() * np.eye(K_)
+                    ref_r = np.linalg.solve(prec, sum(Pr[j] / r["rho2"][j] for j in oth))
+                else:
+                    ref_r = ref_u
+                acc, ch = np_segment_match(Pr[i], ref_u, win)
+                sse = ((xr[i] - Ws[i] @ ref_r) ** 2).sum()
+                sst = ((xr[i] - xr[i].mean(1, keepdims=True)) ** 2).sum()
+                want.setdefault((names[i], f"r{fi_ + 1}"), {})[W_list] = [np_isc(Pr[i], ref_u), acc, ch, 1.0 - sse / sst, L - na]
+    return want
+
+
+def adapt_errors(got, want):
+    """[nsamp, isc, match, chance, r2, isc_anchor, match_anchor, r2_anchor] errors, one row per (Subj, Fold)."""
+    e = []
+    for k_, v in want.items():
+        g = got[k_]
+        e.append([abs(g[0] - v["run"][4]), abs(g[1] - v["run"][0]), abs(g[2] - v["run"][1]), abs(g[3] - v["run"][2]),
+                  abs(g[4] - v["run"][3]), abs(g[5] - v["anchor"][0]), abs(g[6] - v["anchor"][1]), abs(g[7] - v["anchor"][3])])
+    return np.array(e)
+
+
 def case_cv_adapt(prog, cli, work, rng, algo, runs=(60, 50, 70), lam=30.0, frac=0.3, win=5, K_=3, niter=40):
     """-cv_adapt under -cv run, against a numpy reference built on the driver's coupled fold fits; and under
     -cv loso, the limits: a very large lambda makes the run's W the anchor."""
@@ -628,39 +676,8 @@ def case_cv_adapt(prog, cli, work, rng, algo, runs=(60, 50, 70), lam=30.0, frac=
     head, body = read_scores(d / "run.scores_folds.txt")
     check("scores_folds.txt has isc_anchor, match_anchor, r2_anchor", float(head[-3:] != ["isc_anchor", "match_anchor", "r2_anchor"]), 0.0, "{:.0f}")
     got = {(r[0], r[2]): [num(x) for x in r[3:11]] for r in body}
-    want = {}
-    starts = np.cumsum([0] + runs[:-1])
-    for fi_, (c0, L) in enumerate(zip(starts, runs)):
-        tr = [np.delete(z, np.arange(c0, c0 + L), axis=1).astype(np.float32) for z in pre]
-        r = run_ours(cli, work, f"{name}_f{fi_}", algo, tr, K_, niter, False, extra=["--canon"],
-                     seglen=[x for q, x in enumerate(runs) if q != fi_], coupling=lam)
-        na = int(frac * L)
-        te = [z[:, c0:c0 + L] for z in pre]
-        P = [r["w"][i].T @ te[i] for i in range(n)]
-        sa = sum(Pi[:, :na] for Pi in P) / n                    # the first samples' S: every subject's anchor projection
-        Wr = [np_adapt_w(te[i][:, :na], sa, r["w"][i], lam) for i in range(n)]
-        xr = [te[i][:, na:] for i in range(n)]
-        for W_list in ("run", "anchor"):
-            Ws = Wr if W_list == "run" else r["w"]
-            Pr = [Ws[i].T @ xr[i] for i in range(n)]
-            for i in range(n):
-                oth = [j for j in range(n) if j != i]
-                ref_u = sum(Pr[j] for j in oth) / len(oth)
-                if algo == "prob":
-                    prec = np.linalg.inv(r["sigma"]) + (1.0 / r["rho2"][oth]).sum() * np.eye(K_)
-                    ref_r = np.linalg.solve(prec, sum(Pr[j] / r["rho2"][j] for j in oth))
-                else:
-                    ref_r = ref_u
-                acc, ch = np_segment_match(Pr[i], ref_u, win)
-                sse = ((xr[i] - Ws[i] @ ref_r) ** 2).sum()
-                sst = ((xr[i] - xr[i].mean(1, keepdims=True)) ** 2).sum()
-                want.setdefault((names[i], f"r{fi_ + 1}"), {})[W_list] = [np_isc(Pr[i], ref_u), acc, ch, 1.0 - sse / sst, L - na]
-    e = []
-    for k_, v in want.items():
-        g = got[k_]
-        e.append([abs(g[0] - v["run"][4]), abs(g[1] - v["run"][0]), abs(g[2] - v["run"][1]), abs(g[3] - v["run"][2]),
-                  abs(g[4] - v["run"][3]), abs(g[5] - v["anchor"][0]), abs(g[6] - v["anchor"][1]), abs(g[7] - v["anchor"][3])])
-    e = np.array(e)
+    want = adapt_ref_run(cli, work, name, pre, names, runs, algo, lam, frac, win, K_, niter)   # S of the first samples: all anchors
+    e = adapt_errors(got, want)
     check("nsamp: the samples after each run's first FRAC", float(e[:, 0].max()), 0.0, "{:.0f}")
     check("run W: held-out isc vs numpy (S of the first samples from all anchors)", float(e[:, 1].max()), 5e-4)
     check("run W: segment matching vs numpy", float(e[:, 2].max()), 1e-6)
@@ -697,8 +714,32 @@ def case_cv_adapt(prog, cli, work, rng, algo, runs=(60, 50, 70), lam=30.0, frac=
     fails(["-run_coupling", lam, "-cv_adapt", frac], "needs -cv run or -cv loso", "E: -cv_adapt without -cv")
     fails(["-run_coupling", lam, "-cv", "run", "-cv_adapt", 0.02], "need at least 3 (-nfeatures)", "E: too few samples to estimate the run's W")
     fails(["-run_coupling", lam, "-cv", "run", "-cv_adapt", 0.9], "for time-segment matching", "E: too few samples left to score")
-    fails(["-run_coupling", lam, "-cv", "run", "-cv_adapt", frac, "-cv_fit", "within"], "not available in this build yet",
-          "E: -cv_adapt with -cv_fit (not in this build)")
+
+    # -cv_fit within: each group's own -cv run, adapted, against the same reference on that group alone
+    run(base + ["-prefix", d / "within", "-run_coupling", lam, "-cv", "run", "-cv_adapt", frac, "-cv_fit", "within"])
+    _, bw = read_scores(d / "within.scores_folds.txt")
+    gotw = {(r[0], r[2]): [num(x) for x in r[3:11]] for r in bw}
+    ew = []
+    for g in ("ctl", "pat"):
+        idx = [i for i, s_ in enumerate(subs) if s_["group"] == g]
+        wg = adapt_ref_run(cli, work, f"{name}_w{g}", [pre[i] for i in idx], [names[i] for i in idx], runs, algo, lam, frac, win, K_, niter)
+        ew.append(adapt_errors(gotw, wg))
+    ew = np.vstack(ew)
+    check("-cv_fit within -cv_adapt: run W scores vs each group's own reference", float(ew[:, 1:5].max()), 5e-4)
+    check("-cv_fit within -cv_adapt: anchor scores vs each group's own reference", float(ew[:, 5:8].max()), 5e-4)
+    # -balance with groups of equal size: every draw is the whole table, so the result is the plain one
+    run(base + ["-prefix", d / "bal", "-run_coupling", lam, "-cv", "run", "-cv_adapt", frac, "-balance", 2])
+    _, bbal = read_scores(d / "bal.scores_folds.txt")
+    gotb = {(r[0], r[2]): [num(x) for x in r[3:11]] for r in bbal}
+    check("-balance -cv_adapt, equal groups: both columns averaged over draws = the plain run",
+          float(max(abs(gotb[k_][q] - got[k_][q]) for k_ in got for q in range(8))), 1e-6)
+    # -cv_fit reference: the other group is placed in the reference fit's S and adapts too; lambda 1e9 makes it the anchor
+    run(base + ["-prefix", d / "ref", "-run_coupling", 1e9, "-cv", "loso", "-cv_adapt", frac, "-cv_fit", "reference:ctl"])
+    _, brf = read_scores(d / "ref.scores_folds.txt")
+    check("-cv_fit reference -cv_adapt, lambda 1e9: run W = anchor for both groups",
+          max(abs(num(r[4]) - num(r[8])) for r in brf), 1e-4)
+    check("... and the non-reference group is scored on the adapted samples too",
+          float(any(int(r[3]) != L - int(frac * L) for r in brf for q, L in enumerate(runs) if r[2] == f"r{q + 1}")), 0.0, "{:.0f}")
 
 
 def case_nfeat_scan(prog, cli, work, rng):
@@ -2135,8 +2176,6 @@ def case_missing(prog, cli, work, rng, mode, algo, win=5, niter=40):
             check(label, float(pr.returncode == 0 or needle not in out), 0.0, "{:.0f}")
             if pr.returncode == 0 or needle not in out:
                 print(out)
-        fails(["-nfeatures", K, "-cenmode", "missing", "-run_coupling", 20], "with -run_coupling is not available", "E: -cenmode missing with -run_coupling")
-        fails(["-model_in", d / "out.srm", "-cenmode", "missing", "-update_S"], "with -update_S is not available", "E: -cenmode missing with -update_S")
         few = miss[0].copy(); few[RUNS[0]:RUNS[0] + RUNS[1] - 2] = True
         np.savetxt(d / "few.1D", (~few).astype(int), fmt="%d")
         (d / "t_few.txt").write_text((d / "table.txt").read_text().replace(str(d / (names[0] + "_censor.1D")), str(d / "few.1D")))
@@ -2152,11 +2191,189 @@ def case_missing(prog, cli, work, rng, mode, algo, win=5, niter=40):
             check("-model_in: held-out projections are 0 at missing time points", float(not np.all(pj[:, miss[1]] == 0.0)), 0.0, "{:.0f}")
 
 
+def case_missing_more(prog, cli, work, rng, algo, lam=30.0, niter=40, win=5):
+    """-cenmode missing with -run_coupling, -update_S, -apply_W, and -cv_adapt; each against the driver or numpy."""
+    name = f"missing_more_{algo}"
+    print(f"\n[{name}]", flush=True)
+    d = work / name
+    _, subs, common = make_cv_world(rng, RUNS, nsub=7)
+    rows = write_world(d, subs)
+    write_nifti(d / "mask.nii.gz", common.astype(np.float32)[..., None])
+    T, n = sum(RUNS), len(subs)
+    names = [s_["label"] for s_ in subs]
+    miss = []
+    for i, sub in enumerate(subs):
+        m = rng.uniform(size=T) < 0.08
+        m[30 + 3 * i:34 + 3 * i] = True
+        miss.append(m)
+        np.savetxt(d / f"{sub['label']}_censor.1D", (~m).astype(int), fmt="%d")
+    obsm = [~m for m in miss]
+    pre = [preprocess_obs(sub["x"], miss[i], RUNS) for i, sub in enumerate(subs)]
+
+    def table(path, who):
+        lines = ["Subj Group Run Censor InputFile"] + [f"{s_} {g} {r} {d / (s_ + '_censor.1D')} {f}" for s_, g, r, _, f in rows if s_ in who]
+        Path(path).write_text("\n".join(lines) + "\n")
+    table(d / "all.txt", names)
+    table(d / "base.txt", names[:5])
+    table(d / "new.txt", names[5:])
+    common_args = ["-mask", d / "mask.nii.gz", "-cenmode", "missing", "-progress", "off", "-overwrite"]
+
+    # -- -run_coupling with missing data: S vs the driver's coupled fit with the same masks
+    run([prog, "-prefix", d / "rc", "-nfeatures", K, "-algorithm", algo, "-niter", niter, "-tol", 0, "-run_coupling", lam,
+         "-dataTableFile", d / "all.txt"] + common_args)
+    ref = run_ours(cli, work, name + "_rc", algo, [z.astype(np.float32) for z in pre], K, niter, False,
+                   extra=["--canon"] + obs_extra(d, "rc", obsm), seglen=RUNS, coupling=lam)
+    check("-run_coupling, missing data: S vs the driver (coupled, each subject's mask)", relfro(np.loadtxt(d / "rc.S.1D").T, ref["s"]), 2e-4)
+    _, _, _, b = parse_srm_file(d / "rc.srm")
+    check("... the model file counts the subjects observed at each time point",
+          float(np.abs(b["nsubj_t"].ravel() - np.sum(obsm, axis=0)).max()), 0.0, "{:.0f}")
+
+    # -- -cv run, -cv_adapt with missing data: the scored samples are the observed (and referenced) rest of each run
+    run([prog, "-prefix", d / "ad", "-nfeatures", K, "-algorithm", algo, "-niter", 20, "-tol", 0, "-run_coupling", lam,
+         "-cv", "run", "-cv_adapt", 0.3, "-match_window", win, "-dataTableFile", d / "all.txt"] + common_args)
+    _, body = read_scores(d / "ad.scores_folds.txt")
+    bad, c0 = 0, 0
+    for q, L in enumerate(RUNS):
+        na = int(0.3 * L)
+        rest = np.arange(c0 + na, c0 + L)
+        for i in range(n):
+            valid = obsm[i][rest] & np.any([obsm[j][rest] for j in range(n) if j != i], axis=0)
+            r_ = next(r for r in body if r[0] == names[i] and r[2] == f"r{q + 1}")
+            bad += int(r_[3]) != int(valid.sum())
+        c0 += L
+    check("-cv_adapt, missing data: nsamp is the observed, referenced rest of each run", float(bad), 0.0, "{:.0f}")
+    run([prog, "-prefix", d / "adbig", "-nfeatures", K, "-algorithm", algo, "-niter", 20, "-tol", 0, "-run_coupling", 1e9,
+         "-cv", "loso", "-cv_adapt", 0.3, "-match_window", win, "-dataTableFile", d / "all.txt"] + common_args)
+    _, bb = read_scores(d / "adbig.scores_folds.txt")
+    diff = max(abs(num(r[4]) - num(r[8])) for r in bb if r[4] != "NA")
+    check("-cv loso -cv_adapt, missing data, lambda 1e9: the run W is the anchor", diff, 1e-4)
+
+    # -- a base model with missing data; new subjects placed (W, rho2 from their observed samples) and absorbed
+    run([prog, "-prefix", d / "base", "-nfeatures", K, "-algorithm", algo, "-niter", niter, "-tol", 0, "-save_W",
+         "-dataTableFile", d / "base.txt"] + common_args)
+    _, _, _, bb2 = parse_srm_file(d / "base.srm")
+    S = bb2["S"]
+    run([prog, "-prefix", d / "mi", "-model_in", d / "base.srm", "-dataTableFile", d / "new.txt"] + common_args)
+    if algo == "prob":
+        rho2 = np.array([float(x) for x in Path(d / "mi.rho2.1D").read_text().splitlines()[1:]])
+        e = 0.0
+        for j, i in enumerate(range(5, n)):
+            o = obsm[i]
+            W = np_polar(pre[i][:, o] @ S[:, o].T)
+            r2 = ((pre[i][:, o] - W @ S[:, o]) ** 2).mean()
+            e = max(e, abs(rho2[j] - r2) / r2)
+        check("-model_in, missing data: noise variances over the observed samples only", e, 1e-5)
+    run([prog, "-prefix", d / "up", "-model_in", d / "base.srm", "-update_S", "-niter", 30, "-tol", 0,
+         "-dataTableFile", d / "new.txt"] + common_args)
+    files = []
+    for i in range(5, n):
+        f = d / f"u_{names[i]}.f32"
+        np.ascontiguousarray(pre[i], dtype=np.float32).tofile(f)
+        files.append(f)
+    run_load_update(cli, d / "base.srm", d / "u_ref", files, [pre[i].shape[0] for i in range(5, n)], 30,
+                    new_obs=[obsm[i] for i in range(5, n)])
+    S_ref = np.fromfile(f"{d / 'u_ref'}.u_S.f32", dtype=np.float32).reshape(K, T).astype(np.float64)
+    _, s_up, _, bu = parse_srm_file(d / "up.srm")
+    check("-update_S, missing data on both sides: S vs the driver", float(np.abs(bu["S"] - S_ref).max() / np.abs(S_ref).max()), 2e-4)
+    check("-update_S: the per-time counts add the new subjects where observed",
+          float(np.abs(bu["nsubj_t"].ravel() - np.sum(obsm, axis=0)).max()), 0.0, "{:.0f}")
+    check("-update_S: the model has all 7 subjects", float(len(s_up) != n), 0.0, "{:.0f}")
+
+    # -- -apply_W with missing data: z-scored over observed samples, 0 where missing
+    task, trows, tmiss = {}, [], {}
+    for i, sub in enumerate(subs[:5]):
+        L2 = [40, 45]
+        x = rng.standard_normal((len(sub["idx"]), sum(L2))) * 2.0 + 30.0
+        m = rng.uniform(size=sum(L2)) < 0.1
+        task[sub["label"]], tmiss[sub["label"]] = x, m
+        np.savetxt(d / f"{sub['label']}_tcens.1D", (~m).astype(int), fmt="%d")
+        c0 = 0
+        for r, L in enumerate(L2):
+            vol = np.zeros((NX * NY * NZ, L), dtype=np.float32)
+            vol[sub["idx"]] = x[:, c0:c0 + L]
+            f = d / f"{sub['label']}_task{r + 1}.nii.gz"
+            write_nifti(f, vol.reshape((NX, NY, NZ, L), order="F"))
+            trows.append(f"{sub['label']} {sub['group']} r{r + 1} {d / (sub['label'] + '_tcens.1D')} {f}")
+            c0 += L
+    (d / "task.txt").write_text("Subj Group Run Censor InputFile\n" + "\n".join(trows) + "\n")
+    run([prog, "-prefix", d / "task", "-apply_W", d / "base", "-dataTableFile", d / "task.txt", "-cenmode", "missing",
+         "-progress", "off", "-overwrite"])
+    worst, zero_ok = 0.0, True
+    for sub in subs[:5]:
+        lab = sub["label"]
+        Wv = load_afni(d / f"base.W.{lab}")
+        W = np.stack([Wv[..., c].reshape(-1, order="F")[sub["idx"]] for c in range(K)], axis=1)
+        z = preprocess_obs(task[lab], tmiss[lab], [40, 45])
+        P = load_afni(d / f"task.proj.{lab}").reshape(K, -1)
+        want = W.T @ z
+        want[:, tmiss[lab]] = 0.0
+        worst = max(worst, relfro(P, want))
+        zero_ok &= bool(np.all(P[:, tmiss[lab]] == 0.0))
+    check("-apply_W, missing data: projections vs numpy (z over observed samples)", worst, 1e-4)
+    check("-apply_W, missing data: 0 at the missing time points", float(not zero_ok), 0.0, "{:.0f}")
+
+
+def case_apply_W_concat(prog, cli, work, rng, how):
+    """-apply_W on one input per subject holding several runs: run starts from -concat, or from each subject's
+    Xmat (lengths differ between subjects, with censored time points interpolated)."""
+    name = f"apply_W_{how}"
+    print(f"\n[{name}]", flush=True)
+    d = work / name
+    _, subs, common = make_cv_world(rng, RUNS, nsub=4)
+    rows = write_world(d, subs)
+    write_table(d / "base.txt", rows, False)
+    write_nifti(d / "mask.nii.gz", common.astype(np.float32)[..., None])
+    run([prog, "-prefix", d / "base", "-nfeatures", K, "-niter", 30, "-tol", 0, "-save_W", "-mask", d / "mask.nii.gz",
+         "-dataTableFile", d / "base.txt", "-progress", "off", "-overwrite"])
+    lines, task = ["Subj Group " + ("Xmat " if how == "xmat" else "") + "InputFile"], {}
+    for i, sub in enumerate(subs):
+        runs = [40, 50] if how == "concat" else ([40, 50] if i % 2 == 0 else [45, 35, 30])
+        Tn = sum(runs)
+        x = rng.standard_normal((len(sub["idx"]), Tn)) * 2.0 + 40.0
+        vol = np.zeros((NX * NY * NZ, Tn), dtype=np.float32)
+        vol[sub["idx"]] = x
+        f = d / f"{sub['label']}_errts.nii.gz"
+        write_nifti(f, vol.reshape((NX, NY, NZ, Tn), order="F"))
+        cens = np.zeros(Tn, dtype=bool)
+        if how == "xmat":
+            cens[[5, 6, 41 + i]] = True
+            starts = np.cumsum([0] + runs[:-1])
+            write_xmat(d / f"{sub['label']}.xmat.1D", Tn, starts, good=list(np.flatnonzero(~cens)))
+            lines.append(f"{sub['label']} {sub['group']} {d / (sub['label'] + '.xmat.1D')} {f}")
+        else:
+            lines.append(f"{sub['label']} {sub['group']} {f}")
+        task[sub["label"]] = (x, runs, cens)
+    (d / "task.txt").write_text("\n".join(lines) + "\n")
+    extra = ["-concat", "1D: 0 40"] if how == "concat" else []
+    p = run([prog, "-prefix", d / "task", "-apply_W", d / "base", "-dataTableFile", d / "task.txt", "-progress", "off",
+             "-overwrite"] + extra)
+    worst = 0.0
+    for sub in subs:
+        lab = sub["label"]
+        x, runs, cens = task[lab]
+        y = interp_censored(x, cens, runs)
+        z, c0 = np.zeros_like(y), 0
+        for L in runs:
+            seg = y[:, c0:c0 + L]
+            z[:, c0:c0 + L] = (seg - seg.mean(1, keepdims=True)) / seg.std(1, keepdims=True)
+            c0 += L
+        Wv = load_afni(d / f"base.W.{lab}")
+        W = np.stack([Wv[..., c].reshape(-1, order="F")[sub["idx"]] for c in range(K)], axis=1)
+        P = load_afni(d / f"task.proj.{lab}").reshape(K, -1)
+        worst = max(worst, relfro(P, W.T @ z))
+    check(f"-apply_W with {'-concat' if how == 'concat' else 'an Xmat column'}: projections z-scored within each run"
+          + (", censored points interpolated" if how == "xmat" else ""), worst, 1e-4)
+
+
 def main_missing(args, cli, rng):
     case_missing(args.prog, cli, args.workdir, rng, "none", "prob")
     for mode in ("run", "loso"):
         for algo in ("prob", "det"):
             case_missing(args.prog, cli, args.workdir, rng, mode, algo)
+    for algo in ("prob", "det"):
+        case_missing_more(args.prog, cli, args.workdir, rng, algo)
+    case_apply_W_concat(args.prog, cli, args.workdir, rng, "concat")
+    case_apply_W_concat(args.prog, cli, args.workdir, rng, "xmat")
 
 
 def case_xmat_items(prog, cli, work, rng, k=4):
@@ -2637,8 +2854,8 @@ def case_repeated_stimulus(prog, cli, work, rng, nrep=3, L=50, niter=40):
             xa, xb = z[:, 0::2].mean(1), z[:, 1::2].mean(1)
             rp, rs = np_split_rel(xa, xb)
             r_ = rows_s[s_["label"]]
-            worst = max(worst, abs(float(r_["rel_pattern"]) - rp), abs(float(r_["rel_series"]) - rs),
-                        abs(float(r_["rel_ratio"]) - float(r_["isc"]) / rp))
+            ratio_err = abs(float(r_["rel_ratio"]) - float(r_["isc"]) / rp) if rp > 0 else float(r_["rel_ratio"] != "NA")
+            worst = max(worst, abs(float(r_["rel_pattern"]) - rp), abs(float(r_["rel_series"]) - rs), ratio_err)
         check("-reliability within (odd runs vs even runs, Spearman-Brown) and rel_ratio = isc / rel_pattern", worst, 1e-5)
 
         def fails(args, needle, label):
@@ -2650,7 +2867,87 @@ def case_repeated_stimulus(prog, cli, work, rng, nrep=3, L=50, niter=40):
                 print(out)
         fails(["-reliability", "within"], "needs -cv run or -cv loso", "E: -reliability within without -cv")
         fails(["-reliability", "within", "-cv", "run"], "needs repeats: -repeated_stimulus", "E: -reliability within on time data without repeats")
-        fails(["-repeated_stimulus", "-cv", "run", "-score_by", "Run"], "with -score_by is not available", "E: -repeated_stimulus with -score_by (not yet)")
+        fails(["-repeated_stimulus", "-cv", "run", "-score_by", "Run"], "every repeat must give a time point the same level",
+              "E: -repeated_stimulus with -score_by Run (the runs are averaged)")
+
+        # -score_by with -repeated_stimulus: the same as fitting the averaged runs given as one run
+        lab = np.where((np.arange(L) // 10) % 2 == 0, 1, 2)
+        np.savetxt(d / "cond_L.1D", lab, fmt="%d")
+        np.savetxt(d / "cond_full.1D", np.tile(lab, nrep), fmt="%d")
+        bad_lab = np.tile(lab, nrep); bad_lab[L + 3] = 3 - bad_lab[L + 3]
+        np.savetxt(d / "cond_bad.1D", bad_lab, fmt="%d")
+        cv = ["-cv", "run", "-cv_blocks", 2, "-match_window", 4]
+        run([prog, "-prefix", d / "sb", "-nfeatures", K, "-niter", niter, "-tol", 0, "-mask", d / "mask.nii.gz", "-dataTableFile",
+             d / "table.txt", "-repeated_stimulus", "-time_labels", "cond", d / "cond_L.1D", "-score_by", "cond",
+             "-progress", "off", "-overwrite"] + cv)
+        run([prog, "-prefix", d / "sb_full", "-nfeatures", K, "-niter", niter, "-tol", 0, "-mask", d / "mask.nii.gz", "-dataTableFile",
+             d / "table.txt", "-repeated_stimulus", "-time_labels", "cond", d / "cond_full.1D", "-score_by", "cond",
+             "-progress", "off", "-overwrite"] + cv)
+        def lev(path):
+            return {(r_["Subj"], r_["Fold"], r_["Level"]): [num(r_[c]) for c in ("nsamp", "isc", "match", "chance", "r2")]
+                    for r_ in read_levels(path) if r_["Factor"] == "cond"}
+        a, b_ = lev(d / "sb.scores_folds.txt"), lev(d / "sb_full.scores_folds.txt")
+        want_l, n_ = {}, len(subs)
+        for fi_, cols in enumerate([np.arange(0, L // 2), np.arange(L // 2, L)]):      # -cv run, -cv_blocks 2: two halves
+            r = reference_fit(cli, work, f"repeated_sb_f{fi_}", [np.delete(a_, cols, axis=1) for a_ in avg], K, niter, "prob")
+            P = [r["w"][i].T @ avg[i][:, cols] for i in range(n_)]
+            for i, s_ in enumerate(subs):
+                oth = [j for j in range(n_) if j != i]
+                ref_u = sum(P[j] for j in oth) / len(oth)
+                prec = np.linalg.inv(r["sigma"]) + (1.0 / r["rho2"][oth]).sum() * np.eye(K)
+                ref_r = np.linalg.solve(prec, sum(P[j] / r["rho2"][j] for j in oth))
+                for lv in (1, 2):
+                    m_ = lab[cols] == lv
+                    acc, ch = np_segment_match_obs(P[i], ref_u, 4, m_)
+                    te, hv = avg[i][:, cols][:, m_], (r["w"][i] @ ref_r)[:, m_]
+                    sse = ((te - hv) ** 2).sum(); sst = ((te - te.mean(1, keepdims=True)) ** 2).sum()
+                    want_l[(s_["label"], f"block{fi_ + 1}", str(lv))] = [int(m_.sum()), np_isc(P[i][:, m_], ref_u[:, m_]), acc, ch, 1.0 - sse / sst]
+        e = np.array([[abs(a[k_][q] - want_l[k_][q]) for q in range(5)] for k_ in want_l])
+        check("-repeated_stimulus -score_by: each level's nsamp", float(e[:, 0].max()), 0.0, "{:.0f}")
+        check("-repeated_stimulus -score_by: per-level isc vs the driver's fold fits of the averaged runs", float(e[:, 1].max()), 5e-4)
+        check("-repeated_stimulus -score_by: per-level matching (windows inside the level) and chance", float(e[:, 2:4].max()), 1e-6)
+        check("-repeated_stimulus -score_by: per-level R^2", float(e[:, 4].max()), 5e-4)
+        check("... and -time_labels once per stimulus time point = once per input time point",
+              float(a != b_ or len(a) != len(want_l)), 0.0, "{:.0f}")
+        fails(["-repeated_stimulus", "-time_labels", "cond", d / "cond_bad.1D", "-score_by", "cond"] + cv,
+              "time point 4 of the stimulus is", "E: -repeated_stimulus with labels that differ between repeats")
+
+        # -cenmode missing with -repeated_stimulus: each time point averaged over the runs observed there
+        miss = []
+        for i, s_ in enumerate(subs):
+            m = rng.uniform(size=nrep * L) < 0.1
+            m[[4, L + 4, 2 * L + 4]] = (i == 0)              # subject 1 misses stimulus time point 5 in every run
+            miss.append(m)
+            np.savetxt(d / f"{s_['label']}_cens.1D", (~m).astype(int), fmt="%d")
+        (d / "miss.txt").write_text("Subj Group Run Censor InputFile\n" + "\n".join(
+            f"{s_} {g} {r} {d / (s_ + '_cens.1D')} {f}" for s_, g, r, _, f in rows) + "\n")
+        p = run([prog, "-prefix", d / "rm", "-nfeatures", K, "-niter", niter, "-tol", 0, "-mask", d / "mask.nii.gz", "-dataTableFile",
+                 d / "miss.txt", "-repeated_stimulus", "-cenmode", "missing", "-reliability", "within", "-cv", "run",
+                 "-match_window", 4, "-progress", "off", "-overwrite"])
+        avg_m, obs_m, rel_m = [], [], []
+        for i, s_ in enumerate(subs):
+            z = preprocess_obs(s_["x"], miss[i], RUNS)
+            zr = z.reshape(z.shape[0], nrep, L)
+            o = (~miss[i]).reshape(nrep, L)
+            cnt = o.sum(0)
+            avg_m.append(np.where(cnt > 0, (zr * o[None]).sum(1) / np.maximum(cnt, 1), 0.0))
+            obs_m.append(cnt > 0)
+            oa, ob = o[0::2], o[1::2]
+            na, nb = oa.sum(0), ob.sum(0)
+            both = (na > 0) & (nb > 0)
+            xa = (zr[:, 0::2] * oa[None]).sum(1)[:, both] / na[both]
+            xb = (zr[:, 1::2] * ob[None]).sum(1)[:, both] / nb[both]
+            rel_m.append(np_split_rel(xa, xb))
+        ref = run_ours(cli, work, "repeated_miss_ref", "prob", [a_.astype(np.float32) for a_ in avg_m], K, niter, False,
+                       extra=["--canon"] + obs_extra(d, "rm", obs_m))
+        check("-repeated_stimulus -cenmode missing: S vs the driver on observed-only averages", relfro(np.loadtxt(d / "rm.S.1D").T, ref["s"]), 2e-4)
+        nstill = sum(int((~o_).any()) for o_ in obs_m)
+        check("... the log says how many subjects stay missing (missing in every run)",
+              float((f"{nstill} subject is still" if nstill == 1 else f"{nstill} subjects are still") not in p.stdout + p.stderr), 0.0, "{:.0f}")
+        rows_m = {r_["Subj"]: r_ for r_ in read_levels(d / "rm.scores.txt") if r_["Factor"] == "all"}
+        worst = max(max(abs(float(rows_m[s_["label"]]["rel_pattern"]) - rel_m[i][0]), abs(float(rows_m[s_["label"]]["rel_series"]) - rel_m[i][1]))
+                    for i, s_ in enumerate(subs))
+        check("... -reliability within over the time points both halves observed", worst, 1e-5)
         fails(["-nsplit", 5], "goes with -reliability split", "E: -nsplit without -reliability split")
         fails(["-reliability", "sideways"], "is not within or split", "E: an unknown -reliability")
     finally:
@@ -2797,12 +3094,15 @@ def main():
     ap.add_argument("--only-xmat", action="store_true", help="only the Xmat item case")
     ap.add_argument("--only-cvfit", action="store_true", help="only the -cv_fit / -balance cases")
     ap.add_argument("--only-adapt", action="store_true", help="only the -cv_adapt cases")
+    ap.add_argument("--only-repeat", action="store_true", help="only the -repeated_stimulus case")
     ap.add_argument("--require-deps", action="store_true", help="fail, not skip, when numpy or nibabel is missing")
     args = ap.parse_args()
     args.workdir.mkdir(parents=True, exist_ok=True)
     cli = build_cli(args.workdir, args.srm_cli)
     rng = np.random.default_rng(12)
-    if args.only_adapt:
+    if args.only_repeat:
+        case_repeated_stimulus(args.prog, cli, args.workdir, rng)
+    elif args.only_adapt:
         for algo in ("prob", "det"):
             case_cv_adapt(args.prog, cli, args.workdir, rng, algo)
     elif args.only_cvfit:

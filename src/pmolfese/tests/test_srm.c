@@ -2363,6 +2363,224 @@ static double brute_loglik_obs( const SRM_model *m , float * const *x , unsigned
    return ll ;
 }
 
+/*! Solve the small dense system a x = b in place (b becomes x); 0 if ok. */
+static int solve_small( int n , double *a , double *b )
+{
+   int i , j , c , piv ; double t ;
+   for( c=0 ; c<n ; c++ ){
+     piv=c ; for( i=c+1 ; i<n ; i++ ) if( fabs(a[i*n+c])>fabs(a[piv*n+c]) ) piv=i ;
+     if( a[piv*n+c]==0.0 ) return 1 ;
+     if( piv!=c ){ for( j=0 ; j<n ; j++ ){ t=a[c*n+j] ; a[c*n+j]=a[piv*n+j] ; a[piv*n+j]=t ; } t=b[c] ; b[c]=b[piv] ; b[piv]=t ; }
+     for( i=c+1 ; i<n ; i++ ){
+       double f=a[i*n+c]/a[c*n+c] ;
+       for( j=c ; j<n ; j++ ) a[i*n+j]-=f*a[c*n+j] ;
+       b[i]-=f*b[c] ;
+     }
+   }
+   for( i=n-1 ; i>=0 ; i-- ){ for( j=i+1 ; j<n ; j++ ) b[i]-=a[i*n+j]*b[j] ; b[i]/=a[i*n+i] ; }
+   return 0 ;
+}
+
+/* A W per run with missing data: masks of all ones change nothing; lambda 0 is independent per-run fits
+   with the same masks; the objective is monotone and (PROB, lambda 0) the marginal likelihood of the
+   observed entries under the run W; the per-time sums are right. */
+static int test_missing_coupled( void )
+{
+   int nvox[5]={40,46,42,50,44} , seglen[3]={40,36,44} , k=3 , nseg=3 , T=120 , i , t , r , alg ;
+   dsynth d ; unsigned char *obs[5] , *all[5] ; float *xz[5] ; srm_rng rg ;
+   CHECK(dsynth_make(&d,5,nvox,nseg,seglen,k,0.4,0.25,909)==0,"drifting synth") ;
+   srm_rng_init(&rg,5,5) ;
+   for( i=0 ; i<5 ; i++ ){
+     int f ;
+     obs[i]=(unsigned char *)malloc(T) ; all[i]=(unsigned char *)malloc(T) ; memset(all[i],1,T) ;
+     xz[i]=(float *)malloc(sizeof(float)*nvox[i]*T) ;
+     for( t=0 ; t<T ; t++ ) obs[i][t]=(srm_unif(&rg)>0.2 && t!=11) ;
+     for( f=0 ; f<nvox[i] ; f++ ) for( t=0 ; t<T ; t++ ) xz[i][f*T+t]=obs[i][t] ? d.x[i][f*T+t] : 0.0f ;
+   }
+   for( alg=0 ; alg<2 ; alg++ ){
+     SRM_params p ; SRM_model *m0=NULL , *ma=NULL , *m1=NULL ; SRM_fitinfo f0 , fa , f1 ; int it , ok=1 ;
+     SRM_params_default(&p) ; p.nfeat=k ; p.center=0 ; p.niter=30 ; p.tol=0.0 ;
+     p.algo = alg ? SRM_ALGO_DET : SRM_ALGO_PROB ; p.nseg=nseg ; p.seglen=seglen ; p.coupling=30.0 ;
+     CHECK(SRM_fit(5,T,nvox,d.x,&p,&m0,&f0)==SRM_OK,"coupled, no masks") ;
+     p.obs=(const unsigned char * const *)all ;
+     CHECK(SRM_fit(5,T,nvox,d.x,&p,&ma,&fa)==SRM_OK,"coupled, masks of all ones") ;
+     CHECK(memcmp(m0->s,ma->s,sizeof(float)*k*T)==0 && memcmp(f0.objective,fa.objective,sizeof(double)*(f0.niter_done+1))==0
+           && ma->nsubj_t==NULL,"coupled: masks of all ones change nothing") ;
+     p.obs=(const unsigned char * const *)obs ;
+     CHECK(SRM_fit(5,T,nvox,xz,&p,&m1,&f1)==SRM_OK,"coupled fit with missing data") ;
+     for( it=1 ; it<=f1.niter_done ; it++ ){
+       double slack=1e-7*fabs(f1.objective[0]) + 5e-7*31.0*k*nseg*5 ;
+       if( alg ? (f1.objective[it] > f1.objective[it-1]+slack) : (f1.objective[it] < f1.objective[it-1]-slack) ) ok=0 ;
+     }
+     CHECK(ok,"coupled objective with missing data is monotone (to rounding)") ;
+     for( i=0 ; i<5 ; i++ ) for( r=0 ; r<nseg ; r++ ) CHECK(ortho_error(m1->wrun[i*nseg+r],nvox[i],k)<1e-5,"every W_ir orthonormal") ;
+     { int bad=0 ;
+       CHECK(m1->nsubj_t!=NULL && (alg || m1->rho_inv_t!=NULL),"the model carries per-time sums") ;
+       for( t=0 ; t<T ; t++ ){
+         double n=0.0 , rr=0.0 ;
+         for( i=0 ; i<5 ; i++ ) if( obs[i][t] ){ n+=1.0 ; if( !alg ) rr+=1.0/m1->rho2[i] ; }
+         if( m1->nsubj_t[t]!=n ) bad=1 ;
+         if( !alg && fabs(m1->rho_inv_t[t]-rr)>1e-12*rr ) bad=1 ;
+       }
+       CHECK(!bad,"nsubj_t counts the views observed at each t; rho_inv_t sums their 1/rho2") ; }
+     SRM_free_model(m0) ; SRM_free_model(ma) ; SRM_free_model(m1) ;
+     SRM_free_fitinfo(&f0) ; SRM_free_fitinfo(&fa) ; SRM_free_fitinfo(&f1) ;
+
+     /* lambda 0 */
+     { SRM_params q=p ; SRM_model *ms=NULL , *mc=NULL ; SRM_fitinfo fs , fc ; int c0=0 ; double worst=0.0 , bl=0.0 ;
+       q.nseg=0 ; q.seglen=NULL ; q.coupling=SRM_COUPLING_SHARED ;
+       CHECK(SRM_fit(5,T,nvox,xz,&q,&ms,&fs)==SRM_OK,"shared start with missing data") ;
+       q=p ; q.coupling=0.0 ; q.niter=12 ; q.init=SRM_INIT_MODEL ; q.init_model=ms ;
+       CHECK(SRM_fit(5,T,nvox,xz,&q,&mc,&fc)==SRM_OK,"coupled lambda 0 with missing data") ;
+       for( r=0 ; r<nseg ; c0+=seglen[r],r++ ){
+         float **xr=(float **)malloc(sizeof(float *)*5) ; unsigned char **orr=(unsigned char **)malloc(sizeof(unsigned char *)*5) ;
+         SRM_model *mr=NULL , tmp ; SRM_fitinfo fr ; SRM_params qr=q ; int f , c ;
+         for( i=0 ; i<5 ; i++ ){
+           xr[i]=(float *)malloc(sizeof(float)*nvox[i]*seglen[r]) ; orr[i]=obs[i]+c0 ;
+           for( f=0 ; f<nvox[i] ; f++ ) for( t=0 ; t<seglen[r] ; t++ ) xr[i][f*seglen[r]+t]=xz[i][f*T+c0+t] ;
+         }
+         qr.nseg=0 ; qr.seglen=NULL ; qr.coupling=SRM_COUPLING_SHARED ; qr.obs=(const unsigned char * const *)orr ;
+         if( alg ){                                   /* DET: step for step an independent fit of the run */
+           CHECK(SRM_fit(5,seglen[r],nvox,xr,&qr,&mr,&fr)==SRM_OK,"independent fit of one run, missing data") ;
+           for( c=0 ; c<k*seglen[r] ; c++ ) worst=fmax(worst,fabs(mr->s[c]-mc->s[(c/seglen[r])*T+c0+c%seglen[r]])) ;
+           for( i=0 ; i<5 ; i++ ){ int q2 ; for( q2=0 ; q2<nvox[i]*k ; q2++ ) worst=fmax(worst,fabs(mr->w[i][q2]-mc->wrun[i*nseg+r][q2])) ; }
+           SRM_free_model(mr) ; SRM_free_fitinfo(&fr) ;
+         } else {                                     /* PROB: the likelihood under each run's W */
+           memset(&tmp,0,sizeof(tmp)) ;
+           tmp.nview=5 ; tmp.ntime=seglen[r] ; tmp.nfeat=k ; tmp.nvox=nvox ; tmp.rho2=mc->rho2 ; tmp.sigma_s=mc->sigma_s ;
+           tmp.w=(float **)malloc(sizeof(float *)*5) ;
+           for( i=0 ; i<5 ; i++ ) tmp.w[i]=mc->wrun[i*nseg+r] ;
+           bl+=brute_loglik_obs(&tmp,xr,orr) ;
+           free(tmp.w) ;
+         }
+         for( i=0 ; i<5 ; i++ ) free(xr[i]) ;
+         free(xr) ; free(orr) ;
+       }
+       if( alg ) CHECK(worst<2e-5,"lambda 0 with missing data reproduces independent per-run fits") ;
+       else      CHECK(fabs(bl-fc.objective[fc.niter_done])<=1e-6*fabs(bl),"PROB, lambda 0: objective = the marginal likelihood under the run W") ;
+       SRM_free_model(ms) ; SRM_free_model(mc) ; SRM_free_fitinfo(&fs) ; SRM_free_fitinfo(&fc) ;
+     }
+   }
+   for( i=0 ; i<5 ; i++ ){ free(obs[i]) ; free(all[i]) ; free(xz[i]) ; }
+   dsynth_free(&d) ;
+   return 0 ;
+}
+
+/* SRM_update with missing data, on either side: the per-time sums are exact, S is their posterior mean
+   (PROB) or average (DET), the file keeps them, and masks of all ones change nothing. */
+static int test_missing_update( void )
+{
+   int nvox[7]={30,36,33,40,34,38,31} , T=60 , k=3 , i , t , alg ;
+   double sg[7]={0.4,0.6,0.5,0.7,0.5,0.6,0.45} ;
+   synth s ; unsigned char *obs[7] , *all[7] ; float *xz[7] , *xg[7] ; srm_rng rg ; char fn[512] , *dir=getenv("TMPDIR") ;
+   CHECK(synth_make(&s,7,nvox,T,k,sg,93)==0,"synth") ;
+   for( i=0 ; i<7 ; i++ ) center_rows(s.x[i],nvox[i],T) ;
+   srm_rng_init(&rg,9,9) ;
+   for( i=0 ; i<7 ; i++ ){
+     int f ;
+     obs[i]=(unsigned char *)malloc(T) ; all[i]=(unsigned char *)malloc(T) ; memset(all[i],1,T) ;
+     xz[i]=(float *)malloc(sizeof(float)*nvox[i]*T) ; xg[i]=(float *)malloc(sizeof(float)*nvox[i]*T) ;
+     for( t=0 ; t<T ; t++ ) obs[i][t]=(srm_unif(&rg)>0.2) ;
+     for( f=0 ; f<nvox[i] ; f++ ) for( t=0 ; t<T ; t++ ){
+       xz[i][f*T+t]=obs[i][t] ? s.x[i][f*T+t] : 0.0f ; xg[i][f*T+t]=obs[i][t] ? s.x[i][f*T+t] : NAN ; }
+   }
+   snprintf(fn,sizeof(fn),"%s/srm_unit_missupd_%d.srm",dir?dir:".",(int)getpid()) ;
+   for( alg=0 ; alg<2 ; alg++ ){
+     SRM_params p , u ; SRM_model *m=NULL , *mold=NULL , *ml=NULL , *mc=NULL ; SRM_fitinfo fi , fu ; SRM_provenance *pv=SRM_provenance_new() , *pl=NULL ;
+     int it , ok=1 , bad=0 , c , d ; double worst=0.0 ;
+     SRM_params_default(&p) ; p.nfeat=k ; p.niter=40 ; p.tol=0.0 ; p.center=0 ; p.algo = alg ? SRM_ALGO_DET : SRM_ALGO_PROB ;
+     p.obs=(const unsigned char * const *)obs ;
+     CHECK(SRM_fit(4,T,nvox,xz,&p,&m,&fi)==SRM_OK,"old views, missing data") ;
+     SRM_free_fitinfo(&fi) ;
+     mold=SRM_model_copy(m,-1) ;
+     CHECK(mold!=NULL && mold->nsubj_t!=NULL,"a copy keeps the per-time sums") ;
+     /* the file keeps them */
+     pv->axis=SRM_AXIS_TIME ; pv->ntime_in=T ; pv->nseg=1 ; pv->seglen=(int *)malloc(sizeof(int)) ; pv->seglen[0]=T ;
+     pv->nsubj=4 ; pv->label=(char **)malloc(sizeof(char *)*4) ;
+     for( i=0 ; i<4 ; i++ ){ char b[16] ; snprintf(b,sizeof(b),"v%d",i) ; pv->label[i]=strdup(b) ; }
+     CHECK(SRM_save_model(fn,m,pv)==SRM_OK && SRM_load_model(fn,&ml,&pl)==SRM_OK,"save and load") ;
+     CHECK(ml->nsubj_t!=NULL && memcmp(ml->nsubj_t,m->nsubj_t,sizeof(double)*T)==0 &&
+           (alg || (ml->rho_inv_t!=NULL && memcmp(ml->rho_inv_t,m->rho_inv_t,sizeof(double)*T)==0)),"the file keeps the per-time sums exactly") ;
+     /* the update: new views with their own missing points */
+     SRM_params_default(&u) ; u.niter=30 ; u.tol=0.0 ; u.obs=(const unsigned char * const *)(obs+4) ;
+     CHECK(SRM_update(m,3,nvox+4,xg+4,&u,&fu)==SRM_OK,"update with missing data (garbage where missing)") ;
+     for( it=1 ; it<=fu.niter_done ; it++ ){
+       double tolr=1e-7*fabs(fu.objective[0]) ;
+       if( alg ? (fu.objective[it] > fu.objective[it-1]+tolr) : (fu.objective[it] < fu.objective[it-1]-tolr) ) ok=0 ;
+     }
+     CHECK(ok,"the update's objective is monotone with missing data") ;
+     for( t=0 ; t<T ; t++ ){
+       double n=0.0 , rr=0.0 ;
+       for( i=0 ; i<7 ; i++ ) if( obs[i][t] ){ n+=1.0 ; if( !alg ) rr+=1.0/m->rho2[i] ; }
+       if( m->nsubj_t[t]!=n || (!alg && fabs(m->rho_inv_t[t]-rr)>1e-12*rr) ) bad=1 ;
+     }
+     CHECK(!bad,"after the update: views observed at each t, and the sum of their 1/rho2") ;
+     for( c=0 ; c<k ; c++ ) for( t=0 ; t<T ; t++ ){          /* a_sum: the old sums plus the new views where observed */
+       double a=mold->a_sum[c*T+t] , sc=fabs(mold->a_sum[c*T+t])+1.0 ; int f ;
+       for( i=4 ; i<7 ; i++ ) if( obs[i][t] ){
+         double v=0.0 ;
+         for( f=0 ; f<nvox[i] ; f++ ) v += (double)m->w[i][f*k+c]*xz[i][f*T+t] ;
+         a += alg ? v : v/m->rho2[i] ;
+       }
+       worst=fmax(worst,fabs(m->a_sum[c*T+t]-a)/sc) ;
+     }
+     CHECK(worst<1e-4,"a_sum = the old sums + the new views' W'x where observed") ;
+     worst=0.0 ;
+     for( t=0 ; t<T ; t++ ){                                  /* S from those sums, per time point */
+       double A[9] , b[3] , sig[9] ;
+       for( c=0 ; c<k ; c++ ) b[c]=m->a_sum[c*T+t] ;
+       if( alg ){ for( c=0 ; c<k ; c++ ) b[c] = (m->nsubj_t[t]>0.0) ? b[c]/m->nsubj_t[t] : 0.0 ; }
+       else {                                                  /* (I + r Sigma) s = Sigma a */
+         double sb[3] ;
+         for( c=0 ; c<k*k ; c++ ) sig[c]=m->sigma_s[c] ;
+         for( c=0 ; c<k ; c++ ){ sb[c]=0.0 ; for( d=0 ; d<k ; d++ ){ sb[c]+=sig[c*k+d]*b[d] ; A[c*k+d]=(c==d)+m->rho_inv_t[t]*sig[c*k+d] ; } }
+         for( c=0 ; c<k ; c++ ) b[c]=sb[c] ;
+         CHECK(solve_small(k,A,b)==0,"solve") ;
+       }
+       for( c=0 ; c<k ; c++ ) worst=fmax(worst,fabs(b[c]-m->s[c*T+t])/(fabs(b[c])+1e-3)) ;
+     }
+     CHECK(worst<1e-4,alg ? "DET: S_t is a_sum_t / nsubj_t" : "PROB: S_t is the posterior mean from a_sum_t and rho_inv_t") ;
+     SRM_free_fitinfo(&fu) ;
+     /* the loaded model updates the same way */
+     CHECK(SRM_update(ml,3,nvox+4,xz+4,&u,&fu)==SRM_OK,"update of the loaded model") ;
+     { double num=0.0 , den=0.0 ; for( c=0 ; c<k*T ; c++ ){ double e=(double)ml->s[c]-m->s[c] ; num+=e*e ; den+=(double)m->s[c]*m->s[c] ; }
+       CHECK(sqrt(num/den)<1e-5,"... from the file, the same S") ; }
+     SRM_free_fitinfo(&fu) ;
+     /* masks of all ones change nothing; a complete model takes missing new views and then carries sums */
+     { SRM_params q=p ; SRM_model *a=NULL , *b=NULL ; SRM_fitinfo fa , fb ; int bad2=0 ;
+       q.obs=NULL ;
+       CHECK(SRM_fit(4,T,nvox,s.x,&q,&mc,&fi)==SRM_OK,"complete old views") ; SRM_free_fitinfo(&fi) ;
+       a=SRM_model_copy(mc,-1) ; b=SRM_model_copy(mc,-1) ;
+       u.obs=NULL ; CHECK(SRM_update(a,3,nvox+4,s.x+4,&u,&fa)==SRM_OK,"update, no masks") ;
+       u.obs=(const unsigned char * const *)(all+4) ; CHECK(SRM_update(b,3,nvox+4,s.x+4,&u,&fb)==SRM_OK,"update, masks of all ones") ;
+       CHECK(memcmp(a->s,b->s,sizeof(float)*k*T)==0 && b->nsubj_t==NULL,"update: masks of all ones change nothing") ;
+       SRM_free_fitinfo(&fa) ; SRM_free_fitinfo(&fb) ; SRM_free_model(a) ; SRM_free_model(b) ;
+       u.obs=(const unsigned char * const *)(obs+4) ;
+       CHECK(SRM_update(mc,3,nvox+4,xz+4,&u,&fa)==SRM_OK,"complete model, new views with missing points") ;
+       CHECK(mc->nsubj_t!=NULL,"the model now carries per-time sums") ;
+       for( t=0 ; t<T ; t++ ){ double n=4.0 ; for( i=4 ; i<7 ; i++ ) n+=obs[i][t] ; if( mc->nsubj_t[t]!=n ) bad2=1 ; }
+       CHECK(!bad2,"... 4 old views everywhere, plus the new ones where observed") ;
+       SRM_free_fitinfo(&fa) ; }
+     /* placing a view without updating: W, rho2 and the means from the observed columns only */
+     { SRM_model *mp=SRM_model_copy(mold,-1) ; float *wf=(float *)malloc(sizeof(float)*nvox[5]*k) , *xo , *so ; double r2 ; int n=0 , f , *idx=(int *)malloc(sizeof(int)*T) ;
+       for( t=0 ; t<T ; t++ ) if( obs[5][t] ) idx[n++]=t ;
+       xo=(float *)malloc(sizeof(float)*nvox[5]*n) ; so=(float *)malloc(sizeof(float)*k*n) ;
+       for( f=0 ; f<nvox[5] ; f++ ) for( t=0 ; t<n ; t++ ) xo[f*n+t]=s.x[5][f*T+idx[t]] ;
+       for( c=0 ; c<k ; c++ ) for( t=0 ; t<n ; t++ ) so[c*n+t]=mp->s[c*T+idx[t]] ;
+       CHECK(SRM_fit_view(so,k,n,xo,nvox[5],0,wf,&r2,NULL)==SRM_OK,"fit_view on the observed columns") ;
+       CHECK(SRM_model_add_view_obs(mp,xg[5],nvox[5],obs[5])==SRM_OK,"add_view_obs (garbage where missing)") ;
+       CHECK(memcmp(mp->w[mp->nview-1],wf,sizeof(float)*nvox[5]*k)==0 && (alg || mp->rho2[mp->nview-1]==r2),
+             "add_view_obs = fit_view on the observed columns") ;
+       free(wf) ; free(xo) ; free(so) ; free(idx) ; SRM_free_model(mp) ; }
+     SRM_free_model(m) ; SRM_free_model(mold) ; SRM_free_model(ml) ; SRM_free_model(mc) ;
+     SRM_provenance_free(pv) ; SRM_provenance_free(pl) ;
+   }
+   remove(fn) ;
+   for( i=0 ; i<7 ; i++ ){ free(obs[i]) ; free(all[i]) ; free(xz[i]) ; free(xg[i]) ; }
+   synth_free(&s) ;
+   return 0 ;
+}
+
 static int test_missing( void )
 {
    int nvox[4]={30,36,33,40} , T=60 , k=3 , i , t , alg , kern ;
@@ -2463,11 +2681,17 @@ static int test_missing( void )
      SRM_free_fitinfo(&f0) ; SRM_free_fitinfo(&fa) ; SRM_free_fitinfo(&f1) ; SRM_free_fitinfo(&f2) ;
      SRM_free_model(m0) ; SRM_free_model(ma) ; SRM_free_model(m1) ; SRM_free_model(m2) ;
    }
-   /* a W per run with missing data is refused, for now */
-   { SRM_params p ; SRM_model *m=NULL ; SRM_fitinfo fi ; int seg[2]={30,30} ;
-     SRM_params_default(&p) ; p.nfeat=k ; p.niter=5 ; p.center=0 ; p.nseg=2 ; p.seglen=seg ; p.coupling=10.0 ;
-     p.obs=(const unsigned char * const *)obs ;
-     CHECK(SRM_fit(4,T,nvox,s.x,&p,&m,&fi)==SRM_ERR_ARG,"missing data with a W per run is refused") ; }
+   /* free runs (lambda 0) with a run where a view has fewer than k observed points: refused */
+   { SRM_params p ; SRM_model *m=NULL ; SRM_fitinfo fi ; int seg[2]={30,30} ; unsigned char *few[4] ;
+     for( i=0 ; i<4 ; i++ ){ few[i]=(unsigned char *)malloc(T) ; memset(few[i],1,T) ; }
+     for( t=0 ; t<28 ; t++ ) few[2][t]=0 ;                   /* 2 observed in run 1 of view 2 */
+     SRM_params_default(&p) ; p.nfeat=k ; p.niter=5 ; p.center=0 ; p.nseg=2 ; p.seglen=seg ; p.coupling=0.0 ;
+     p.obs=(const unsigned char * const *)few ;
+     CHECK(SRM_fit(4,T,nvox,s.x,&p,&m,&fi)==SRM_ERR_ARG,"lambda 0 with a run observed at fewer than k points is refused") ;
+     p.coupling=10.0 ;
+     CHECK(SRM_fit(4,T,nvox,s.x,&p,&m,&fi)==SRM_OK,"... and allowed with lambda > 0 (the anchor fills in)") ;
+     SRM_free_model(m) ; SRM_free_fitinfo(&fi) ;
+     for( i=0 ; i<4 ; i++ ) free(few[i]) ; }
    for( i=0 ; i<4 ; i++ ){ free(obs[i]) ; free(xg[i]) ; }
    synth_free(&s) ;
    return 0 ;
@@ -2598,6 +2822,8 @@ int main( int argc , char **argv )
    if( test_multistart()         ) return 1 ;
    if( test_gram()               ) return 1 ;
    if( test_missing()            ) return 1 ;
+   if( test_missing_coupled()    ) return 1 ;
+   if( test_missing_update()     ) return 1 ;
    if( test_obs_metrics()        ) return 1 ;
 #ifdef USE_OMP
    if( test_thread_invariance()  ) return 1 ;

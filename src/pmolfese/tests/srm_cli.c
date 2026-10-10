@@ -36,6 +36,8 @@
                             are added in one SRM_update call (or one call each
                             with --update-each, in the order given).
      --update-each          one update per subject instead of one together
+     --update-obs J F       --update-view J (0-based) is observed where the T
+                            bytes of F are 1 (SRM_update's p->obs)
      writes PREFIX.u_S.f32, u_W<j>.f32 (the new subjects), u_rho2.f64 (all),
      u_sigma.f32, u_asum.f64, u_obj.f64 (last call), u_info.txt:
      niter converged drift nupdate nsubj_eff rho_inv_sum
@@ -96,24 +98,36 @@ static void write_raw( const char *prefix , const char *suffix , const void *a ,
    fwrite(a,sz,n,fp) ; fclose(fp) ;
 }
 
+static const char *upd_obsfile[4096] ;              /* --update-obs */
+
 /* SRM_update with the views in upd_file[], all at once or one call each, and the results written */
 static int run_updates( SRM_model *m , SRM_params *pp , int nupd , int upd_each , const int *upd_rows ,
                         const char **upd_file , int T , const char *out )
 {
-   int k=m->nfeat , j , ncalls = upd_each ? nupd : 1 , done=0 , c , rc ; SRM_fitinfo fu ;
+   int k=m->nfeat , j , ncalls = upd_each ? nupd : 1 , done=0 , c , rc , anyo=0 ; SRM_fitinfo fu ;
    float **xu=(float **)malloc(sizeof(float *)*nupd) ; int old_nview=m->nview ; char name[64] ;
+   unsigned char **uo=(unsigned char **)calloc(nupd,sizeof(unsigned char *)) ; const unsigned char * const *fit_obs=pp->obs ;
    memset(&fu,0,sizeof(fu)) ;
    for( j=0 ; j<nupd ; j++ ) xu[j]=read_f32(upd_file[j],(size_t)upd_rows[j]*T) ;
+   for( j=0 ; j<nupd ; j++ ) if( upd_obsfile[j]!=NULL ){
+     FILE *fo=fopen(upd_obsfile[j],"rb") ;
+     uo[j]=(unsigned char *)malloc((size_t)T) ;
+     if( fo==NULL || fread(uo[j],1,(size_t)T,fo)!=(size_t)T ){ fprintf(stderr,"cannot read %s\n",upd_obsfile[j]) ; return 2 ; }
+     fclose(fo) ; anyo=1 ;
+   }
    for( c=0 ; c<ncalls ; c++ ){
      int n1 = upd_each ? 1 : nupd ;
      memset(&fu,0,sizeof(fu)) ;
+     pp->obs = anyo ? (const unsigned char * const *)(uo+done) : NULL ;
      rc = SRM_update(m,n1,upd_rows+done,xu+done,pp,&fu) ;
      if( rc != SRM_OK ){ fprintf(stderr,"SRM_update: %s\n",SRM_strerror(rc)) ; return 1 ; }
      done += n1 ;
      if( c < ncalls-1 ) SRM_free_fitinfo(&fu) ;
    }
+   pp->obs=fit_obs ;
    write_raw(out,"u_S.f32",m->s,sizeof(float),(size_t)k*T) ;
    write_raw(out,"u_asum.f64",m->a_sum,sizeof(double),(size_t)k*T) ;
+   if( m->nsubj_t!=NULL ) write_raw(out,"u_nsubj_t.f64",m->nsubj_t,sizeof(double),(size_t)T) ;
    for( j=0 ; j<nupd ; j++ ){
      snprintf(name,sizeof(name),"u_W%d.f32",j) ;
      write_raw(out,name,m->w[old_nview+j],sizeof(float),(size_t)upd_rows[j]*k) ;
@@ -177,6 +191,9 @@ int main( int argc , char **argv )
      else if( !strcmp(a,"--seed") ){ NEEDS(1) ; p.seed=(unsigned int)strtoul(argv[++ii],NULL,10) ; }
      else if( !strcmp(a,"--canon") ){ canon=1 ; }
      else if( !strcmp(a,"--update-each") ){ upd_each=1 ; }
+     else if( !strcmp(a,"--update-obs") ){ NEEDS(2) ; { int jv=atoi(argv[ii+1]) ;
+       if( jv<0 || jv>=4096 ){ fprintf(stderr,"--update-obs: bad index\n") ; return 2 ; }
+       upd_obsfile[jv]=argv[ii+2] ; ii+=2 ; } }
      else if( !strcmp(a,"--init-rho2") ){ NEEDS(1) ; init_rho2=argv[++ii] ; }
      else if( !strcmp(a,"--init-sigma") ){ NEEDS(1) ; init_sigma=argv[++ii] ; }
      else if( !strcmp(a,"--save-model") ){ NEEDS(1) ; save_model=argv[++ii] ; }

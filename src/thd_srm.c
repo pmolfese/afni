@@ -380,6 +380,7 @@ void SRM_free_model( SRM_model *m )
      free(m->wrun) ;
    }
    free(m->nvox) ; free(m->s) ; free(m->rho2) ; free(m->sigma_s) ; free(m->a_sum) ;
+   free(m->nsubj_t) ; free(m->rho_inv_t) ;
    free(m) ;
 }
 
@@ -410,6 +411,14 @@ double SRM_estimate_bytes( int nview , const int *nvox , int ntime ,
    bytes += 8.0*nfeat*ntime*3.0 ;                          /* a_sum, S, stats  */
    bytes += (algo==SRM_ALGO_PROB) ? 8.0*nfeat*nfeat*4.0 : 0.0 ;
    return bytes ;
+}
+
+/*! A copy of n doubles (NULL on failure). */
+static double * srm_dup_d( const double *a , int n )
+{
+   double *c=(double *)malloc(sizeof(double)*(size_t)n) ;
+   if( c!=NULL ) memcpy(c,a,sizeof(double)*(size_t)n) ;
+   return c ;
 }
 
 SRM_model * SRM_model_copy( const SRM_model *m , int drop )
@@ -473,6 +482,14 @@ SRM_model * SRM_model_copy( const SRM_model *m , int drop )
      if( c->a_sum==NULL ){ SRM_free_model(c) ; return NULL ; }
      memcpy(c->a_sum,m->a_sum,sz) ;
      c->nsubj_eff = m->nsubj_eff ;
+     if( m->nsubj_t != NULL ){
+       c->nsubj_t = srm_dup_d(m->nsubj_t,m->ntime) ;
+       if( c->nsubj_t==NULL ){ SRM_free_model(c) ; return NULL ; }
+     }
+     if( m->rho_inv_t != NULL ){
+       c->rho_inv_t = srm_dup_d(m->rho_inv_t,m->ntime) ;
+       if( c->rho_inv_t==NULL ){ SRM_free_model(c) ; return NULL ; }
+     }
    } else {
      c->nsubj_eff = 0 ; c->rho_inv_sum = 0.0 ;
    }
@@ -1337,6 +1354,13 @@ int SRM_fit( int nview , int ntime , const int *nvox , float * const *x ,
      m->rho_inv_sum = rho0 ;
    }
    m->nsubj_eff = nview ;
+   if( miss ){                              /* the sums per time point */
+     int t ;
+     m->nsubj_t = (double *)srm_calloc(T,sizeof(double)) ;
+     if( prob ) m->rho_inv_t = srm_dup_d(rho0t,T) ;
+     if( m->nsubj_t==NULL || (prob && m->rho_inv_t==NULL) ){ rc=SRM_ERR_MEMORY ; goto done ; }
+     for( t=0 ; t<T ; t++ ) m->nsubj_t[t]=nt[t] ;
+   }
    m->w = W ; W=NULL ;                      /* ownership moves to the model */
    if( p->center ){ m->mu = mu ; mu=NULL ; }
 
@@ -1515,19 +1539,22 @@ static int srm_fit_coupled( int nview , int ntime , const int *nvox ,
    int *c0=NULL ;
    SRM_model *start=NULL , *m=NULL ; const SRM_model *ini ;
    srm_gstate gs={0,0,NULL,NULL,NULL} ; int gram=0 , wr_given=0 , gnow , nmstep=0 ;
+   int miss=0 , *nt=NULL ; double *rho0t=NULL , *trt=NULL , *postsum=NULL ;
 
    if( model!=NULL ) *model=NULL ;
    if( info!=NULL ){ info->niter_done=0 ; info->converged=0 ; info->objective=NULL ; }
    if( !isfinite(lam) || lam<0.0 ) return SRM_ERR_ARG ;
    if( nseg<2 || p->seglen==NULL ) return SRM_ERR_ARG ;
-   if( p->obs!=NULL ){                                  /* missing data: shared W only, for now */
-     int tt ;
-     for( ii=0 ; ii<nview ; ii++ ) if( p->obs[ii]!=NULL )
-       for( tt=0 ; tt<ntime ; tt++ ) if( !p->obs[ii][tt] ) return SRM_ERR_ARG ;
-   }
    { int sum=0 ;
      for( rr=0 ; rr<nseg ; rr++ ){ if( p->seglen[rr]<1 ) return SRM_ERR_ARG ; sum+=p->seglen[rr] ; }
      if( sum != T ) return SRM_ERR_ARG ; }
+   if( p->obs!=NULL && lam==0.0 ){                      /* free runs: each W_ir has only its own samples */
+     int tt , c=0 , n ;
+     for( rr=0 ; rr<nseg ; c+=p->seglen[rr],rr++ ) for( ii=0 ; ii<nview ; ii++ ) if( p->obs[ii]!=NULL ){
+       for( n=0,tt=c ; tt<c+p->seglen[rr] ; tt++ ) n+=(p->obs[ii][tt]!=0) ;
+       if( n<kk ) return SRM_ERR_ARG ;
+     }
+   }
    for( ii=0 ; ii<nview ; ii++ ) if( nvox[ii]>vmax ) vmax=nvox[ii] ;
 
    /* Where to start: a shared-W fit (or the caller's model), so that large
@@ -1561,19 +1588,28 @@ static int srm_fit_coupled( int nview , int ntime , const int *nvox ,
        || (p->center && !mu) ){ rc=SRM_ERR_MEMORY ; goto done ; }
    for( rr=1 ; rr<nseg ; rr++ ) c0[rr]=c0[rr-1]+p->seglen[rr-1] ;
 
-   for( ii=0 ; ii<nview ; ii++ ){                     /* data: centered copies, energies */
+   for( ii=0 ; ii<nview ; ii++ ){                     /* data: centered copies, energies; missing values 0 */
      size_t n=(size_t)nvox[ii]*T , jn ; const float *src=x[ii] ; double xx=0.0 ;
+     const unsigned char *ob=(p->obs!=NULL) ? p->obs[ii] : NULL ; int nob=T , t ;
      vw[ii].nvox=nvox[ii] ;
-     if( p->center ){
+     if( ob!=NULL ){
+       for( nob=0,t=0 ; t<T ; t++ ) nob+=(ob[t]!=0) ;
+       if( nob<1 ){ rc=SRM_ERR_ARG ; goto done ; }
+       if( nob==T ) ob=NULL ; else miss=1 ;
+     }
+     vw[ii].obs=ob ; vw[ii].nobs=nob ;
+     if( p->center || ob!=NULL ){
        float *xc=(float *)malloc(n*sizeof(float)) ;
-       mu[ii]=(float *)malloc((size_t)nvox[ii]*sizeof(float)) ;
-       if( xc==NULL || mu[ii]==NULL ){ free(xc) ; rc=SRM_ERR_MEMORY ; goto done ; }
+       if( p->center ) mu[ii]=(float *)malloc((size_t)nvox[ii]*sizeof(float)) ;
+       if( xc==NULL || (p->center && mu[ii]==NULL) ){ free(xc) ; rc=SRM_ERR_MEMORY ; goto done ; }
        for( jn=0 ; jn<(size_t)nvox[ii] ; jn++ ){
-         const float *r=src+jn*T ; double s=0.0 ; int t ;
-         for( t=0 ; t<T ; t++ ) s += r[t] ;
-         if( !isfinite(s) ){ free(xc) ; rc=SRM_ERR_NONFINITE ; goto done ; }
-         mu[ii][jn]=(float)(s/T) ;
-         for( t=0 ; t<T ; t++ ) xc[jn*T+t]=r[t]-mu[ii][jn] ;
+         const float *r=src+jn*T ; double s=0.0 , mm=0.0 ;
+         if( p->center ){
+           for( t=0 ; t<T ; t++ ) if( ob==NULL || ob[t] ) s += r[t] ;
+           if( !isfinite(s) ){ free(xc) ; rc=SRM_ERR_NONFINITE ; goto done ; }
+           mu[ii][jn]=(float)(s/nob) ; mm=mu[ii][jn] ;
+         }
+         for( t=0 ; t<T ; t++ ) xc[jn*T+t] = (ob==NULL || ob[t]) ? (float)(r[t]-mm) : 0.0f ;
        }
        vw[ii].xc=xc ; src=xc ;
      }
@@ -1582,6 +1618,13 @@ static int srm_fit_coupled( int nview , int ntime , const int *nvox ,
      if( !isfinite(xx) ){ rc=SRM_ERR_NONFINITE ; goto done ; }
      if( !(xx>0.0) ){ rc=SRM_ERR_SINGULAR ; goto done ; }
      vw[ii].xx=xx ; xxsum+=xx ;
+   }
+   if( miss ){                                        /* per time point: views observed, and their precision */
+     int t ;
+     nt=(int *)srm_calloc(T,sizeof(int)) ; rho0t=(double *)srm_calloc(T,sizeof(double)) ;
+     trt=(double *)srm_calloc(T,sizeof(double)) ; postsum=(double *)srm_calloc((size_t)kk*kk,sizeof(double)) ;
+     if( !nt || !rho0t || !trt || !postsum ){ rc=SRM_ERR_MEMORY ; goto done ; }
+     for( ii=0 ; ii<nview ; ii++ ) for( t=0 ; t<T ; t++ ) nt[t]+=(vw[ii].obs==NULL || vw[ii].obs[t]) ;
    }
 
    for( ii=0 ; ii<nview ; ii++ ){                     /* start state */
@@ -1633,35 +1676,59 @@ static int srm_fit_coupled( int nview , int ntime , const int *nvox ,
        rho0=0.0 ;
        for( ii=0 ; ii<nview ; ii++ ){
          wgt[ii]=1.0/rho2[ii] ; rho0+=wgt[ii] ;
-         logpsi += (double)nvox[ii]*log(rho2[ii]) ;
+         logpsi += (double)nvox[ii]*log(rho2[ii])*(miss ? (double)vw[ii].nobs/T : 1.0) ;
          xxw += vw[ii].xx/rho2[ii] ;
        }
        rc = gnow ? srm_gpass_sums(nview,&gs,wgt,1,nseg,c0,p->seglen,kk,T,asum)
                  : srm_cpass_sums(nview,vw,Wr,wgt,nseg,c0,p->seglen,kk,T,asum) ;
+       if( rc!=SRM_OK ){ free(wgt) ; goto done ; }
+       if( !miss ){
+         rc=srm_posterior(kk,sigma_s,rho0,post,&logdet,wk) ;
+         if( rc!=SRM_OK ){ free(wgt) ; goto done ; }
+         srm_matmul_kk(kk,T,post,asum,Sd) ;
+       } else {                                       /* each t: the views observed there */
+         int t ;
+         for( t=0 ; t<T ; t++ ) rho0t[t]=0.0 ;
+         for( ii=0 ; ii<nview ; ii++ ) for( t=0 ; t<T ; t++ )
+           if( vw[ii].obs==NULL || vw[ii].obs[t] ) rho0t[t]+=wgt[ii] ;
+         rc=srm_posterior_obs(kk,T,sigma_s,rho0t,asum,Sd,trt,postsum,&logdet,wk) ;
+         if( rc!=SRM_OK ){ free(wgt) ; goto done ; }
+       }
        free(wgt) ;
-       if( rc!=SRM_OK ) goto done ;
-       rc=srm_posterior(kk,sigma_s,rho0,post,&logdet,wk) ;
-       if( rc!=SRM_OK ) goto done ;
-       srm_matmul_kk(kk,T,post,asum,Sd) ;
        if( it==0 ){
          double s2=srm_dot(nkt,Sd,Sd)/((double)kk*T) ;
          for( ii=0 ; ii<nview ; ii++ ) tau[ii]=lam*s2/rho2[ii] ;
        }
        for( ii=0 ; ii<nview ; ii++ ) penalty += tau[ii]*pen[ii] ;
-       L = -0.5*T*(logpsi+logdet) - 0.5*xxw + 0.5*srm_dot(nkt,asum,Sd) + penalty ;
+       L = miss ? -0.5*(T*logpsi+logdet) - 0.5*xxw + 0.5*srm_dot(nkt,asum,Sd) + penalty
+                : -0.5*T*(logpsi+logdet) - 0.5*xxw + 0.5*srm_dot(nkt,asum,Sd) + penalty ;
      } else {
-       double ss ;
+       double ss=0.0 ;
        rc = gnow ? srm_gpass_sums(nview,&gs,NULL,1,nseg,c0,p->seglen,kk,T,asum)
                  : srm_cpass_sums(nview,vw,Wr,NULL,nseg,c0,p->seglen,kk,T,asum) ;
        if( rc!=SRM_OK ) goto done ;
-       for( jj=0 ; jj<(int)nkt ; jj++ ) Sd[jj]=asum[jj]/nview ;
-       ss=srm_dot(nkt,Sd,Sd) ;
+       if( !miss ){
+         for( jj=0 ; jj<(int)nkt ; jj++ ) Sd[jj]=asum[jj]/nview ;
+         ss=srm_dot(nkt,Sd,Sd) ;
+         L = xxsum - nview*ss ;
+       } else {                                       /* s_t: the mean over the views observed at t */
+         int c,t ;
+         L = xxsum ;
+         for( t=0 ; t<T ; t++ ){
+           double q=0.0 ;
+           for( c=0 ; c<kk ; c++ ){
+             double v = (nt[t]>0) ? asum[(size_t)c*T+t]/nt[t] : 0.0 ;
+             Sd[(size_t)c*T+t]=v ; q+=v*v ;
+           }
+           L -= nt[t]*q ; ss+=q ;
+         }
+       }
        if( it==0 ){
          double s2=ss/((double)kk*T) ;                       /* ss is |S|^2 */
          for( ii=0 ; ii<nview ; ii++ ) tau[ii]=lam*s2 ;
        }
        for( ii=0 ; ii<nview ; ii++ ) penalty += 2.0*tau[ii]*((double)nseg*kk - pen[ii]) ;
-       L = xxsum - nview*ss + penalty ;
+       L += penalty ;
      }
      if( !isfinite(L) ){ rc=SRM_ERR_NONFINITE ; goto done ; }
      objective[it]=L ;
@@ -1681,15 +1748,29 @@ static int srm_fit_coupled( int nview , int ntime , const int *nvox ,
      if( prob ){
        double trpost=0.0 , ss=srm_dot(nkt,Sd,Sd) ; int c,d,t ;
        for( c=0 ; c<kk ; c++ ) trpost += post[c*kk+c] ;
-       for( ii=0 ; ii<nview ; ii++ ){
-         double r=(vw[ii].xx - 2.0*wa[ii] + ss + (double)T*trpost) / ((double)T*nvox[ii]) ;
-         double rmin=SRM_RHO2_FLOOR*vw[ii].xx/((double)T*nvox[ii]) ;
-         rho2[ii]=(r>rmin) ? r : rmin ;
+       if( !miss ){
+         for( ii=0 ; ii<nview ; ii++ ){
+           double r=(vw[ii].xx - 2.0*wa[ii] + ss + (double)T*trpost) / ((double)T*nvox[ii]) ;
+           double rmin=SRM_RHO2_FLOOR*vw[ii].xx/((double)T*nvox[ii]) ;
+           rho2[ii]=(r>rmin) ? r : rmin ;
+         }
+       } else {                                       /* each view over its own observed time points */
+         double *sq=(double *)srm_calloc(T,sizeof(double)) ;
+         if( sq==NULL ){ rc=SRM_ERR_MEMORY ; goto done ; }
+         for( c=0 ; c<kk ; c++ ) for( t=0 ; t<T ; t++ ) sq[t] += Sd[(size_t)c*T+t]*Sd[(size_t)c*T+t] ;
+         for( ii=0 ; ii<nview ; ii++ ){
+           double so=0.0 , r , rmin , den=(double)vw[ii].nobs*nvox[ii] ;
+           for( t=0 ; t<T ; t++ ) if( vw[ii].obs==NULL || vw[ii].obs[t] ) so += sq[t]+trt[t] ;
+           r=(vw[ii].xx - 2.0*wa[ii] + so)/den ;
+           rmin=SRM_RHO2_FLOOR*vw[ii].xx/den ;
+           rho2[ii]=(r>rmin) ? r : rmin ;
+         }
+         free(sq) ;
        }
        for( c=0 ; c<kk ; c++ ) for( d=c ; d<kk ; d++ ){
          double acc=0.0 ;
          for( t=0 ; t<T ; t++ ) acc += Sd[(size_t)c*T+t]*Sd[(size_t)d*T+t] ;
-         sigma_s[c*kk+d]=sigma_s[d*kk+c]=post[c*kk+d]+acc/T ;
+         sigma_s[c*kk+d]=sigma_s[d*kk+c]=(miss ? postsum[c*kk+d]/T : post[c*kk+d])+acc/T ;
        }
      }
    }
@@ -1725,6 +1806,13 @@ static int srm_fit_coupled( int nview , int ntime , const int *nvox ,
      m->rho_inv_sum=rho0 ;
    }
    m->nsubj_eff=nview ;
+   if( miss ){                                        /* the sums per time point */
+     int t ;
+     m->nsubj_t=(double *)srm_calloc(T,sizeof(double)) ;
+     if( prob ) m->rho_inv_t=srm_dup_d(rho0t,T) ;
+     if( m->nsubj_t==NULL || (prob && m->rho_inv_t==NULL) ){ rc=SRM_ERR_MEMORY ; goto done ; }
+     for( t=0 ; t<T ; t++ ) m->nsubj_t[t]=nt[t] ;
+   }
    m->w=Wa ; Wa=NULL ;
    m->wrun=Wr ; Wr=NULL ;
    if( p->center ){ m->mu=mu ; mu=NULL ; }
@@ -1739,7 +1827,7 @@ done:
    if( Wr!=NULL ){ for( ii=0 ; ii<nview*nseg ; ii++ ) free(Wr[ii]) ; free(Wr) ; }
    if( mu!=NULL ){ for( ii=0 ; ii<nview ; ii++ ) free(mu[ii]) ; free(mu) ; }
    free(c0) ; free(rho2) ; free(wa) ; free(pen) ; free(tau) ; free(pull) ; free(asum) ; free(Sd) ; free(sigma_s) ;
-   free(post) ; free(wk) ; free(objective) ;
+   free(post) ; free(wk) ; free(objective) ; free(nt) ; free(rho0t) ; free(trt) ; free(postsum) ;
    srm_gstate_free(&gs,nview) ;
    SRM_free_model(start) ; SRM_free_model(m) ;
    return rc ;
@@ -1851,6 +1939,7 @@ int SRM_update( SRM_model *m , int nnew , const int *nvox , float * const *x ,
    double *wk=NULL , *wa=NULL , *pen=NULL , *tau=NULL , *pull=NULL , *objective=NULL ;
    int *c0=NULL ; const int *seglen=NULL ; int one_seg[1] ;
    double s_old2=0.0 , s_diff2=0.0 ;
+   int miss=0 ; double *nt=NULL , *rho0t=NULL , *rold_t=NULL , *trt=NULL , *postsum=NULL , *new_nt=NULL , *new_rt=NULL ;
 
    if( info!=NULL ){ info->niter_done=0 ; info->converged=0 ; info->objective=NULL ; }
    if( m==NULL || nnew<1 || nvox==NULL || x==NULL ) return SRM_ERR_ARG ;
@@ -1902,17 +1991,26 @@ int SRM_update( SRM_model *m , int nnew , const int *nvox , float * const *x ,
 
    for( ii=0 ; ii<nnew ; ii++ ){                    /* data, and the start for each new view */
      size_t n=(size_t)nvox[ii]*T , jn ; const float *src=x[ii] ; double xx=0.0 ;
+     const unsigned char *ob=(q->obs!=NULL) ? q->obs[ii] : NULL ; int nob=T , t ;
      vw[ii].nvox=nvox[ii] ;
-     if( m->center ){
+     if( ob!=NULL ){
+       for( nob=0,t=0 ; t<T ; t++ ) nob+=(ob[t]!=0) ;
+       if( nob<kk ){ rc=SRM_ERR_ARG ; goto done ; }
+       if( nob==T ) ob=NULL ; else miss=1 ;
+     }
+     vw[ii].obs=ob ; vw[ii].nobs=nob ;
+     if( m->center || ob!=NULL ){                   /* centered over the observed points; missing values 0 */
        float *xc=(float *)malloc(n*sizeof(float)) ;
-       mu[ii]=(float *)malloc((size_t)nvox[ii]*sizeof(float)) ;
-       if( xc==NULL || mu[ii]==NULL ){ free(xc) ; rc=SRM_ERR_MEMORY ; goto done ; }
+       if( m->center ) mu[ii]=(float *)malloc((size_t)nvox[ii]*sizeof(float)) ;
+       if( xc==NULL || (m->center && mu[ii]==NULL) ){ free(xc) ; rc=SRM_ERR_MEMORY ; goto done ; }
        for( jn=0 ; jn<(size_t)nvox[ii] ; jn++ ){
-         const float *r=src+jn*T ; double s=0.0 ; int t ;
-         for( t=0 ; t<T ; t++ ) s += r[t] ;
-         if( !isfinite(s) ){ free(xc) ; rc=SRM_ERR_NONFINITE ; goto done ; }
-         mu[ii][jn]=(float)(s/T) ;
-         for( t=0 ; t<T ; t++ ) xc[jn*T+t]=r[t]-mu[ii][jn] ;
+         const float *r=src+jn*T ; double s=0.0 , mm=0.0 ;
+         if( m->center ){
+           for( t=0 ; t<T ; t++ ) if( ob==NULL || ob[t] ) s += r[t] ;
+           if( !isfinite(s) ){ free(xc) ; rc=SRM_ERR_NONFINITE ; goto done ; }
+           mu[ii][jn]=(float)(s/nob) ; mm=mu[ii][jn] ;
+         }
+         for( t=0 ; t<T ; t++ ) xc[jn*T+t] = (ob==NULL || ob[t]) ? (float)(r[t]-mm) : 0.0f ;
        }
        vw[ii].xc=xc ; src=xc ;
      }
@@ -1926,6 +2024,16 @@ int SRM_update( SRM_model *m , int nnew , const int *nvox , float * const *x ,
      if( Wa[ii]==NULL ){ rc=SRM_ERR_MEMORY ; goto done ; }
      rc=SRM_fit_view(m->s,kk,T,vw[ii].x,nvox[ii],0,Wa[ii],&rho2[ii],NULL) ;
      if( rc!=SRM_OK ) goto done ;
+     if( ob!=NULL && prob ){                        /* the start's noise variance over the observed points only */
+       double e=0.0 ; int c ; const float *w=Wa[ii] ;
+       for( jn=0 ; jn<(size_t)nvox[ii] ; jn++ ) for( t=0 ; t<T ; t++ ) if( ob[t] ){
+         double r=vw[ii].x[jn*T+t] ;
+         for( c=0 ; c<kk ; c++ ) r -= (double)w[jn*kk+c]*m->s[(size_t)c*T+t] ;
+         e += r*r ;
+       }
+       rho2[ii]=e/((double)nob*nvox[ii]) ;
+       if( !(rho2[ii]>SRM_RHO2_FLOOR*xx/((double)nob*nvox[ii])) ) rho2[ii]=SRM_RHO2_FLOOR*xx/((double)nob*nvox[ii]) ;
+     }
      if( !prob ) rho2[ii]=1.0 ;
      if( coupled ){
        for( rr=0 ; rr<nseg ; rr++ ){
@@ -1935,6 +2043,20 @@ int SRM_update( SRM_model *m , int nnew , const int *nvox , float * const *x ,
        rc=SRM_fit_view_coupled(m->s,kk,T,vw[ii].x,nvox[ii],nseg,seglen,Wa[ii],lam,
                                &Wr[(size_t)ii*nseg]) ;
        if( rc!=SRM_OK ) goto done ;
+     }
+   }
+
+   if( m->nsubj_t!=NULL ) miss=1 ;
+   if( miss ){                                      /* per time point: the old sums, then the new views observed */
+     int t ;
+     nt=(double *)srm_calloc(T,sizeof(double)) ; rho0t=(double *)srm_calloc(T,sizeof(double)) ;
+     rold_t=(double *)srm_calloc(T,sizeof(double)) ; trt=(double *)srm_calloc(T,sizeof(double)) ;
+     postsum=(double *)srm_calloc((size_t)kk*kk,sizeof(double)) ;
+     if( !nt || !rho0t || !rold_t || !trt || !postsum ){ rc=SRM_ERR_MEMORY ; goto done ; }
+     for( t=0 ; t<T ; t++ ){
+       nt[t] = (m->nsubj_t!=NULL) ? m->nsubj_t[t] : (double)nold ;
+       rold_t[t] = (m->rho_inv_t!=NULL) ? m->rho_inv_t[t] : rho0_old ;
+       for( ii=0 ; ii<nnew ; ii++ ) nt[t] += (vw[ii].obs==NULL || vw[ii].obs[t]) ;
      }
    }
 
@@ -1951,36 +2073,61 @@ int SRM_update( SRM_model *m , int nnew , const int *nvox , float * const *x ,
        rho0=rho0_old ;
        for( ii=0 ; ii<nnew ; ii++ ){
          wgt[ii]=1.0/rho2[ii] ; rho0+=wgt[ii] ;
-         logpsi += (double)nvox[ii]*log(rho2[ii]) ;
+         logpsi += (double)nvox[ii]*log(rho2[ii])*(miss ? (double)vw[ii].nobs/T : 1.0) ;
          xxw += vw[ii].xx/rho2[ii] ;
        }
        rc = coupled ? srm_cpass_sums(nnew,vw,Wr,wgt,nseg,c0,seglen,kk,T,anew)
                     : srm_pass_sums(nnew,vw,Wa,wgt,vmax,kk,T,anew) ;
-       free(wgt) ;
-       if( rc!=SRM_OK ){ free(anew) ; goto done ; }
+       if( rc!=SRM_OK ){ free(wgt) ; free(anew) ; goto done ; }
        for( jj=0 ; jj<(int)nkt ; jj++ ) asum[jj]=Aold[jj]+anew[jj] ;
-       rc=srm_posterior(kk,sigma_s,rho0,post,&logdet,wk) ;
-       if( rc!=SRM_OK ){ free(anew) ; goto done ; }
-       srm_matmul_kk(kk,T,post,asum,Sd) ;
+       if( !miss ){
+         rc=srm_posterior(kk,sigma_s,rho0,post,&logdet,wk) ;
+         if( rc!=SRM_OK ){ free(wgt) ; free(anew) ; goto done ; }
+         srm_matmul_kk(kk,T,post,asum,Sd) ;
+       } else {                                     /* each t: the old views' precision there, and the new observed */
+         int t ;
+         for( t=0 ; t<T ; t++ ){
+           rho0t[t]=rold_t[t] ;
+           for( ii=0 ; ii<nnew ; ii++ ) if( vw[ii].obs==NULL || vw[ii].obs[t] ) rho0t[t]+=wgt[ii] ;
+         }
+         rc=srm_posterior_obs(kk,T,sigma_s,rho0t,asum,Sd,trt,postsum,&logdet,wk) ;
+         if( rc!=SRM_OK ){ free(wgt) ; free(anew) ; goto done ; }
+       }
+       free(wgt) ;
        if( coupled && it==0 ){
          double s2=srm_dot(nkt,Sd,Sd)/((double)kk*T) ;
          for( ii=0 ; ii<nnew ; ii++ ) tau[ii]=lam*s2/rho2[ii] ;
        }
        if( coupled ) for( ii=0 ; ii<nnew ; ii++ ) penalty += tau[ii]*pen[ii] ;
-       L = -0.5*T*(logpsi+logdet) - 0.5*xxw + 0.5*srm_dot(nkt,asum,Sd) + penalty ;
+       L = miss ? -0.5*(T*logpsi+logdet) - 0.5*xxw + 0.5*srm_dot(nkt,asum,Sd) + penalty
+                : -0.5*T*(logpsi+logdet) - 0.5*xxw + 0.5*srm_dot(nkt,asum,Sd) + penalty ;
      } else {
-       double ss ;
+       double ss=0.0 ;
        rc = coupled ? srm_cpass_sums(nnew,vw,Wr,NULL,nseg,c0,seglen,kk,T,anew)
                     : srm_pass_sums(nnew,vw,Wa,NULL,vmax,kk,T,anew) ;
        if( rc!=SRM_OK ){ free(anew) ; goto done ; }
-       for( jj=0 ; jj<(int)nkt ; jj++ ){ asum[jj]=Aold[jj]+anew[jj] ; Sd[jj]=asum[jj]/(nold+nnew) ; }
-       ss=srm_dot(nkt,Sd,Sd) ;
+       if( !miss ){
+         for( jj=0 ; jj<(int)nkt ; jj++ ){ asum[jj]=Aold[jj]+anew[jj] ; Sd[jj]=asum[jj]/(nold+nnew) ; }
+         ss=srm_dot(nkt,Sd,Sd) ;
+         L = xxnew - (double)(nold+nnew)*ss ;
+       } else {                                     /* s_t: the mean over the views observed at t */
+         int c , t ;
+         L = xxnew ;
+         for( t=0 ; t<T ; t++ ){
+           double qq=0.0 ;
+           for( c=0 ; c<kk ; c++ ){
+             size_t q2=(size_t)c*T+t ;
+             asum[q2]=Aold[q2]+anew[q2] ; Sd[q2] = (nt[t]>0.0) ? asum[q2]/nt[t] : 0.0 ; qq+=Sd[q2]*Sd[q2] ;
+           }
+           L -= nt[t]*qq ; ss+=qq ;
+         }
+       }
        if( coupled && it==0 ){
          double s2=ss/((double)kk*T) ;
          for( ii=0 ; ii<nnew ; ii++ ) tau[ii]=lam*s2 ;
        }
        if( coupled ) for( ii=0 ; ii<nnew ; ii++ ) penalty += 2.0*tau[ii]*((double)nseg*kk-pen[ii]) ;
-       L = xxnew - (double)(nold+nnew)*ss + penalty ;
+       L += penalty ;
      }
      free(anew) ;
      if( !isfinite(L) ){ rc=SRM_ERR_NONFINITE ; goto done ; }
@@ -2002,30 +2149,55 @@ int SRM_update( SRM_model *m , int nnew , const int *nvox , float * const *x ,
      if( prob ){
        double trpost=0.0 , ss=srm_dot(nkt,Sd,Sd) ; int c,d,t ;
        for( c=0 ; c<kk ; c++ ) trpost += post[c*kk+c] ;
-       for( ii=0 ; ii<nnew ; ii++ ){
-         double r=(vw[ii].xx-2.0*wa[ii]+ss+(double)T*trpost)/((double)T*nvox[ii]) ;
-         double rmin=SRM_RHO2_FLOOR*vw[ii].xx/((double)T*nvox[ii]) ;
-         rho2[ii]=(r>rmin) ? r : rmin ;
+       if( !miss ){
+         for( ii=0 ; ii<nnew ; ii++ ){
+           double r=(vw[ii].xx-2.0*wa[ii]+ss+(double)T*trpost)/((double)T*nvox[ii]) ;
+           double rmin=SRM_RHO2_FLOOR*vw[ii].xx/((double)T*nvox[ii]) ;
+           rho2[ii]=(r>rmin) ? r : rmin ;
+         }
+       } else {                                     /* each new view over its own observed time points */
+         double *sq=(double *)srm_calloc(T,sizeof(double)) ;
+         if( sq==NULL ){ rc=SRM_ERR_MEMORY ; goto done ; }
+         for( c=0 ; c<kk ; c++ ) for( t=0 ; t<T ; t++ ) sq[t] += Sd[(size_t)c*T+t]*Sd[(size_t)c*T+t] ;
+         for( ii=0 ; ii<nnew ; ii++ ){
+           double so=0.0 , r , rmin , den=(double)vw[ii].nobs*nvox[ii] ;
+           for( t=0 ; t<T ; t++ ) if( vw[ii].obs==NULL || vw[ii].obs[t] ) so += sq[t]+trt[t] ;
+           r=(vw[ii].xx-2.0*wa[ii]+so)/den ;
+           rmin=SRM_RHO2_FLOOR*vw[ii].xx/den ;
+           rho2[ii]=(r>rmin) ? r : rmin ;
+         }
+         free(sq) ;
        }
        for( c=0 ; c<kk ; c++ ) for( d=c ; d<kk ; d++ ){
          double acc=0.0 ;
          for( t=0 ; t<T ; t++ ) acc += Sd[(size_t)c*T+t]*Sd[(size_t)d*T+t] ;
-         sigma_s[c*kk+d]=sigma_s[d*kk+c]=post[c*kk+d]+acc/T ;
+         sigma_s[c*kk+d]=sigma_s[d*kk+c]=(miss ? postsum[c*kk+d]/T : post[c*kk+d])+acc/T ;
        }
      }
    }
 
    /* commit: nothing above has touched m */
+   if( miss ){                                      /* room for the per-time sums, before anything changes */
+     if( m->nsubj_t==NULL && (new_nt=(double *)srm_calloc(T,sizeof(double)))==NULL ){ rc=SRM_ERR_MEMORY ; goto done ; }
+     if( prob && m->rho_inv_t==NULL && (new_rt=(double *)srm_calloc(T,sizeof(double)))==NULL ){ rc=SRM_ERR_MEMORY ; goto done ; }
+   }
    for( jj=0 ; jj<kk*T ; jj++ ){ double dd=Sd[jj]-m->s[jj] ; s_diff2+=dd*dd ; s_old2+=(double)m->s[jj]*m->s[jj] ; }
    rc=srm_model_append(m,nnew,nvox,Wa,rho2,mu,Wr) ;
    if( rc!=SRM_OK ) goto done ;
    Wa=NULL ; Wr=NULL ; mu=NULL ;                    /* now owned by m */
+   if( new_nt!=NULL ){ m->nsubj_t=new_nt ; new_nt=NULL ; }
+   if( new_rt!=NULL ){ m->rho_inv_t=new_rt ; new_rt=NULL ; }
    for( jj=0 ; jj<kk*T ; jj++ ){ m->s[jj]=(float)Sd[jj] ; m->a_sum[jj]=asum[jj] ; }
    if( prob ){
      for( jj=0 ; jj<kk*kk ; jj++ ) m->sigma_s[jj]=(float)sigma_s[jj] ;
      m->rho_inv_sum=rho0 ;
    }
    m->nsubj_eff=nold+nnew ;
+   if( miss ){                                      /* the per-time sums; allocated before this, so they cannot fail here */
+     int t ;
+     for( t=0 ; t<T ; t++ ) m->nsubj_t[t]=nt[t] ;
+     if( prob ) for( t=0 ; t<T ; t++ ) m->rho_inv_t[t]=rho0t[t] ;
+   }
    m->nupdate += 1 ;
    m->drift += (s_old2>0.0) ? s_diff2/s_old2 : 0.0 ;
    if( info!=NULL ){
@@ -2038,6 +2210,7 @@ done:
    if( mu!=NULL ){ for( ii=0 ; ii<nnew ; ii++ ) free(mu[ii]) ; free(mu) ; }
    free(c0) ; free(rho2) ; free(wa) ; free(pen) ; free(tau) ; free(pull) ; free(asum) ;
    free(Aold) ; free(Sd) ; free(sigma_s) ; free(post) ; free(wk) ; free(objective) ;
+   free(nt) ; free(rho0t) ; free(rold_t) ; free(trt) ; free(postsum) ; free(new_nt) ; free(new_rt) ;
    return rc ;
 }
 
@@ -2361,21 +2534,11 @@ done:
    return rc ;
 }
 
-int SRM_model_add_view( SRM_model *m , const float *x , int nvox )
+/*! Attach a fitted view (w, mu, rho2; ownership moves to m on success; freed on failure). */
+static int srm_model_attach_view( SRM_model *m , int nvox , float *w , float *mu , double rho2 )
 {
-   int n , rc ; float *w=NULL , *mu=NULL ; double rho2=1.0 ;
+   int n=m->nview ;
    int *nv2 ; float **w2 ; double *r2=NULL ; float **mu2=NULL ; float **wr2=NULL ;
-
-   if( m==NULL || x==NULL || nvox<1 || m->s==NULL ) return SRM_ERR_ARG ;
-   n = m->nview ;
-   w = (float *)malloc((size_t)nvox*m->nfeat*sizeof(float)) ;
-   if( w==NULL ) return SRM_ERR_MEMORY ;
-   if( m->center ){
-     mu=(float *)malloc((size_t)nvox*sizeof(float)) ;
-     if( mu==NULL ){ free(w) ; return SRM_ERR_MEMORY ; }
-   }
-   rc = SRM_fit_view(m->s,m->nfeat,m->ntime,x,nvox,m->center,w,&rho2,mu) ;
-   if( rc != SRM_OK ){ free(w) ; free(mu) ; return rc ; }
 
    /* grow every per-view array first; commit only if all of that succeeded */
    nv2 = (int *)realloc(m->nvox,sizeof(int)*(n+1)) ;
@@ -2404,9 +2567,48 @@ int SRM_model_add_view( SRM_model *m , const float *x , int nvox )
    }
    m->nvox[n]=nvox ; m->w[n]=w ;
    if( m->rho2 != NULL ) m->rho2[n]=rho2 ;
-   if( m->center ) m->mu[n]=mu ;
+   if( m->center ) m->mu[n]=mu ; else free(mu) ;
    m->nview = n+1 ;
    return SRM_OK ;
+}
+
+int SRM_model_add_view( SRM_model *m , const float *x , int nvox )
+{
+   return SRM_model_add_view_obs(m,x,nvox,NULL) ;
+}
+
+int SRM_model_add_view_obs( SRM_model *m , const float *x , int nvox , const unsigned char *obs )
+{
+   int rc , T , k , n=0 , t , f , c ; float *w=NULL , *mu=NULL , *xg=NULL , *sg=NULL ; double rho2=1.0 ;
+   int *idx=NULL ;
+
+   if( m==NULL || x==NULL || nvox<1 || m->s==NULL ) return SRM_ERR_ARG ;
+   T=m->ntime ; k=m->nfeat ;
+   w = (float *)malloc((size_t)nvox*k*sizeof(float)) ;
+   if( w==NULL ) return SRM_ERR_MEMORY ;
+   if( m->center ){
+     mu=(float *)malloc((size_t)nvox*sizeof(float)) ;
+     if( mu==NULL ){ free(w) ; return SRM_ERR_MEMORY ; }
+   }
+   if( obs!=NULL ){                                 /* only the observed columns, of the data and of S */
+     idx=(int *)malloc(sizeof(int)*(size_t)T) ;
+     if( idx==NULL ){ free(w) ; free(mu) ; return SRM_ERR_MEMORY ; }
+     for( t=0 ; t<T ; t++ ) if( obs[t] ) idx[n++]=t ;
+     if( n<k ){ free(idx) ; free(w) ; free(mu) ; return SRM_ERR_NFEAT ; }
+     if( n==T ){ free(idx) ; idx=NULL ; }
+   }
+   if( idx!=NULL ){
+     xg=(float *)malloc(sizeof(float)*(size_t)nvox*n) ; sg=(float *)malloc(sizeof(float)*(size_t)k*n) ;
+     if( xg==NULL || sg==NULL ){ free(xg) ; free(sg) ; free(idx) ; free(w) ; free(mu) ; return SRM_ERR_MEMORY ; }
+     for( f=0 ; f<nvox ; f++ ) for( t=0 ; t<n ; t++ ) xg[(size_t)f*n+t]=x[(size_t)f*T+idx[t]] ;
+     for( c=0 ; c<k ; c++ ) for( t=0 ; t<n ; t++ ) sg[(size_t)c*n+t]=m->s[(size_t)c*T+idx[t]] ;
+     rc = SRM_fit_view(sg,k,n,xg,nvox,m->center,w,&rho2,mu) ;
+     free(xg) ; free(sg) ; free(idx) ;
+   } else
+     rc = SRM_fit_view(m->s,k,T,x,nvox,m->center,w,&rho2,mu) ;
+   if( rc != SRM_OK ){ free(w) ; free(mu) ; return rc ; }
+   rc = srm_model_attach_view(m,nvox,w,mu,rho2) ;
+   return rc ;
 }
 
 SRM_model * SRM_model_from_w( int nvox , int nfeat , const float *w , const float *mu )
@@ -3060,6 +3262,8 @@ int SRM_save_model( const char *fname , const SRM_model *m , const SRM_provenanc
      srm_put_doubles(fp,"rho2",m->nview,1,m->rho2) ;
    }
    srm_put_doubles(fp,"a_sum",k,T,m->a_sum) ;
+   if( m->nsubj_t!=NULL ) srm_put_doubles(fp,"nsubj_t",1,T,m->nsubj_t) ;      /* missing data: the sums per time point */
+   if( prob && m->rho_inv_t!=NULL ) srm_put_doubles(fp,"rho_inv_t",1,T,m->rho_inv_t) ;
    fprintf(fp,"end\n") ;
    (void)jj ;
    if( ferror(fp) || fclose(fp)!=0 ){ remove(tmp) ; return SRM_ERR_IO ; }
@@ -3139,6 +3343,7 @@ typedef struct {
    int *seglen ; unsigned char *keep ; int have_keep ;
    char **item , **label ; int *nvox ; int nitem_read , nsub_read ;
    float *S , *sigma ; double *rho2 , *A ; int got_S , got_sigma , got_rho2 , got_A , got_end ;
+   double *nt , *rt ; int got_nt , got_rt ;
 } srm_parsed ;
 
 static void srm_parsed_free( srm_parsed *ps )
@@ -3147,7 +3352,7 @@ static void srm_parsed_free( srm_parsed *ps )
    free(ps->seglen) ; free(ps->keep) ; free(ps->nvox) ;
    if( ps->item!=NULL ){ for( ii=0 ; ii<ps->nitem_read ; ii++ ) free(ps->item[ii]) ; free(ps->item) ; }
    if( ps->label!=NULL ){ for( ii=0 ; ii<ps->nsub_read ; ii++ ) free(ps->label[ii]) ; free(ps->label) ; }
-   free(ps->S) ; free(ps->sigma) ; free(ps->rho2) ; free(ps->A) ;
+   free(ps->S) ; free(ps->sigma) ; free(ps->rho2) ; free(ps->A) ; free(ps->nt) ; free(ps->rt) ;
 }
 
 /*! Read r*c numbers into a float or double array allocated here (when dst is
@@ -3299,6 +3504,12 @@ int SRM_load_model( const char *fname , SRM_model **model , SRM_provenance **pvo
        } else if( !strcmp(name,"a_sum") ){
          if( ps.got_A || r!=ps.nfeat || c!=ps.ntime || !srm_read_block(&p,n,NULL,&ps.A) ){ free(name) ; free(key) ; goto bad ; }
          ps.got_A=1 ;
+       } else if( !strcmp(name,"nsubj_t") ){
+         if( ps.got_nt || r!=1 || c!=ps.ntime || !srm_read_block(&p,n,NULL,&ps.nt) ){ free(name) ; free(key) ; goto bad ; }
+         ps.got_nt=1 ;
+       } else if( !strcmp(name,"rho_inv_t") ){
+         if( ps.got_rt || r!=1 || c!=ps.ntime || !srm_read_block(&p,n,NULL,&ps.rt) ){ free(name) ; free(key) ; goto bad ; }
+         ps.got_rt=1 ;
        } else {                                                             /* a block from the future: skip */
          if( !srm_read_block(&p,n,NULL,NULL) ){ free(name) ; free(key) ; goto bad ; }
        }
@@ -3321,6 +3532,9 @@ int SRM_load_model( const char *fname , SRM_model **model , SRM_provenance **pvo
    if( ps.nsub_read!=ps.nsubj || !ps.got_S || !ps.got_A ) goto bad ;
    if( ps.algo==SRM_ALGO_PROB && ( !ps.got_sigma || !ps.got_rho2 || !(ps.rho_inv>0.0) ) ) goto bad ;
    if( ps.coupled && ps.wseg<2 ) goto bad ;
+   if( ps.algo==SRM_ALGO_PROB && ps.got_nt!=ps.got_rt ) goto bad ;           /* per-time sums come together */
+   if( ps.got_nt ) for( ii=0 ; ii<ps.ntime ; ii++ ) if( !(ps.nt[ii]>=0.0 && ps.nt[ii]<=ps.nsubj_eff) ) goto bad ;
+   if( ps.got_rt ) for( ii=0 ; ii<ps.ntime ; ii++ ) if( !(ps.rt[ii]>=0.0) ) goto bad ;
    for( ii=0 ; ii<ps.nsubj ; ii++ ) if( !srm_token_ok(ps.label[ii]) ) goto bad ;
    if( ps.algo==SRM_ALGO_PROB ) for( ii=0 ; ii<ps.nsubj ; ii++ ) if( !(ps.rho2[ii]>0.0) ) goto bad ;
    if( ps.axis==SRM_AXIS_TIME ){
@@ -3351,9 +3565,11 @@ int SRM_load_model( const char *fname , SRM_model **model , SRM_provenance **pvo
    if( m->w==NULL ) goto bad ;
    m->s=ps.S ; ps.S=NULL ;
    m->a_sum=ps.A ; ps.A=NULL ;
+   m->nsubj_t=ps.nt ; ps.nt=NULL ;
    if( ps.algo==SRM_ALGO_PROB ){
      m->sigma_s=ps.sigma ; ps.sigma=NULL ;
      m->rho2=ps.rho2 ; ps.rho2=NULL ;
+     m->rho_inv_t=ps.rt ; ps.rt=NULL ;
    }
    pv->axis=ps.axis ; pv->zscore=ps.zscore ; pv->nsubj=ps.nsubj ;
    pv->label=ps.label ; ps.label=NULL ; ps.nsub_read=0 ;
