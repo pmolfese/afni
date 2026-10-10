@@ -97,7 +97,13 @@ static void usage_3dInSync(void)
 "  -prefix PREFIX       Output dataset prefix [InSync].\n"
 "\n"
 "  -mask MASK           Analyze nonzero voxels in MASK.  Without -mask, all\n"
-"                       voxels are analyzed.\n"
+"                       voxels are analyzed.  Output datasets follow the first\n"
+"                       input's view (+orig, +tlrc) and template space, unless\n"
+"                       MASK (or, with no -mask, -atlas) is in a different\n"
+"                       view; then they take MASK's, as 3dRSA does.  So\n"
+"                       template-space data that are labeled +orig, analyzed\n"
+"                       with a +tlrc mask, are written +tlrc, and subject-space\n"
+"                       data with a subject-space mask stay +orig.\n"
 "\n"
 "  -isc_method METHOD   pairwise : correlate every subject pair [default]\n"
 "                       loo      : correlate each subject with the mean of\n"
@@ -659,6 +665,18 @@ static float * insync_expand( const float *wv, const int *vmap, int nvox, float 
 }
 
 /*---------------------------------------------------------------------------*/
+
+/*! View (+orig/+acpc/+tlrc) and template-space name of a dataset, read from
+    its header only. */
+static int insync_template_space( const char *name, int *view, char *space )
+{
+   THD_3dim_dataset *ds=THD_open_dataset((char *)name) ;
+   if( ds==NULL ) return 0 ;
+   *view=ds->view_type ;
+   MCW_strncpy(space,ds->atlas_space,THD_MAX_NAME) ;
+   DSET_delete(ds) ;
+   return 1 ;
+}
 
 /*! Release the compact store. */
 static void insync_free_store( INSYNC_src *s )
@@ -1787,6 +1805,8 @@ int main( int argc, char **argv )
    int *roi_val=NULL ;
    char **roi_lab=NULL ;
    INSYNC_src src ;
+   int out_view=-1 ;                     /* view of the output, see below */
+   char out_space[THD_MAX_NAME] ;
    int *nzero=NULL ;
    byte *zero_time=NULL ;
    long long invalid_total=0 ;
@@ -2314,6 +2334,27 @@ int main( int argc, char **argv )
      DSET_delete(mset) ; mset=NULL ;
    }
    nmask=(mask!=NULL)?THD_countmask(nvox,mask):nvox ;
+
+   /* The output is a map on the grid of the -mask or, without one, of the
+      -atlas, so when that dataset is in a different view than the first input
+      the output takes the mask's (or atlas's) view and template space, as 3dRSA
+      does.  This covers template-space data whose header carries no space
+      (e.g. a NIfTI without a space code, read as +orig) analyzed with a
+      template-space mask or atlas.  When the views agree, the first input's
+      header is kept. */
+   out_space[0]='\0' ;
+   {
+     const char *tname=(maskname!=NULL)?maskname:atlas_name ;
+     int v ;
+     char sp[THD_MAX_NAME] ;
+     if( tname!=NULL && insync_template_space(tname,&v,sp) && v!=first->view_type ){
+       out_view=v ; MCW_strncpy(out_space,sp,THD_MAX_NAME) ;
+       if( !quiet )
+         INFO_message(PROGRAM_NAME ": output view %s taken from the %s; the first input is %s",
+                      VIEW_typestr[v],(maskname!=NULL)?"-mask":"-atlas",
+                      VIEW_typestr[first->view_type]) ;
+     }
+   }
 
    /* Choose how the subject data are held.  Dense mode keeps each dataset
       resident on the full grid, exactly as stored on disk.  Compact mode
@@ -3092,6 +3133,10 @@ int main( int argc, char **argv )
      if( !roi_only ){ for( kk=0 ; kk<nout ; kk++ ){ free(outwork[kk]) ; outwork[kk]=NULL ; } }
    }
    out=EDIT_empty_copy(first) ;
+   if( out_view>=0 ){
+     EDIT_dset_items(out,ADN_view_type,out_view,ADN_none) ;
+     MCW_strncpy(out->atlas_space,out_space,THD_MAX_NAME) ;
+   }
    EDIT_dset_items(out,ADN_prefix,prefix,ADN_nvals,nout,ADN_ntt,0,ADN_brick_fac,NULL,
                    ADN_type,HEAD_FUNC_TYPE,ADN_func_type,FUNC_BUCK_TYPE,ADN_datum_all,MRI_float,ADN_none) ;
    tross_Copy_History(first,out) ; tross_Make_History(PROGRAM_NAME,argc,argv,out) ;
@@ -3178,6 +3223,10 @@ int main( int argc, char **argv )
      /* Pair maps are stored in condition-pair-major, subject-edge-minor
         order.  The emitted tables point directly to those brick selectors. */
      pairout=EDIT_empty_copy(first) ;
+     if( out_view>=0 ){
+       EDIT_dset_items(pairout,ADN_view_type,out_view,ADN_none) ;
+       MCW_strncpy(pairout->atlas_space,out_space,THD_MAX_NAME) ;
+     }
      EDIT_dset_items(pairout,ADN_prefix,pair_prefix,ADN_nvals,(int)npairmap,ADN_ntt,0,ADN_brick_fac,NULL,
                      ADN_type,HEAD_FUNC_TYPE,ADN_func_type,FUNC_BUCK_TYPE,ADN_datum_all,MRI_float,ADN_none) ;
      tross_Copy_History(first,pairout); tross_Make_History(PROGRAM_NAME,argc,argv,pairout);
