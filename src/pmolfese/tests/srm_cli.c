@@ -36,6 +36,8 @@
                             are added in one SRM_update call (or one call each
                             with --update-each, in the order given).
      --update-each          one update per subject instead of one together
+     --streams a,b,...      the random start of view i uses stream a_i
+                            (SRM_params.stream; default: the view's index)
      --update-obs J F       --update-view J (0-based) is observed where the T
                             bytes of F are 1 (SRM_update's p->obs)
      writes PREFIX.u_S.f32, u_W<j>.f32 (the new subjects), u_rho2.f64 (all),
@@ -189,6 +191,9 @@ int main( int argc , char **argv )
      else if( !strcmp(a,"--kernel") ){ NEEDS(1) ; ++ii ;
        p.kernel = !strcmp(argv[ii],"gram") ? SRM_KERNEL_GRAM : !strcmp(argv[ii],"voxel") ? SRM_KERNEL_VOXEL : SRM_KERNEL_AUTO ; }
      else if( !strcmp(a,"--seed") ){ NEEDS(1) ; p.seed=(unsigned int)strtoul(argv[++ii],NULL,10) ; }
+     else if( !strcmp(a,"--streams") ){ NEEDS(1) ; { static int st[4096] ; int n=0 ; char *c=argv[++ii] , *e ;
+       while( *c && n<4096 ){ st[n++]=(int)strtol(c,&e,10) ; c=(*e==',') ? e+1 : e ; if( e==c && *e!=',' ) break ; }
+       p.stream=st ; } }
      else if( !strcmp(a,"--canon") ){ canon=1 ; }
      else if( !strcmp(a,"--update-each") ){ upd_each=1 ; }
      else if( !strcmp(a,"--update-obs") ){ NEEDS(2) ; { int jv=atoi(argv[ii+1]) ;

@@ -163,8 +163,27 @@ typedef struct {
                                 posterior of s_t uses the precision of those
                                 views only, and each rho2_i is a mean over the
                                 view's own observed samples.  Centering is over
-                                observed samples.  Shared W only (a W per run
-                                with missing data is SRM_ERR_ARG).  [NULL]    */
+                                observed samples.  With a W per run each W_ir
+                                uses its run's observed samples; lambda 0 then
+                                needs nfeat observed points in every run and
+                                view (else SRM_ERR_ARG).  [NULL]              */
+   const double *ndim ;      /* [nview] the number of features each view stands
+                                for, when its rows are a compressed form of
+                                more features (SRM_compress): the noise
+                                variance rho2 is per original feature, so it
+                                and the likelihood use ndim[i], not nvox[i].
+                                NULL: nvox.  [NULL]                           */
+   float * const *w0 ;       /* [nview] the starting W of each view (nvox x
+                                nfeat) in place of the random one, for
+                                SRM_INIT_RANDOM; SRM_compress_start() gives the
+                                start that reproduces the uncompressed fit's.
+                                NULL: random.  With SRM_fit_multistart only the
+                                first start uses it.  [NULL]                   */
+   const int *stream ;       /* [nview] the random-number stream of each view's
+                                random start (with seed): a fit of a subset of
+                                views can give each the stream it has in the
+                                whole set, so a view starts the same way in
+                                every fit.  NULL: the view's index.  [NULL]    */
    int          kernel ;     /* SRM_KERNEL_*                        [AUTO]
                                 Every W the fit makes lies in the span of
                                 Z_i = [X_i | W_i at the start], so W_i = Z_i C_i
@@ -462,6 +481,43 @@ extern int SRM_model_add_view( SRM_model *m , const float *x , int nvox ) ;
     W_i, rho2 and the feature means come from the observed columns only. */
 extern int SRM_model_add_view_obs( SRM_model *m , const float *x , int nvox ,
                                    const unsigned char *obs ) ;
+
+/*----------------------------------------------------------------------------
+  Compressed views.  Everything the fit does with a view's data X (nvox x T)
+  goes through X'X and through W, and W always lies in the span of X's
+  columns.  So X can be replaced by any R (rank x T) with R'R = X'X: X = U R
+  for an orthonormal U (nvox x rank), and a fit on R, with SRM_params.ndim
+  set to nvox, is the fit on X with W = U W_R.  R is at most T x T, so a view
+  of 150000 voxels and 1300 time points shrinks from 780 MB to 7 MB.
+  Projections W'X, scores, S, rho2 and the objective are the same; voxel
+  maps need X again: W = X M, M = SRM_compress_map(R, W_R).
+------------------------------------------------------------------------------*/
+
+/*! R (rank x ntime, allocated here, *R_out) with R'R = X'X up to the
+    directions whose share of X'X is below tol (relative to its trace; 0
+    gives 1e-12): a pivoted Cholesky of X'X, formed in double, in parallel
+    over voxel blocks.  Columns of X that are all zero (missing values) give
+    zero columns of R. */
+extern int SRM_compress( const float *x , int nvox , int ntime , double tol ,
+                         float **R_out , int *rank_out ) ;
+
+/*! The random start of view `stream` (as SRM_fit makes it from seed for an
+    nvox-feature view), carried into the compressed space: w0 = U' W0
+    (rank x nfeat).  A fit of the R with this as SRM_params.w0 follows the
+    uncompressed fit step for step.  x is the same X that gave R. */
+extern int SRM_compress_start( const float *x , int nvox , int ntime ,
+                               const float *R , int rank , int nfeat ,
+                               unsigned int seed , int stream , float *w0_out ) ;
+
+/*! M (ntime x ncol, double) = R' (R R')^-1 v, for v (rank x ncol): then
+    U v = X M.  With v = W_R, W = X M on the original features. */
+extern int SRM_compress_map( const float *R , int rank , int ntime ,
+                             const float *v , int ncol , double *M_out ) ;
+
+/*! out (nvox x ncol) = X M, in parallel over the features: W = X M on the
+    original features, M from SRM_compress_map. */
+extern int SRM_compress_expand( const float *x , int nvox , int ntime ,
+                                const double *M , int ncol , float *out ) ;
 
 /*----------------------------------------------------------------------------
   Gauge

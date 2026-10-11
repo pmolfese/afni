@@ -604,14 +604,15 @@ def np_adapt_w(xa, sa, anchor, lam):
     return np_polar(xa @ sa.T + lam * s2 * anchor)
 
 
-def adapt_ref_run(cli, work, tag, pre, names, runs, algo, lam, frac, win, K_, niter):
+def adapt_ref_run(cli, work, tag, pre, names, runs, algo, lam, frac, win, K_, niter, streams=None):
     """The -cv run -cv_adapt scores of these subjects, fitted among themselves: {(Subj, Fold): {"run": [...], "anchor": [...]}}
     with [isc, match, chance, r2, nsamp]."""
     n, want = len(pre), {}
     starts = np.cumsum([0] + list(runs[:-1]))
     for fi_, (c0, L) in enumerate(zip(starts, runs)):
         tr = [np.delete(z, np.arange(c0, c0 + L), axis=1).astype(np.float32) for z in pre]
-        r = run_ours(cli, work, f"{tag}_f{fi_}", algo, tr, K_, niter, False, extra=["--canon"],
+        r = run_ours(cli, work, f"{tag}_f{fi_}", algo, tr, K_, niter, False,
+                     extra=["--canon"] + (["--streams", ",".join(map(str, streams))] if streams is not None else []),
                      seglen=[x for q, x in enumerate(runs) if q != fi_], coupling=lam)
         na = int(frac * L)
         te = [z[:, c0:c0 + L] for z in pre]
@@ -722,7 +723,8 @@ def case_cv_adapt(prog, cli, work, rng, algo, runs=(60, 50, 70), lam=30.0, frac=
     ew = []
     for g in ("ctl", "pat"):
         idx = [i for i, s_ in enumerate(subs) if s_["group"] == g]
-        wg = adapt_ref_run(cli, work, f"{name}_w{g}", [pre[i] for i in idx], [names[i] for i in idx], runs, algo, lam, frac, win, K_, niter)
+        wg = adapt_ref_run(cli, work, f"{name}_w{g}", [pre[i] for i in idx], [names[i] for i in idx], runs, algo, lam, frac, win, K_, niter,
+                           streams=idx)
         ew.append(adapt_errors(gotw, wg))
     ew = np.vstack(ew)
     check("-cv_fit within -cv_adapt: run W scores vs each group's own reference", float(ew[:, 1:5].max()), 5e-4)
@@ -740,6 +742,181 @@ def case_cv_adapt(prog, cli, work, rng, algo, runs=(60, 50, 70), lam=30.0, frac=
           max(abs(num(r[4]) - num(r[8])) for r in brf), 1e-4)
     check("... and the non-reference group is scored on the adapted samples too",
           float(any(int(r[3]) != L - int(frac * L) for r in brf for q, L in enumerate(runs) if r[2] == f"r{q + 1}")), 0.0, "{:.0f}")
+
+
+def compare_compress(d, a, b, names, maps=False, recon=False, r2map=False, tol=1e-4, score_tol=1e-4, label=""):
+    """A run without -compress (prefix a) against one with it (prefix b): S, every score, projections, and (maps)
+    W and the reconstructions on the voxels; fit.txt and the subjects' sizes in the model file."""
+    out = {}
+    S1, S2 = np.loadtxt(d / f"{a}.S.1D", comments="#"), np.loadtxt(d / f"{b}.S.1D", comments="#")
+    out["S"] = relfro(S2, S1)
+    if (d / f"{a}.scores_folds.txt").exists():
+        r1, r2 = read_levels(d / f"{a}.scores_folds.txt"), read_levels(d / f"{b}.scores_folds.txt")
+        e = 0.0
+        for x, y in zip(r1, r2):
+            for k_ in x:
+                if k_ in ("Subj", "Group", "Fold", "Factor", "Level"):
+                    continue
+                if x[k_] == "NA" or y[k_] == "NA":
+                    e = max(e, float(x[k_] != y[k_]))
+                else:
+                    e = max(e, abs(float(x[k_]) - float(y[k_])))
+        out["scores"] = e
+        r1, r2_ = read_levels(d / f"{a}.scores.txt"), read_levels(d / f"{b}.scores.txt")
+        e = 0.0
+        for x, y in zip(r1, r2_):                         # the per-subject file too (reliability columns and all)
+            for k_ in x:
+                if k_ in ("Subj", "Group", "Factor", "Level"):
+                    continue
+                e = max(e, float(x[k_] != y[k_]) if "NA" in (x[k_], y[k_]) else abs(float(x[k_]) - float(y[k_])))
+        out["scores.txt"] = e
+    pj = 0.0
+    for nm in names:
+        p1 = Path(d / f"{a}.proj.{nm}.1D")
+        if p1.exists():
+            pj = max(pj, relfro(np.loadtxt(d / f"{b}.proj.{nm}.1D", comments="#"), np.loadtxt(p1, comments="#")))
+        else:
+            pj = max(pj, relfro(load_afni(d / f"{b}.proj.{nm}"), load_afni(d / f"{a}.proj.{nm}")))
+    out["proj"] = pj
+    for what, on in (("W", maps), ("recon", recon), ("r2", r2map)):
+        if not on:
+            continue
+        e = 0.0
+        for nm in names:
+            f1 = Path(d / f"{a}.{what}.{nm}.1D")
+            if f1.exists():
+                e = max(e, relfro(np.loadtxt(d / f"{b}.{what}.{nm}.1D", comments="#"), np.loadtxt(f1, comments="#")))
+            else:
+                e = max(e, relfro(load_afni(d / f"{b}.{what}.{nm}"), load_afni(d / f"{a}.{what}.{nm}")))
+        out[what] = e
+    f1 = [ln.split("\t")[:5] for ln in (d / f"{a}.fit.txt").read_text().splitlines() if not ln.startswith("#")]
+    f2 = [ln.split("\t")[:5] for ln in (d / f"{b}.fit.txt").read_text().splitlines() if not ln.startswith("#")]
+    out["fit.txt"] = float(f1 != f2)
+    _, s1, _, _ = parse_srm_file(d / f"{a}.srm")
+    _, s2, _, _ = parse_srm_file(d / f"{b}.srm")
+    out["model"] = float(s1 != s2)
+    tag = f"-compress {label}: "
+    check(tag + "S as without it", out["S"], tol)
+    if "scores" in out:
+        check(tag + "every held-out score as without it", out["scores"], score_tol)
+    check(tag + "projections as without it", out["proj"], tol)
+    if maps:
+        check(tag + "W on the voxels (X M, the subject read again)", out["W"], tol)
+    if recon:
+        check(tag + "reconstructions on the voxels", out["recon"], tol)
+    if r2map:
+        check(tag + "-save_r2 maps (each fold's W on the voxels)", out["r2"], 1e-4)
+    if "scores.txt" in out:
+        check(tag + "scores.txt as without it", out["scores.txt"], score_tol)
+    check(tag + "fit.txt counts voxels, as without it", out["fit.txt"], 0.0, "{:.0f}")
+    check(tag + "the model file lists each subject's voxels", out["model"], 0.0, "{:.0f}")
+    return out
+
+
+def case_compress(prog, cli, work, rng):
+    """-compress (each subject held as R, R'R = X'X) against the default, on data with more voxels than time points."""
+    global RUNS
+    print("\n[-compress against the default]", flush=True)
+    d = work / "compress"
+    old = RUNS
+    RUNS = [60, 50, 70]
+    try:
+        _, subs, common = make_cv_world(rng, RUNS, nsub=6)
+        rows = write_world(d, subs)
+    finally:
+        RUNS = old
+    names = [s_["label"] for s_ in subs]
+    write_table(d / "table.txt", rows, False)
+    write_nifti(d / "mask.nii.gz", common.astype(np.float32)[..., None])
+    T = 180
+    miss = []
+    for i, s_ in enumerate(subs):                       # censoring, for the missing-data and drop cases
+        m = rng.uniform(size=T) < 0.06
+        m[20 + 4 * i:23 + 4 * i] = True
+        miss.append(m)
+        np.savetxt(d / f"{s_['label']}_cens.1D", (~m).astype(int), fmt="%d")
+    (d / "cens.txt").write_text("Subj Group Run Censor InputFile\n" + "\n".join(
+        f"{s_} {g} {r} {d / (s_ + '_cens.1D')} {f}" for s_, g, r, _, f in rows) + "\n")
+    base = ["-mask", d / "mask.nii.gz", "-progress", "off", "-overwrite", "-niter", 30, "-tol", 0, "-match_window", 5]
+    p = run([prog, "-prefix", d / "c0", "-nfeatures", K, "-cv", "run", "-dataTableFile", d / "table.txt", "-compress"] + base)
+    log = p.stdout + p.stderr
+    check("-compress: the log gives the factors' size, and says the start is the default's",
+          float("-compress: every subject is held as a rank x 180 factor" not in log or "the same random start" not in log), 0.0, "{:.0f}")
+    check("-compress: the program name appears on the banner line only", float(len([l for l in log.splitlines() if "3dSRM" in l]) - 1), 0.0, "{:.0f}")
+    cases = [
+        ("prob, -cv run, -save_W -save_recon -save_r2", ["-nfeatures", K, "-cv", "run", "-save_W", "-save_recon", "-save_r2"], "table.txt", True, True),
+        ("det, -cv loso -save_r2", ["-nfeatures", K, "-algorithm", "det", "-cv", "loso", "-save_r2"], "table.txt", False, False),
+        ("-cenmode missing, -cv run -save_r2", ["-nfeatures", K, "-cv", "run", "-cenmode", "missing", "-save_W", "-save_r2"], "cens.txt", True, False),
+        ("-cenmode drop, -cv run", ["-nfeatures", K, "-cv", "run", "-cenmode", "drop"], "cens.txt", False, False),
+        ("-cenmode interp", ["-nfeatures", K, "-cv", "run"], "cens.txt", False, False),
+        ("-run_coupling, -cv_adapt -save_r2", ["-nfeatures", K, "-cv", "run", "-run_coupling", 30, "-cv_adapt", 0.3, "-save_r2"], "table.txt", False, False),
+        ("-cv loso -cv_adapt -cenmode missing -save_r2", ["-nfeatures", K, "-cv", "loso", "-run_coupling", 30, "-cv_adapt", 0.3,
+                                                          "-cenmode", "missing", "-save_r2"], "cens.txt", False, False),
+        ("-zscore none (centered fits), maps", ["-nfeatures", K, "-zscore", "none", "-save_W", "-save_recon"], "table.txt", True, True),
+        ("-nfeatures 2,3 scan", ["-nfeatures", "2,3", "-cv", "run"], "table.txt", False, False),
+    ]
+    for label, args, tab, maps, recon in cases:
+        a, b = "ref_" + str(abs(hash(label)) % 10**6), "cmp_" + str(abs(hash(label)) % 10**6)
+        run([prog, "-prefix", d / a, "-dataTableFile", d / tab] + base + args)
+        run([prog, "-prefix", d / b, "-dataTableFile", d / tab, "-compress"] + base + args)
+        if "scan" in label:
+            n1 = [ln for ln in (d / f"{a}.nfeat.txt").read_text().splitlines() if ln and not ln.startswith("#")][1:]
+            n2 = [ln for ln in (d / f"{b}.nfeat.txt").read_text().splitlines() if ln and not ln.startswith("#")][1:]
+            e = max(abs(float(x) - float(y)) for l1, l2 in zip(n1, n2) for x, y in zip(l1.split()[1:], l2.split()[1:]))
+            check("-compress -nfeatures 2,3: the scan as without it (the start of each k)", e, 1e-4)
+            continue
+        compare_compress(d, a, b, names, maps=maps, recon=recon, r2map=("-save_r2" in args), label=label)
+    # fits of group subsets: every subject starts from its own whole-table start, so these are exact too
+    for label, args in (("-cv_fit within -save_r2", ["-nfeatures", K, "-cv", "run", "-cv_fit", "within", "-save_r2"]),
+                        ("-cv_fit reference -balance", ["-nfeatures", K, "-cv", "loso", "-cv_fit", "reference:ctl", "-balance", 2]),
+                        ("-reliability split", ["-nfeatures", K, "-cv", "run", "-reliability", "split", "-nsplit", 3])):
+        a, b = "sub_ref_" + str(abs(hash(label)) % 10**6), "sub_cmp_" + str(abs(hash(label)) % 10**6)
+        run([prog, "-prefix", d / a, "-dataTableFile", d / "table.txt"] + base + args)
+        run([prog, "-prefix", d / b, "-dataTableFile", d / "table.txt", "-compress"] + base + args)
+        compare_compress(d, a, b, names, r2map=("-save_r2" in args), label=label)
+    # the item axis (one subject of .1D items), and -repeated_stimulus with -reliability within
+    inames, isubs = make_item_world(rng, nitem=30, nrep=4, nsub=5, n1d=1, shared_runs=True, run_offsets=False)
+    irows = write_item_world(d / "items", inames, isubs, rng)
+    write_item_table(d / "items.txt", irows)
+    ib = ["-axis", "item", "-nfeatures", K, "-cv", "run", "-progress", "off", "-overwrite", "-niter", 30, "-tol", 0, "-proj_format", "1D",
+          "-reliability", "within"]
+    run([prog, "-prefix", d / "it_ref", "-dataTableFile", d / "items.txt"] + ib)
+    run([prog, "-prefix", d / "it_cmp", "-dataTableFile", d / "items.txt", "-compress"] + ib)
+    compare_compress(d, "it_ref", "it_cmp", [s_["label"] for s_ in isubs], label="-axis item -reliability within")
+    RUNS = [50, 50, 50]
+    try:
+        _, rsubs, rcommon = make_cv_world(rng, RUNS, nsub=5)
+        rrows = write_world(d / "rep", rsubs)
+    finally:
+        RUNS = old
+    write_table(d / "rep.txt", rrows, False)
+    write_nifti(d / "rep_mask.nii.gz", rcommon.astype(np.float32)[..., None])
+    rb = ["-mask", d / "rep_mask.nii.gz", "-nfeatures", K, "-repeated_stimulus", "-reliability", "within", "-cv", "run",
+          "-match_window", 4, "-progress", "off", "-overwrite", "-niter", 30, "-tol", 0]
+    run([prog, "-prefix", d / "rep_ref", "-dataTableFile", d / "rep.txt"] + rb)
+    run([prog, "-prefix", d / "rep_cmp", "-dataTableFile", d / "rep.txt", "-compress"] + rb)
+    compare_compress(d, "rep_ref", "rep_cmp", [s_["label"] for s_ in rsubs], label="-repeated_stimulus -reliability within")
+    # -cenmode drop -zcensor: all-zero volumes (two subjects) drop for everyone; -compress finds them in a first read
+    RUNS = [60, 50, 70]
+    try:
+        _, zsubs, zcommon = make_cv_world(rng, RUNS, nsub=5)
+        zrows = write_world(d / "zc", zsubs, zero_volume=(zsubs[1]["label"], 1, 7))
+        zrows2 = write_world(d / "zc2", zsubs[2:3], zero_volume=(zsubs[2]["label"], 2, 30))
+    finally:
+        RUNS = old
+    zrows = [r_ for r_ in zrows if r_[0] != zsubs[2]["label"]] + zrows2
+    (d / "zc.txt").write_text("Subj Group Run Censor InputFile\n" + "\n".join(
+        f"{s_} {g} {r} {d / (zsubs[0]['label'] + '_cens.1D') if False else '-'} {f}" for s_, g, r, _, f in zrows) + "\n")
+    write_nifti(d / "zc_mask.nii.gz", zcommon.astype(np.float32)[..., None])
+    zb = ["-mask", d / "zc_mask.nii.gz", "-nfeatures", K, "-cv", "run", "-cenmode", "drop", "-zcensor", "-match_window", 5,
+          "-progress", "off", "-overwrite", "-niter", 30, "-tol", 0]
+    run([prog, "-prefix", d / "zc_ref", "-dataTableFile", d / "zc.txt"] + zb)
+    p = run([prog, "-prefix", d / "zc_cmp", "-dataTableFile", d / "zc.txt", "-compress"] + zb)
+    check("-compress -cenmode drop -zcensor: says it reads every subject once more",
+          float("read once more, first" not in p.stdout + p.stderr), 0.0, "{:.0f}")
+    check("... and the two zero volumes are dropped for everyone (178 of 180 kept)",
+          float(np.loadtxt(d / "zc_cmp.S.1D", comments="#").shape[0] != 178), 0.0, "{:.0f}")
+    compare_compress(d, "zc_ref", "zc_cmp", [s_["label"] for s_ in zsubs], label="-cenmode drop -zcensor")
 
 
 def case_nfeat_scan(prog, cli, work, rng):
@@ -2594,7 +2771,8 @@ def ref_scores_run(cli, work, tag, pre, members, folds, algo, k, niter, win):
     out = {}
     for fi_, (c0, L) in enumerate(folds):
         cols = np.arange(c0, c0 + L)
-        r = reference_fit(cli, work, f"{tag}_f{fi_}", [np.delete(pre[i], cols, axis=1) for i in members], k, niter, algo)
+        r = reference_fit(cli, work, f"{tag}_f{fi_}", [np.delete(pre[i], cols, axis=1) for i in members], k, niter, algo,
+                          extra=["--streams", ",".join(map(str, members))])          # each subject's whole-table start
         P = {i: r["w"][q].T @ pre[i][:, cols] for q, i in enumerate(members)}
         for q, i in enumerate(members):
             oth = [qq for qq in range(len(members)) if qq != q]
@@ -2615,7 +2793,8 @@ def ref_scores_loso(cli, work, tag, pre, members, folds, algo, k, niter, win, ot
     """-cv loso among the given subjects (the full fit of them, then each left out, 5 warm steps); others are
     scored as new subjects in the full fit of members (W from their training columns)."""
     out = {}
-    full = reference_fit(cli, work, tag + "_full", [pre[i] for i in members], k, niter, algo)
+    full = reference_fit(cli, work, tag + "_full", [pre[i] for i in members], k, niter, algo,
+                         extra=["--streams", ",".join(map(str, members))])
 
     def score(i, W_of, S):
         for fi_, (c0, L) in enumerate(folds):
@@ -3069,6 +3248,7 @@ def main_cv(args, cli, rng):
     case_nfeat_scan(args.prog, cli, args.workdir, rng)
     for algo in ("prob", "det"):
         case_cv_adapt(args.prog, cli, args.workdir, rng, algo)
+    case_compress(args.prog, cli, args.workdir, rng)
 
 
 def main_stage3(args, cli, rng):
@@ -3095,12 +3275,15 @@ def main():
     ap.add_argument("--only-cvfit", action="store_true", help="only the -cv_fit / -balance cases")
     ap.add_argument("--only-adapt", action="store_true", help="only the -cv_adapt cases")
     ap.add_argument("--only-repeat", action="store_true", help="only the -repeated_stimulus case")
+    ap.add_argument("--only-compress", action="store_true", help="only the -compress cases")
     ap.add_argument("--require-deps", action="store_true", help="fail, not skip, when numpy or nibabel is missing")
     args = ap.parse_args()
     args.workdir.mkdir(parents=True, exist_ok=True)
     cli = build_cli(args.workdir, args.srm_cli)
     rng = np.random.default_rng(12)
-    if args.only_repeat:
+    if args.only_compress:
+        case_compress(args.prog, cli, args.workdir, rng)
+    elif args.only_repeat:
         case_repeated_stimulus(args.prog, cli, args.workdir, rng)
     elif args.only_adapt:
         for algo in ("prob", "det"):

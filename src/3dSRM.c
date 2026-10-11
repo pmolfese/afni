@@ -11,13 +11,23 @@
 
 #define PROGRAM_NAME "3dSRM"
 
+/*! Threads the fits may use (for the memory estimate). */
+static int srm_omp_threads( void )
+{
+#ifdef USE_OMP
+   return omp_get_max_threads() ;
+#else
+   return 1 ;
+#endif
+}
+
 
 static char *srm_options[] = {
    "-prefix", "-nfeatures", "-algorithm", "-niter", "-tol", "-seed", "-nstart",
    "-mask", "-run_column", "-group_column", "-zscore",
    "-censor", "-zcensor", "-zcensor_warn",
    "-axis", "-item_column", "-repeated_stimulus", "-time_labels",
-   "-model_in", "-update_S", "-run_coupling", "-cv_adapt", "-apply_W", "-score_by", "-cv_fit", "-balance", "-reliability",
+   "-model_in", "-update_S", "-run_coupling", "-cv_adapt", "-apply_W", "-score_by", "-cv_fit", "-balance", "-reliability", "-compress",
    "-nsplit", "-nperm", "-cv", "-cv_blocks", "-cv_metrics", "-match_window", "-loso_iter",
    "-save_W", "-save_recon", "-save_r2", "-proj_format", "-no_projected",
    "-memory_limit", "-memory_override", "-quiet", "-progress",
@@ -800,6 +810,32 @@ static void usage_3dSRM(void)
 "  -memory_limit G      Refuse an estimated peak above G GiB. Without this\n"
 "                       option the limit is 80%% of detected physical RAM.\n"
 "  -memory_override     Continue after the memory estimate exceeds its limit.\n"
+"  -compress            ** NEW, opt-in while it is verified **\n"
+"                       Hold each subject as an exact T x T (at most) factor\n"
+"                       R of its prepared data X, with R'R = X'X, instead of\n"
+"                       voxels x T. Everything the fit and -cv do with X goes\n"
+"                       through X'X, and W always lies in the span of X, so\n"
+"                       S, the scores, the projections, rho2 and the model\n"
+"                       are those of the default, up to rounding (about\n"
+"                       1e-7; the fit starts where the default's would).\n"
+"                       Subjects are read, censored, z-scored and compressed\n"
+"                       one at a time, so the data are never all in memory:\n"
+"                       for whole-brain naturalistic data this is the\n"
+"                       difference between tens of GB and a few. -save_W and\n"
+"                       -save_recon read each subject again at the end (W on\n"
+"                       the voxels is X M, M small). With -nstart > 1 only\n"
+"                       the first start is the default's, so the best of\n"
+"                       several starts can differ from the default's.\n"
+"                       -save_r2 notes each scored fold's W and reference\n"
+"                       and makes the voxelwise R^2 when the subject is read\n"
+"                       again. Item reliability (-reliability within) is made\n"
+"                       from each subject's voxels before they are\n"
+"                       compressed. -cenmode drop with -zcensor reads every\n"
+"                       subject once more first, to find the zero volumes.\n"
+"                       Not with -model_in or -apply_W (they hold only the\n"
+"                       new subjects).\n"
+"                       Saves memory when subjects have more features than\n"
+"                       time points (or items).\n"
 "  -progress M          auto, bar, line, or off [auto].\n"
 "  -quiet               Suppress progress and informational diagnostics.\n"
 "  -show_table          Print the parsed table and exit.\n"
@@ -937,6 +973,7 @@ typedef struct {
    char   *xmat_stims ;              /* -xmat_stims: the conditions an Xmat table expands to (all) */
    double  xmat_label_frac ;         /* -xmat_label_frac: a TR is a condition's at this fraction of its peak */
    int     repeated_stimulus ;
+   int     compress ;                /* -compress: each subject held as R, R'R = X'X */
    char   *cvmode ;                  /* none | run | loso */
    int     cv_blocks , match_window , loso_iter ; int cv_blocks_given , match_window_given ;
    char   *cv_metrics , *fold_col , *score_by , *cv_fit ;
@@ -1088,7 +1125,48 @@ typedef struct {
    byte   *miss_in ;                 /* -cenmode missing: [Tin] 1 where missing, or NULL */
    byte   *obs ;                     /* the same on the retained timeline, 1 = observed, or NULL */
    int    *good , ngood ;            /* its GoodList: the uncensored time points (NULL: all) */
+   /* -compress: x is R (nvox = rank rows, R'R = X'X) standing for ndim features */
+   int     compressed ;
+   double  ndim ;                    /* the features it stands for (the voxels used) */
+   float  *w0 ; int w0K ;            /* the fit's random start carried into R (rank x w0K), or NULL */
+   int    *vox0 , nvox_mask0 ;       /* the feature list before dropping, to read the subject again */
 } srm_subj ;
+
+/*! The subjects of one fit (sb[sel[j]], j < n; sel NULL: sb[j]) with K components: each starts from the random
+    start of its own index in the whole table (orig[], the whole-table index of each entry of sb; NULL: its
+    position), whatever subset the fit is of; with -compress, also the voxel counts and those starts carried
+    into R.  Set into par; srm_cmp_free afterwards. */
+typedef struct { double *ndim ; float **w0 ; int *stream ; int n ; SRM_params *par ; } srm_cmp ;
+
+static void srm_cmp_set( const srm_subj *sb , const int *orig , const int *sel , int n , int K , SRM_params *par , srm_cmp *c )
+{
+   int j , f , q ;
+   memset(c,0,sizeof(*c)) ;
+   if( n<1 ) return ;
+   c->stream=(int *)malloc(sizeof(int)*(size_t)n) ; c->par=par ;
+   for( j=0 ; j<n ; j++ ){ int e=(sel!=NULL) ? sel[j] : j ; c->stream[j]=(orig!=NULL) ? orig[e] : e ; }
+   par->stream=c->stream ;
+   if( !sb[0].compressed ) return ;
+   c->n=n ; c->ndim=(double *)malloc(sizeof(double)*(size_t)n) ; c->w0=(float **)calloc((size_t)n,sizeof(float *)) ;
+   for( j=0 ; j<n ; j++ ){
+     const srm_subj *s=sb+(sel!=NULL ? sel[j] : j) ;
+     c->ndim[j]=s->ndim ;
+     if( s->w0!=NULL && K<=s->w0K ){                    /* the first K columns: the start for K components */
+       c->w0[j]=(float *)malloc(sizeof(float)*(size_t)s->nvox*K) ;
+       for( f=0 ; f<s->nvox ; f++ ) for( q=0 ; q<K ; q++ ) c->w0[j][(size_t)f*K+q]=s->w0[(size_t)f*s->w0K+q] ;
+     }
+   }
+   par->ndim=c->ndim ; par->w0=(float * const *)c->w0 ; c->par=par ;
+}
+
+static void srm_cmp_free( srm_cmp *c )
+{
+   int j ;
+   if( c->w0!=NULL ) for( j=0 ; j<c->n ; j++ ) free(c->w0[j]) ;
+   if( c->par!=NULL ){ c->par->ndim=NULL ; c->par->w0=NULL ; c->par->stream=NULL ; }
+   free(c->w0) ; free(c->ndim) ; free(c->stream) ; memset(c,0,sizeof(*c)) ;
+}
+
 
 static int srm_is1D( const char *name )
 {
@@ -1244,6 +1322,7 @@ typedef struct {
    int *seglen ; char **runname ; char **glabel ; int ngroup ;
    SRM_params par ;                       /* algorithm, K, center, coupling ... */
    int quiet , progress ;
+   int *sidx ;                            /* the whole table's index of each subject (in a subset), or NULL */
 } srm_ctx ;
 
 typedef struct {
@@ -1261,6 +1340,8 @@ typedef struct {
    int L ;
    float **proj ;                         /* [nsub] K x T held-out projections, or NULL */
    float **vr2 ;                          /* [nsub] mean voxelwise held-out R^2, or NULL */
+   int r2defer , r2id ;                   /* -compress -save_r2: the voxelwise R^2 is noted (srm_r2_note) and made on
+                                             the voxels when each subject is read again; r2id tells fits apart */
    double *ascore ;                       /* -cv_adapt: [nsub][nfold][NMET] the anchor's scores on the same
                                              samples as score (which are the run's own W's), or NULL */
 } srm_cvres ;
@@ -1411,7 +1492,10 @@ static void srm_cvres_alloc( srm_cvres *r , int nsub , int nfold , int want_proj
      r->ascore=(double *)malloc(sizeof(double)*na) ;
      for( q=0 ; q<na ; q++ ) r->ascore[q]=NAN ;
    }
-   if( want_vr2 ){
+   if( want_vr2 && cx->sb[0].compressed ){            /* rows of R are not voxels: noted, made later */
+     static int nid=0 ;
+     r->r2defer=1 ; r->r2id=++nid ;
+   } else if( want_vr2 ){
      r->vr2=(float **)calloc((size_t)nsub,sizeof(float *)) ;
      for( ii=0 ; ii<nsub ; ii++ ) r->vr2[ii]=(float *)calloc((size_t)cx->sb[ii].nvox,sizeof(float)) ;
    }
@@ -1423,6 +1507,77 @@ static void srm_cvres_free( srm_cvres *r )
    if( r->proj!=NULL ){ for( ii=0 ; ii<r->nsub ; ii++ ) free(r->proj[ii]) ; free(r->proj) ; }
    if( r->vr2!=NULL ){ for( ii=0 ; ii<r->nsub ; ii++ ) free(r->vr2[ii]) ; free(r->vr2) ; }
    free(r->score) ; free(r->lscore) ; free(r->ascore) ;
+}
+
+/*============================================================================
+  -compress -save_r2: a fold's voxelwise R^2 needs that fold's W on the voxels.  Each scored fold notes what
+  it needs (its W and means in R, the reference it reconstructs from, the held-out columns); when the subject
+  is read again, W = X M and the R^2 is made on the voxels exactly as srm_score_one would have.
+==============================================================================*/
+
+typedef struct {
+   int subj , rid , nfold , len , r , K ;
+   int *col ; unsigned char *valid ;
+   float *W , *mu , *ref ;
+} srm_r2job ;
+
+static srm_r2job *srm_r2jobs=NULL ; static int srm_nr2job=0 ;
+
+static void srm_r2_note( const srm_ctx *cx , const srm_cvres *res , int ii , int nfold , const int *col , int len ,
+                         const unsigned char *valid , const SRM_model *m , int iview , const float *ref_r )
+{
+   srm_r2job *j ; int r=m->nvox[iview] , K=m->nfeat ;
+   if( res==NULL || !res->r2defer ) return ;
+   srm_r2jobs=(srm_r2job *)realloc(srm_r2jobs,sizeof(srm_r2job)*(size_t)(srm_nr2job+1)) ;
+   j=srm_r2jobs+srm_nr2job++ ; memset(j,0,sizeof(*j)) ;
+   j->subj=(cx->sidx!=NULL) ? cx->sidx[ii] : ii ; j->rid=res->r2id ; j->nfold=nfold ; j->len=len ; j->r=r ; j->K=K ;
+   j->col=(int *)malloc(sizeof(int)*(size_t)len) ; memcpy(j->col,col,sizeof(int)*(size_t)len) ;
+   if( valid!=NULL ){ j->valid=(unsigned char *)malloc((size_t)len) ; memcpy(j->valid,valid,(size_t)len) ; }
+   j->W=(float *)malloc(sizeof(float)*(size_t)r*K) ; memcpy(j->W,m->w[iview],sizeof(float)*(size_t)r*K) ;
+   if( m->mu!=NULL && m->mu[iview]!=NULL ){ j->mu=(float *)malloc(sizeof(float)*(size_t)r) ; memcpy(j->mu,m->mu[iview],sizeof(float)*(size_t)r) ; }
+   j->ref=(float *)malloc(sizeof(float)*(size_t)K*len) ; memcpy(j->ref,ref_r,sizeof(float)*(size_t)K*len) ;
+}
+
+/*! The mean voxelwise held-out R^2 of whole-table subject ss (V features, x V x T on the voxels, R its factor):
+    over the folds of each fit, then over the fits that scored it, as the default accumulates it.  NULL if no
+    fold of this subject was noted. */
+static float * srm_r2_make( int ss , const float *x , int V , int T , const float *R , int rank )
+{
+   int q , nfit=0 , *rids=NULL ; float *out=NULL , *vr=(float *)malloc(sizeof(float)*(size_t)V) ; double *acc=NULL ;
+   for( q=0 ; q<srm_nr2job ; q++ ){
+     srm_r2job *j=srm_r2jobs+q ; int f , t , n=0 , *idx , rc , K=j->K , seen , z ;
+     double *M , r2 ; float *Wv , *muv=NULL , *xg , *rg ; SRM_model *mv ;
+     if( j->subj!=ss ) continue ;
+     for( seen=0,z=0 ; z<nfit ; z++ ) if( rids[z]==j->rid ) seen=1 ;
+     if( !seen ){ rids=(int *)realloc(rids,sizeof(int)*(size_t)(nfit+1)) ; rids[nfit++]=j->rid ; }
+     if( acc==NULL ) acc=(double *)calloc((size_t)V,sizeof(double)) ;
+     idx=(int *)malloc(sizeof(int)*(size_t)j->len) ;
+     for( t=0 ; t<j->len ; t++ ) if( j->valid==NULL || j->valid[t] ) idx[n++]=t ;
+     if( n<3 && j->valid!=NULL ){ free(idx) ; continue ; }   /* as srm_score_one: too few to score, 0 */
+     M=(double *)malloc(sizeof(double)*(size_t)T*K) ; Wv=(float *)malloc(sizeof(float)*(size_t)V*K) ;
+     rc=SRM_compress_map(R,rank,T,j->W,K,M) ;
+     if( rc==SRM_OK ) rc=SRM_compress_expand(x,V,T,M,K,Wv) ;
+     if( rc==SRM_OK && j->mu!=NULL ){
+       muv=(float *)malloc(sizeof(float)*(size_t)V) ;
+       rc=SRM_compress_map(R,rank,T,j->mu,1,M) ;
+       if( rc==SRM_OK ) rc=SRM_compress_expand(x,V,T,M,1,muv) ;
+     }
+     if( rc!=SRM_OK ) ERROR_exit("-save_r2: a fold's W on the voxels: %s",SRM_strerror(rc)) ;
+     xg=(float *)malloc(sizeof(float)*(size_t)V*n) ; rg=(float *)malloc(sizeof(float)*(size_t)K*n) ;
+     for( f=0 ; f<V ; f++ ) for( t=0 ; t<n ; t++ ) xg[(size_t)f*n+t]=x[(size_t)f*T+j->col[idx[t]]] ;
+     for( f=0 ; f<K ; f++ ) for( t=0 ; t<n ; t++ ) rg[(size_t)f*n+t]=j->ref[(size_t)f*j->len+idx[t]] ;
+     mv=SRM_model_from_w(V,K,Wv,muv) ;
+     rc=SRM_reconstruction_r2(mv,0,xg,rg,n,&r2,vr) ;
+     if( rc!=SRM_OK ) for( f=0 ; f<V ; f++ ) vr[f]=0.0f ;
+     for( f=0 ; f<V ; f++ ) acc[f]+=(double)vr[f]/j->nfold ;
+     SRM_free_model(mv) ; free(M) ; free(Wv) ; free(muv) ; free(xg) ; free(rg) ; free(idx) ;
+   }
+   if( acc!=NULL ){
+     int f ; out=(float *)malloc(sizeof(float)*(size_t)V) ;
+     for( f=0 ; f<V ; f++ ) out[f]=(float)(acc[f]/nfit) ;
+   }
+   free(acc) ; free(rids) ; free(vr) ;
+   return out ;
 }
 
 /*! Score one subject's held-out columns.  P is the subject's projected test
@@ -1551,6 +1706,7 @@ static int srm_adapt_known_s( const srm_ctx *cx , srm_cvres *res , int ii , int 
    SRM_model *ma=srm_adapt_view(sa,K,na,xa,V,Wf,mu,cx->par.coupling,cx->sb[ii].label,ot) ;
    rc=SRM_project(ma,0,xr,nr,Pr) ;
    if( rc==SRM_OK ) rc=srm_score_one(ma,0,xr,Pr,sr,sr,K,nr,cx->o->match_window,w,vr_,sc,vr) ;
+   if( rc==SRM_OK ) srm_r2_note(cx,res,ii,nfold,col+na,nr,vr_,ma,0,sr) ;
    if( rc==SRM_OK ) srm_score_levels(cx,res,ii,ff,nfold,col+na,nr,vr_,ma,0,xr,Pr,sr,sr,w) ;
    if( rc==SRM_OK ) rc=srm_score_one(mv,0,xr,Pq,sr,sr,K,nr,cx->o->match_window,w,vr_,res->ascore+((size_t)ii*nfold+ff)*NMET,NULL) ;
    SRM_free_model(ma) ; free(sa) ; free(sr) ; free(xa) ; free(xr) ; free(Pq) ; free(Pr) ; free(ot) ;
@@ -1617,6 +1773,7 @@ static void srm_adapt_run_scores( const srm_ctx *cx , const SRM_model *mf , int 
        if( rc==SRM_OK ) rc = (pass==0) ? srm_score_one(mv[ii],0,xr[ii],Pr[ii],ref_u,ref_r,K,nr,cx->o->match_window,w,valid,sc,vr)
                                        : srm_score_one(mf,ii,xr[ii],Pq[ii],ref_u,ref_r,K,nr,cx->o->match_window,w,valid,sc,NULL) ;
        if( rc==SRM_OK && pass==0 ) srm_score_levels(cx,res,ii,ff,nfold,col+na,nr,valid,mv[ii],0,xr[ii],Pr[ii],ref_u,ref_r,w) ;
+       if( rc==SRM_OK && pass==0 ) srm_r2_note(cx,res,ii,nfold,col+na,nr,valid,mv[ii],0,ref_r) ;
        if( rc!=SRM_OK ) ERROR_exit("scoring Subj %s on run %d failed: %s",cx->sb[ii].label,ff+1,SRM_strerror(rc)) ;
      }
      if( vr!=NULL ){ for( q=0 ; q<mf->nvox[ii] ; q++ ) res->vr2[ii][q]+=vr[q]/(float)nfold ; free(vr) ; }
@@ -1679,7 +1836,9 @@ static void srm_cv_by_runs( const srm_ctx *cx , const SRM_model *mfull , const s
      srm_prog_begin(&bar,cx->progress,cx->quiet,"fold","iterations",par.niter) ;
      fp.bar=&bar ; fp.istart=0 ; fp.nstart=o->nstart ; fp.first_obj=0.0 ; fp.tag=tag ;
      par.progress=srm_fit_progress ; par.progress_ctx=&fp ;
-     rc=SRM_fit_multistart(nsub,Ttr,nvox,xtr,&par,o->nstart,&mf,&fi,NULL,NULL) ;
+     { srm_cmp cm ; srm_cmp_set(cx->sb,cx->sidx,NULL,nsub,K,&par,&cm) ;
+       rc=SRM_fit_multistart(nsub,Ttr,nvox,xtr,&par,o->nstart,&mf,&fi,NULL,NULL) ;
+       srm_cmp_free(&cm) ; }
      srm_prog_end(&bar) ;
      if( rc!=SRM_OK ) ERROR_exit("the fit for %s failed: %s",tag,SRM_strerror(rc)) ;
      if( !cx->quiet ) ININFO_message("%s (%s): %s after %d iterations",tag,f->name[ff],fi.converged?"converged":"iteration limit",fi.niter_done) ;
@@ -1712,6 +1871,7 @@ static void srm_cv_by_runs( const srm_ctx *cx , const SRM_model *mfull , const s
        rc=SRM_shared_from_projections_obs(mf,no,oth,po,(const unsigned char * const *)oo,len,0,ref_u) ;
        if( rc==SRM_OK ) rc=SRM_shared_from_projections_obs(mf,no,oth,po,(const unsigned char * const *)oo,len,1,ref_r) ;
        if( rc==SRM_OK ) rc=srm_score_one(mf,ii,xte[ii],P[ii],ref_u,ref_r,K,len,o->match_window,w,valid,sc,vr) ;
+       if( rc==SRM_OK ) srm_r2_note(cx,res,ii,f->nfold,col,len,valid,mf,ii,ref_r) ;
        if( rc==SRM_OK ) srm_score_levels(cx,res,ii,ff,f->nfold,col,len,valid,mf,ii,xte[ii],P[ii],ref_u,ref_r,w) ;
        free(oo) ; free(valid) ;
        if( rc!=SRM_OK ) ERROR_exit("scoring Subj %s on %s failed: %s",cx->sb[ii].label,tag,SRM_strerror(rc)) ;
@@ -1774,7 +1934,9 @@ static void srm_cv_by_runs_own( const srm_ctx *cx , const SRM_model *mfull , con
      srm_prog_begin(&bar,cx->progress,cx->quiet,"fold","iterations",par.niter) ;
      fp.bar=&bar ; fp.istart=0 ; fp.nstart=o->nstart ; fp.first_obj=0.0 ; fp.tag=tag ;
      par.progress=srm_fit_progress ; par.progress_ctx=&fp ;
-     rc=SRM_fit_multistart(nsub,T,nvox,xv,&par,o->nstart,&mf,&fi,NULL,NULL) ;
+     { srm_cmp cm ; srm_cmp_set(cx->sb,cx->sidx,NULL,nsub,K,&par,&cm) ;
+       rc=SRM_fit_multistart(nsub,T,nvox,xv,&par,o->nstart,&mf,&fi,NULL,NULL) ;
+       srm_cmp_free(&cm) ; }
      srm_prog_end(&bar) ;
      if( rc!=SRM_OK ) ERROR_exit("the fit for %s failed: %s",tag,SRM_strerror(rc)) ;
      if( !cx->quiet ) ININFO_message("%s (%s, each subject's own items missing for them): %s after %d iterations",tag,f->name[ff],
@@ -1801,6 +1963,7 @@ static void srm_cv_by_runs_own( const srm_ctx *cx , const SRM_model *mfull , con
          if( rc==SRM_OK ) rc=SRM_shared_from_projections(mf,no,oth,po,len,1,ref_r) ;
          free(po) ; }
        if( rc==SRM_OK ) rc=srm_score_one(mf,ii,xte,P[ii],ref_u,ref_r,K,len,o->match_window,w,NULL,sc,vr) ;
+       if( rc==SRM_OK ) srm_r2_note(cx,res,ii,f->nfold,col,len,NULL,mf,ii,ref_r) ;
        if( rc==SRM_OK ) srm_score_levels(cx,res,ii,ff,f->nfold,col,len,NULL,mf,ii,xte,P[ii],ref_u,ref_r,w) ;
        if( rc!=SRM_OK ) ERROR_exit("scoring Subj %s on %s failed: %s",cx->sb[ii].label,tag,SRM_strerror(rc)) ;
        if( vr!=NULL ){ int q ; for( q=0 ; q<nvox[ii] ; q++ ) res->vr2[ii][q]+=vr[q]/(float)f->nfold ; free(vr) ; }
@@ -1855,7 +2018,11 @@ static void srm_cv_loso( const srm_ctx *cx , const SRM_model *mfull , const srm_
      if( mdrop==NULL ) ERROR_exit("out of memory copying the model for leave-one-out") ;
      par.init=SRM_INIT_MODEL ; par.init_model=mdrop ; par.niter=o->loso_iter ; par.progress=NULL ; par.progress_ctx=NULL ;
      if( par.coupling!=SRM_COUPLING_SHARED ){ par.nseg=cx->nrun ; par.seglen=cx->seglen ; }
-     rc=SRM_fit(nsub-1,T,nv,xl,&par,&ml,&fi) ;
+     { srm_cmp cm ; int *oth=(int *)malloc(sizeof(int)*(size_t)nsub) , no=0 ;
+       for( jj=0 ; jj<nsub ; jj++ ) if( jj!=ii ) oth[no++]=jj ;
+       srm_cmp_set(cx->sb,cx->sidx,oth,no,K,&par,&cm) ;
+       rc=SRM_fit(nsub-1,T,nv,xl,&par,&ml,&fi) ;
+       srm_cmp_free(&cm) ; free(oth) ; }
      if( rc!=SRM_OK ) ERROR_exit("the leave-one-out fit without Subj %s failed: %s",cx->sb[ii].label,SRM_strerror(rc)) ;
      SRM_free_fitinfo(&fi) ; SRM_free_model(mdrop) ;
      rc=SRM_procrustes_rotation(ml->s,mfull->s,K,T,Ralign) ;
@@ -1878,6 +2045,7 @@ static void srm_cv_loso( const srm_ctx *cx , const SRM_model *mfull , const srm_
        else
        { unsigned char *valid=srm_mask_cols(cx->sb[ii].obs,T,col,len,0) ;
          if( rc==SRM_OK ) rc=srm_score_one(mv,0,xte,P,ste,ste,K,len,o->match_window,w,valid,sc,vr) ;
+         if( rc==SRM_OK ) srm_r2_note(cx,res,ii,f->nfold,col,len,valid,mv,0,ste) ;
          if( rc==SRM_OK ) srm_score_levels(cx,res,ii,ff,f->nfold,col,len,valid,mv,0,xte,P,ste,ste,w) ;
          free(valid) ; }
        if( rc!=SRM_OK ) ERROR_exit("Subj %s, %s: scoring failed: %s",cx->sb[ii].label,f->name[ff],SRM_strerror(rc)) ;
@@ -1925,6 +2093,7 @@ static void srm_cv_frozen( const srm_ctx *cx , const SRM_model *m , const srm_fo
        else
        { unsigned char *valid=srm_mask_cols(cx->sb[ii].obs,T,col,len,0) ;
          if( rc==SRM_OK ) rc=srm_score_one(mv,0,xte,P,ste,ste,K,len,o->match_window,w,valid,sc,vr) ;
+         if( rc==SRM_OK ) srm_r2_note(cx,res,ii,f->nfold,col,len,valid,mv,0,ste) ;
          if( rc==SRM_OK ) srm_score_levels(cx,res,ii,ff,f->nfold,col,len,valid,mv,0,xte,P,ste,ste,w) ;
          free(valid) ; }
        if( rc!=SRM_OK ) ERROR_exit("Subj %s, %s: scoring failed: %s",cx->sb[ii].label,f->name[ff],SRM_strerror(rc)) ;
@@ -1951,8 +2120,8 @@ static srm_ctx srm_ctx_subset( const srm_ctx *cx , const int *sel , int n )
 {
    srm_ctx c=*cx ; int j , fa ;
    c.nsub=n ; c.anymiss=0 ;
-   c.sb=(srm_subj *)malloc(sizeof(srm_subj)*(size_t)n) ;
-   for( j=0 ; j<n ; j++ ){ c.sb[j]=cx->sb[sel[j]] ; if( c.sb[j].obs!=NULL ) c.anymiss=1 ; }
+   c.sb=(srm_subj *)malloc(sizeof(srm_subj)*(size_t)n) ; c.sidx=(int *)malloc(sizeof(int)*(size_t)n) ;
+   for( j=0 ; j<n ; j++ ){ c.sb[j]=cx->sb[sel[j]] ; c.sidx[j]=(cx->sidx!=NULL) ? cx->sidx[sel[j]] : sel[j] ; if( c.sb[j].obs!=NULL ) c.anymiss=1 ; }
    if( cx->nfac>0 ){
      c.lab=(int ***)malloc(sizeof(int **)*(size_t)cx->nfac) ;
      for( fa=0 ; fa<cx->nfac ; fa++ ){
@@ -1967,7 +2136,7 @@ static void srm_ctx_subset_free( srm_ctx *c )
 {
    int fa ;
    if( c->nfac>0 && c->lab!=NULL ){ for( fa=0 ; fa<c->nfac ; fa++ ) free(c->lab[fa]) ; free(c->lab) ; }
-   free(c->sb) ;
+   free(c->sb) ; free(c->sidx) ;
 }
 
 /*! The folds of a subset: the same, but each subject's own folds (randomized items) follow it.  Shallow. */
@@ -1995,7 +2164,9 @@ static SRM_model * srm_fit_subset( const srm_ctx *c , const char *what )
    for( j=0 ; j<c->nsub ; j++ ){ nv[j]=c->sb[j].nvox ; xv[j]=c->sb[j].x ; ob[j]=c->sb[j].obs ; }
    if( c->anymiss ) par.obs=(const unsigned char * const *)ob ;
    par.progress=NULL ; par.progress_ctx=NULL ;
-   rc=SRM_fit_multistart(c->nsub,c->T,nv,xv,&par,c->o->nstart,&m,&fi,NULL,NULL) ;
+   { srm_cmp cm ; srm_cmp_set(c->sb,c->sidx,NULL,c->nsub,c->K,&par,&cm) ;
+     rc=SRM_fit_multistart(c->nsub,c->T,nv,xv,&par,c->o->nstart,&m,&fi,NULL,NULL) ;
+     srm_cmp_free(&cm) ; }
    if( rc!=SRM_OK ) ERROR_exit("the fit of %s failed: %s",what,SRM_strerror(rc)) ;
    rc=SRM_canonicalize(m) ;
    if( rc!=SRM_OK ) ERROR_exit("could not canonicalize the fit of %s: %s",what,SRM_strerror(rc)) ;
@@ -2107,14 +2278,14 @@ static void srm_cv_one_fit( const srm_ctx *cx , const SRM_model *mpool , const s
    m=srm_fit_subset(&c,what) ;
    rc=SRM_procrustes_rotation(m->s,mpool->s,cx->K,cx->T,Rg) ;     /* this fit's gauge -> the pooled fit's */
    if( rc!=SRM_OK ) ERROR_exit("could not align the gauge of %s: %s",what,SRM_strerror(rc)) ;
-   srm_cvres_alloc(&s,n,f->nfold,r->proj!=NULL,r->vr2!=NULL,&c) ;
+   srm_cvres_alloc(&s,n,f->nfold,r->proj!=NULL,r->vr2!=NULL || r->r2defer,&c) ;
    if( oth!=NULL ) srm_cv_loso(&c,m,&g,w,&s) ; else srm_cv_dispatch(&c,m,&g,w,&s) ;
    srm_cvacc_add(acc,r,&s,&c,sel,Rg,cx->K,cx->T) ;
    srm_cvres_free(&s) ;
    if( oth!=NULL && no>0 ){                             /* everyone else: new subjects in this model */
      srm_ctx co=srm_ctx_subset(cx,oth,no) ; srm_folds go=srm_folds_subset(f,oth,no) ;
      co.quiet=quiet ;
-     srm_cvres_alloc(&s,no,f->nfold,r->proj!=NULL,r->vr2!=NULL,&co) ;
+     srm_cvres_alloc(&s,no,f->nfold,r->proj!=NULL,r->vr2!=NULL || r->r2defer,&co) ;
      srm_cv_frozen(&co,m,&go,w,&s) ;
      srm_cvacc_add(acc,r,&s,&co,oth,Rg,cx->K,cx->T) ;
      srm_cvres_free(&s) ; srm_folds_subset_free(&go,f) ; srm_ctx_subset_free(&co) ;
@@ -2215,7 +2386,9 @@ static SRM_model * srm_fit_half( const srm_ctx *cx , const SRM_model *mpool , co
    for( j=0 ; j<n ; j++ ){ nv[j]=cx->sb[sel[j]].nvox ; xv[j]=cx->sb[sel[j]].x ; ob[j]=cx->sb[sel[j]].obs ; miss|=(ob[j]!=NULL) ; }
    if( miss ) par.obs=(const unsigned char * const *)ob ;
    par.init=SRM_INIT_MODEL ; par.init_model=&v ; par.progress=NULL ; par.progress_ctx=NULL ;
-   rc=SRM_fit(n,cx->T,nv,xv,&par,&m,&fi) ;
+   { srm_cmp cm ; srm_cmp_set(cx->sb,cx->sidx,sel,n,cx->K,&par,&cm) ;
+     rc=SRM_fit(n,cx->T,nv,xv,&par,&m,&fi) ;
+     srm_cmp_free(&cm) ; }
    if( rc!=SRM_OK ) ERROR_exit("a -reliability split fit failed: %s",SRM_strerror(rc)) ;
    SRM_free_fitinfo(&fi) ; srm_model_view_free(&v) ; free(nv) ; free(xv) ; free(ob) ;
    return m ;
@@ -2638,6 +2811,7 @@ typedef struct {
    double *relpre ;                    /* -repeated_stimulus: [nsub][2] within-subject reliability, before averaging */
    int rep_nrun , rep_T ;              /* -repeated_stimulus: the timeline before averaging (rep_nrun 0: not averaged) */
    int *rep_seglen , *rep_time_index ;
+   double *relitems ;                  /* -compress, -axis item -reliability within: as cx->rel, made while reading */
 } srm_data ;
 
 /*! Subjects, their runs, groups and masks, from the table. */
@@ -3765,6 +3939,16 @@ static void srm_memory_preflight( const srm_opts *o , const srm_data *d , int K 
    }
    memset(&me,0,sizeof(me)) ;
    me.input=inb+(cvb>rdb ? cvb : rdb) ;      /* the data, plus the larger of the fold copies and one input being read */
+   if( o->compress ){                        /* factors of at most T x T each, plus one subject in full while it is read */
+     double Tn=(double)d->Tin , rb=4.0*Tn*Tn*d->nsub ;
+     me.input = rb*(do_cv ? 2.0 : 1.0) + 2.0*onemax + rdb + 8.0*Tn*Tn*(srm_omp_threads()+2.0) + 4.0*(onemax/(4.0*Tn))*K ;
+     if( o->save_r2 && do_cv ){                /* -save_r2: one fold's held-out columns on the voxels, and its W */
+       int mx=d->Tin ; if( !d->axis_item && d->nrun>1 && d->runlen!=NULL ){ mx=0 ; for( rr=0 ; rr<d->nrun ; rr++ ) if( d->runlen[rr]>mx ) mx=d->runlen[rr] ; }
+       me.input += onemax*(double)mx/Tn + 2.0*(onemax/(4.0*Tn))*4.0*K ;
+     }
+     Wb=4.0*Tn*K*d->nsub ;
+     for( ss=0 ; ss<d->nsub ; ss++ ) nv0[ss]=(d->sb[ss].nvox_mask<d->Tin) ? d->sb[ss].nvox_mask : d->Tin ;
+   }
    me.shared=SRM_estimate_bytes(d->nsub,nv0,d->Tin,K,o->par.algo,0)
             + Wb*(nsegfit>0 ? (double)nsegfit : 0.0) + (o->nstart>1 ? Wb : 0.0) ;
    me.system=(double)AFNI_get_memsize() ;
@@ -3892,53 +4076,182 @@ static void srm_average_repeats( const srm_opts *o , srm_data *d )
    d->T=L ; d->nrun=1 ; d->seglen[0]=L ;
 }
 
-/*! -reliability within on the item axis: an item's repeats (keys Item:n) split into two halves (odd and even repeats,
-    averaged), over the repeated items, overall and in each -score_by level (by its first repeat's level). */
-static void srm_reliability_items( const srm_data *d , srm_ctx *cx )
+/*! One subject's data stage, on a one-subject view d1 of d: read, censor, retained timeline, z-score (and,
+    with -repeated_stimulus, the average of the repeats).  On return s->x is that subject's nvox x d1->T data. */
+static void srm_subject_stage( const srm_opts *oq , srm_data *d , srm_data *d1 , int ss , int K )
 {
-   int n=d->nitem , j , q , nb=0 , *first=(int *)malloc(sizeof(int)*(size_t)n) , **cols=(int **)malloc(sizeof(int *)*(size_t)n) ;
-   int *ncol=(int *)calloc((size_t)n,sizeof(int)) , ss , lv ;
+   *d1=*d ; d1->nsub=1 ; d1->sb=d->sb+ss ; d1->nzero=(d->nzero!=NULL) ? d->nzero+ss : NULL ; d1->relpre=NULL ;
+   d1->seglen=NULL ; d1->time_index=NULL ; d1->rep_nrun=0 ; d1->rep_seglen=NULL ; d1->rep_time_index=NULL ;
+   if( d->axis_item ){
+     d1->keep=NULL ;
+     srm_data_read_items(oq,d1) ;
+     srm_data_items_timeline(d1) ;
+     if( d1->T<K ) ERROR_exit("%d items; -nfeatures is %d",d1->T,K) ;
+   } else {
+     srm_data_read(oq,d1) ;
+     srm_data_subject_censor(oq,d1,1) ;
+     srm_data_timeline(oq,d1,K) ;
+   }
+   srm_data_normalize(oq,d1,oq->zscore,K,0) ;
+   if( oq->repeated_stimulus ){
+     srm_average_repeats(oq,d1) ;
+     if( d1->T<K ) ERROR_exit("%d time points per run; -nfeatures is %d",d1->T,K) ;
+   }
+}
+
+/*! -compress: each subject in turn is read, censored, z-scored (its repeats averaged), then replaced by R
+    (rank x T, R'R = X'X) and, for the fit's start, the random start carried into R; its voxels are freed
+    before the next subject is read, so the data are never all in memory at once.  The timeline and runs
+    are the first subject's (every subject's are the same). */
+/*! The repeated items (keys Item:n), grouped: nb groups, group q's columns cols[q][0..ncol[q]-1], first[q] its
+    first.  Free with srm_rep_groups_free. */
+typedef struct { int nb , *first , **cols , *ncol ; } srm_repg ;
+
+static srm_repg srm_rep_groups( const srm_data *d )
+{
+   int n=d->nitem , j , q ; srm_repg g ;
+   g.nb=0 ; g.first=(int *)malloc(sizeof(int)*(size_t)n) ; g.cols=(int **)malloc(sizeof(int *)*(size_t)n) ;
+   g.ncol=(int *)calloc((size_t)n,sizeof(int)) ;
    for( j=0 ; j<n ; j++ ){                              /* the repeated items, in key order */
      const char *c=strchr(d->item_key[j],':') ; size_t L ;
      if( c==NULL ) continue ;
      L=(size_t)(c-d->item_key[j]) ;
-     for( q=0 ; q<nb ; q++ ) if( !strncmp(d->item_key[first[q]],d->item_key[j],L) && d->item_key[first[q]][L]==':' ) break ;
-     if( q==nb ){ first[nb]=j ; cols[nb]=(int *)malloc(sizeof(int)*(size_t)n) ; nb++ ; }
-     cols[q][ncol[q]++]=j ;
+     for( q=0 ; q<g.nb ; q++ ) if( !strncmp(d->item_key[g.first[q]],d->item_key[j],L) && d->item_key[g.first[q]][L]==':' ) break ;
+     if( q==g.nb ){ g.first[g.nb]=j ; g.cols[g.nb]=(int *)malloc(sizeof(int)*(size_t)n) ; g.nb++ ; }
+     g.cols[q][g.ncol[q]++]=j ;
    }
-   if( nb==0 ) ERROR_exit("-reliability within needs repeats: no item recurs (an item measured twice, keyed Item:1, Item:2)") ;
+   if( g.nb==0 ) ERROR_exit("-reliability within needs repeats: no item recurs (an item measured twice, keyed Item:1, Item:2)") ;
+   return g ;
+}
+
+static void srm_rep_groups_free( srm_repg *g )
+{
+   int q ; for( q=0 ; q<g->nb ; q++ ) free(g->cols[q]) ;
+   free(g->cols) ; free(g->ncol) ; free(g->first) ;
+}
+
+static void srm_reliability_items_one( const srm_data *d , srm_ctx *cx , const srm_repg *g , int ss ) ;
+
+static void srm_data_compress_stream( const srm_opts *o , srm_data *d , int K , srm_ctx *lc )
+{
+   srm_opts oq=*o ; srm_prog bar ; int ss , rmin=1<<30 , rmax=0 , ncs=0 , ncens=0 , ndrop=0 ; double full=0.0 , kept=0.0 ;
+   srm_data first ;                                   /* the first subject's timeline, put into d after the loop */
+   oq.quiet=1 ; memset(&first,0,sizeof(first)) ;
+   if( o->cenmode==SRM_CEN_DROP && !d->axis_item ){   /* the timeline must be known first */
+     if( o->zcensor ){                                  /* zero volumes drop for everyone: a first read finds them */
+       srm_prog pb ;
+       if( !o->quiet ) INFO_message("-compress -cenmode drop -zcensor: every subject is read once more, first, to find "
+                                    "the all-zero volumes that are dropped for everyone") ;
+       srm_prog_begin(&pb,o->progress,o->quiet,"zero volumes","subjects",d->nsub) ;
+       for( ss=0 ; ss<d->nsub ; ss++ ){
+         srm_data d1=*d ;
+         d1.nsub=1 ; d1.sb=d->sb+ss ; d1.nzero=(d->nzero!=NULL) ? d->nzero+ss : NULL ;
+         srm_data_read(&oq,&d1) ;                       /* sets the subject's zero flags */
+         free(d->sb[ss].x) ; d->sb[ss].x=NULL ;
+         if( d->nzero!=NULL ) d->nzero[ss]=0 ;
+         srm_prog_set(&pb,ss+1,NULL) ;
+       }
+       srm_prog_end(&pb) ;
+     }
+     srm_data_subject_censor(&oq,d,1) ;                /* the Censor files, Xmat GoodLists, and zero volumes */
+   }
+   if( o->repeated_stimulus && o->rel_within ) d->relpre=(double *)malloc(sizeof(double)*2*(size_t)d->nsub) ;
+   srm_prog_begin(&bar,o->progress,o->quiet,"reading and compressing","subjects",d->nsub) ;
+   for( ss=0 ; ss<d->nsub ; ss++ ){
+     srm_data d1 ; srm_subj *s=d->sb+ss ; float *R=NULL ; int r=0 , rc ; char extra[160] ;
+     s->nvox_mask0=s->nvox_mask ;
+     if( s->vox!=NULL ){ s->vox0=(int *)malloc(sizeof(int)*(size_t)s->nvox_mask) ; memcpy(s->vox0,s->vox,sizeof(int)*(size_t)s->nvox_mask) ; }
+     free(s->zflag) ; s->zflag=NULL ;                    /* made again by this read */
+     srm_subject_stage(&oq,d,&d1,ss,K) ;
+     if( lc!=NULL ){                                     /* item reliability needs the voxels: now, before compressing */
+       srm_repg g=srm_rep_groups(&d1) ;
+       srm_reliability_items_one(&d1,lc,&g,ss) ;
+       srm_rep_groups_free(&g) ;
+     }
+     if( s->ncens>0 ){ ncs++ ; ncens+=s->ncens ; }
+     ndrop+=s->ndrop ;
+     rc=SRM_compress(s->x,s->nvox,d1.T,0.0,&R,&r) ;
+     if( rc!=SRM_OK ) ERROR_exit("Subj %s: could not compress the data: %s",s->label,SRM_strerror(rc)) ;
+     if( r<K ) ERROR_exit("Subj %s: the data have rank %d after z-scoring; -nfeatures is %d",s->label,r,K) ;
+     s->ndim=s->nvox ; s->w0K=K ;
+     if( o->nstart==1 ){                                /* the start the uncompressed fit would make */
+       s->w0=(float *)malloc(sizeof(float)*(size_t)r*K) ;
+       rc=SRM_compress_start(s->x,s->nvox,d1.T,R,r,K,o->par.seed,ss,s->w0) ;
+       if( rc!=SRM_OK ) ERROR_exit("Subj %s: the compressed start: %s",s->label,SRM_strerror(rc)) ;
+     }
+     full+=4.0*s->nvox*(double)d1.T ; kept+=4.0*r*(double)d1.T ;
+     free(s->x) ; s->x=R ; s->nvox=r ; s->compressed=1 ;
+     if( r<rmin ) rmin=r ;
+     if( r>rmax ) rmax=r ;
+     if( ss==0 ) first=d1 ;                             /* the timeline, from the first subject */
+     else {
+       if( d1.T!=first.T ) ERROR_exit("internal error: Subj %s keeps %d time points, Subj %s %d",s->label,d1.T,d->sb[0].label,first.T) ;
+       free(d1.seglen) ; free(d1.time_index) ; free(d1.rep_seglen) ; free(d1.rep_time_index) ;
+       if( d->axis_item ) free(d1.keep) ;
+     }
+     if( d1.relpre!=NULL ){ d->relpre[2*ss]=d1.relpre[0] ; d->relpre[2*ss+1]=d1.relpre[1] ; free(d1.relpre) ; }
+     snprintf(extra,sizeof(extra),"Subj %s, rank %d",s->label,r) ;
+     srm_prog_set(&bar,ss+1,extra) ;
+   }
+   srm_prog_end(&bar) ;
+   d->T=first.T ; d->seglen=first.seglen ; d->time_index=first.time_index ; d->nrun=first.nrun ;
+   if( d->axis_item ) d->keep=first.keep ;
+   d->rep_nrun=first.rep_nrun ; d->rep_T=first.rep_T ; d->rep_seglen=first.rep_seglen ; d->rep_time_index=first.rep_time_index ;
+   if( !o->quiet ){
+     INFO_message("-compress: every subject is held as a rank x %d factor of its data (rank %d to %d): %.3g GiB "
+                  "in place of %.3g GiB",d->T,rmin,rmax,kept/GIB,full/GIB) ;
+     if( ncs>0 ) ININFO_message("censoring: %d of %d subjects have censored time points (%d in all), %s",ncs,d->nsub,ncens,
+                                o->cenmode==SRM_CEN_INTERP?"filled in by linear interpolation within each run":
+                                o->cenmode==SRM_CEN_MISSING?"missing for that subject only":"dropped for everyone") ;
+     if( ndrop>0 ) ININFO_message("%d feature%s with no variance in some run %s dropped (see %s.fit.txt)",ndrop,ndrop==1?"":"s",
+                                  ndrop==1?"was":"were",o->prefix) ;
+     if( o->nstart==1 ) ININFO_message("the fit starts where the uncompressed fit would (the same random start, carried into "
+                                       "each subject's factor), so the results are the same up to rounding") ;
+   }
+}
+
+/*! -reliability within on the item axis: an item's repeats (keys Item:n) split into two halves (odd and even repeats,
+    averaged), over the repeated items, overall and in each -score_by level (by its first repeat's level). */
+/*! Subject ss's own reliability on the item axis, overall and per -score_by level, into cx->rel (allocated). */
+static void srm_reliability_items_one( const srm_data *d , srm_ctx *cx , const srm_repg *g , int ss )
+{
+   const srm_subj *s=cx->sb+ss ; int V=s->nvox , T=d->T , nb=g->nb , lv , q ;
+   float *xa=(float *)malloc(sizeof(float)*(size_t)V*nb) , *xb=(float *)malloc(sizeof(float)*(size_t)V*nb) ;
+   for( lv=-1 ; lv<cx->L ; lv++ ){
+     int m=0 , fa=0 ;
+     if( lv>=0 ) while( fa+1<cx->nfac && lv>=cx->fac_off[fa+1] ) fa++ ;
+     for( q=0 ; q<nb ; q++ ){
+       int f , r , na=0 , nbb=0 ;
+       if( lv>=0 && cx->lab[fa][ss][g->first[q]]!=lv-cx->fac_off[fa] ) continue ;
+       for( f=0 ; f<V ; f++ ){ xa[(size_t)f*nb+m]=0.0f ; xb[(size_t)f*nb+m]=0.0f ; }
+       for( r=0 ; r<g->ncol[q] ; r++ ){
+         float *h = (r%2==0) ? xa : xb ;
+         if( r%2==0 ) na++ ; else nbb++ ;
+         for( f=0 ; f<V ; f++ ) h[(size_t)f*nb+m]+=s->x[(size_t)f*T+g->cols[q][r]] ;
+       }
+       for( f=0 ; f<V ; f++ ){ xa[(size_t)f*nb+m]/=na ; xb[(size_t)f*nb+m]/=nbb ; }
+       m++ ;
+     }
+     if( m>0 ){                                        /* the m columns gathered, packed into V x m */
+       float *pa=(float *)malloc(sizeof(float)*(size_t)V*m) , *pb=(float *)malloc(sizeof(float)*(size_t)V*m) ; int f , c ;
+       for( f=0 ; f<V ; f++ ) for( c=0 ; c<m ; c++ ){ pa[(size_t)f*m+c]=xa[(size_t)f*nb+c] ; pb[(size_t)f*m+c]=xb[(size_t)f*nb+c] ; }
+       srm_rel_halves(pa,pb,V,m,cx->rel+2*((size_t)ss*(1+cx->L)+lv+1)) ;
+       free(pa) ; free(pb) ;
+     }
+   }
+   free(xa) ; free(xb) ;
+}
+
+static void srm_reliability_items( const srm_data *d , srm_ctx *cx )
+{
+   srm_repg g=srm_rep_groups(d) ; int ss , q ;
    cx->rel=(double *)malloc(sizeof(double)*2*(size_t)cx->nsub*(1+cx->L)) ;
    for( q=0 ; q<2*cx->nsub*(1+cx->L) ; q++ ) cx->rel[q]=NAN ;
-   for( ss=0 ; ss<cx->nsub ; ss++ ){
-     const srm_subj *s=cx->sb+ss ; int V=s->nvox , T=d->T ;
-     float *xa=(float *)malloc(sizeof(float)*(size_t)V*nb) , *xb=(float *)malloc(sizeof(float)*(size_t)V*nb) ;
-     for( lv=-1 ; lv<cx->L ; lv++ ){
-       int m=0 , fa=0 ;
-       if( lv>=0 ) while( fa+1<cx->nfac && lv>=cx->fac_off[fa+1] ) fa++ ;
-       for( q=0 ; q<nb ; q++ ){
-         int f , r , na=0 , nbb=0 ;
-         if( lv>=0 && cx->lab[fa][ss][first[q]]!=lv-cx->fac_off[fa] ) continue ;
-         for( f=0 ; f<V ; f++ ){ xa[(size_t)f*nb+m]=0.0f ; xb[(size_t)f*nb+m]=0.0f ; }
-         for( r=0 ; r<ncol[q] ; r++ ){
-           float *h = (r%2==0) ? xa : xb ;
-           if( r%2==0 ) na++ ; else nbb++ ;
-           for( f=0 ; f<V ; f++ ) h[(size_t)f*nb+m]+=s->x[(size_t)f*T+cols[q][r]] ;
-         }
-         for( f=0 ; f<V ; f++ ){ xa[(size_t)f*nb+m]/=na ; xb[(size_t)f*nb+m]/=nbb ; }
-         m++ ;
-       }
-       if( m>0 ){                                        /* the m columns gathered, packed into V x m */
-         float *pa=(float *)malloc(sizeof(float)*(size_t)V*m) , *pb=(float *)malloc(sizeof(float)*(size_t)V*m) ; int f , c ;
-         for( f=0 ; f<V ; f++ ) for( c=0 ; c<m ; c++ ){ pa[(size_t)f*m+c]=xa[(size_t)f*nb+c] ; pb[(size_t)f*m+c]=xb[(size_t)f*nb+c] ; }
-         srm_rel_halves(pa,pb,V,m,cx->rel+2*((size_t)ss*(1+cx->L)+lv+1)) ;
-         free(pa) ; free(pb) ;
-       }
-     }
-     free(xa) ; free(xb) ;
-   }
-   if( !cx->quiet ) INFO_message("-reliability within: %d repeated item%s, each split into odd and even repeats",nb,nb==1?"":"s") ;
-   for( q=0 ; q<nb ; q++ ) free(cols[q]) ;
-   free(cols) ; free(ncol) ; free(first) ;
+   if( d->relitems!=NULL )                              /* -compress: made from each subject's voxels while read */
+     memcpy(cx->rel,d->relitems,sizeof(double)*2*(size_t)cx->nsub*(1+cx->L)) ;
+   else for( ss=0 ; ss<cx->nsub ; ss++ ) srm_reliability_items_one(d,cx,&g,ss) ;
+   if( !cx->quiet ) INFO_message("-reliability within: %d repeated item%s, each split into odd and even repeats",g.nb,g.nb==1?"":"s") ;
+   srm_rep_groups_free(&g) ;
 }
 
 /*! -reliability within: the item axis from its repeats; the time axis from -repeated_stimulus (computed before the
@@ -4515,6 +4828,56 @@ static void srm_run_apply_W( srm_opts *o , THD_datatable *tab , int argc , char 
    SRM_free_model(m0) ; SRM_provenance_free(pv) ;
 }
 
+/*! -compress with -save_W or -save_recon: maps on the voxels need the voxels, so each subject is read (and
+    prepared) again, one at a time; its W on the voxels is X M with M = SRM_compress_map(R, W_R), and its
+    means, when the fit centered, the same way.  Projections are the same either way. */
+static void srm_write_outputs_reread( const srm_opts *o , srm_data *d , SRM_model *m , const srm_cvres *res ,
+                                      int K , int argc , char **argv )
+{
+   srm_opts oq=*o ; srm_prog bar ; int ss ;
+   oq.quiet=1 ;
+   srm_prog_begin(&bar,o->progress,o->quiet,"maps: reading again","subjects",d->nsub) ;
+   for( ss=0 ; ss<d->nsub ; ss++ ){
+     srm_subj *s=d->sb+ss ; srm_data d1 ; float *R=s->x , *Wv , *muv=NULL , *wR=m->w[ss] , *muR=(m->mu!=NULL) ? m->mu[ss] : NULL ;
+     int r=s->nvox , T=d->T , V , nvR=m->nvox[ss] , rc ; double *M ; srm_cvres r1 ; float *vr1=NULL ;
+     /* the subject as it was before its features were dropped and it was compressed */
+     s->nvox_mask=s->nvox_mask0 ;
+     if( s->vox0!=NULL ){ free(s->vox) ; s->vox=(int *)malloc(sizeof(int)*(size_t)s->nvox_mask0) ; memcpy(s->vox,s->vox0,sizeof(int)*(size_t)s->nvox_mask0) ; }
+     byte *obs0=s->obs , *miss0=s->miss_in ;            /* kept for the steps after this one */
+     s->x=NULL ; s->obs=NULL ; s->miss_in=NULL ;
+     srm_subject_stage(&oq,d,&d1,ss,K) ;
+     V=s->nvox ;
+     if( V!=(int)s->ndim || d1.T!=T ) ERROR_exit("Subj %s: reading again gave %d features and %d time points, not %d and %d",
+                                                 s->label,V,d1.T,(int)s->ndim,T) ;
+     M=(double *)malloc(sizeof(double)*(size_t)T*K) ;
+     rc=SRM_compress_map(R,r,T,wR,K,M) ;
+     if( rc!=SRM_OK ) ERROR_exit("Subj %s: W on the voxels: %s",s->label,SRM_strerror(rc)) ;
+     Wv=(float *)malloc(sizeof(float)*(size_t)V*K) ;
+     SRM_compress_expand(s->x,V,T,M,K,Wv) ;
+     if( muR!=NULL ){                                   /* the means, the same way */
+       rc=SRM_compress_map(R,r,T,muR,1,M) ;
+       if( rc!=SRM_OK ) ERROR_exit("Subj %s: the means on the voxels: %s",s->label,SRM_strerror(rc)) ;
+       muv=(float *)malloc(sizeof(float)*(size_t)V) ;
+       SRM_compress_expand(s->x,V,T,M,1,muv) ;
+     }
+     free(M) ;
+     m->w[ss]=Wv ; m->nvox[ss]=V ; if( muR!=NULL ) m->mu[ss]=muv ;
+     if( res!=NULL ){ r1=*res ; r1.proj=(res->proj!=NULL) ? res->proj+ss : NULL ; r1.vr2=NULL ; }
+     if( res!=NULL && o->save_r2 && res->r2defer ){      /* the held-out R^2 of every scored fold, on the voxels */
+       vr1=srm_r2_make(ss,s->x,V,T,R,r) ;
+       if( vr1!=NULL ) r1.vr2=&vr1 ;
+     }
+     srm_write_subject_outputs(&oq,&d1,m,ss,res!=NULL ? &r1 : NULL,K,argc,argv) ;
+     m->w[ss]=wR ; m->nvox[ss]=nvR ; if( muR!=NULL ) m->mu[ss]=muR ;
+     free(Wv) ; free(muv) ; free(vr1) ; vr1=NULL ; free(s->x) ; s->x=R ; s->nvox=r ;
+     free(s->obs) ; free(s->miss_in) ; s->obs=obs0 ; s->miss_in=miss0 ;
+     free(d1.seglen) ; free(d1.time_index) ; free(d1.relpre) ; free(d1.rep_seglen) ; free(d1.rep_time_index) ;
+     if( d->axis_item ) free(d1.keep) ;
+     srm_prog_set(&bar,ss+1,NULL) ;
+   }
+   srm_prog_end(&bar) ;
+}
+
 int main( int argc , char **argv )
 {
    srm_opts o ;
@@ -4609,6 +4972,7 @@ int main( int argc , char **argv )
      else if( IS("-repeat_column") ){ NEEDARG("a name") ; free(o.repeat_col) ; o.repeat_col=strdup(argv[nopt++]) ; o.item_col_given=1 ; }
      else if( IS("-item_column") ){ NEEDARG("a name") ; free(o.item_col) ; o.item_col=strdup(argv[nopt++]) ; o.item_col_given=1 ; }
      else if( IS("-repeated_stimulus") ){ o.repeated_stimulus=1 ; nopt++ ; }
+     else if( IS("-compress") ){ o.compress=1 ; nopt++ ; }
      else if( IS("-time_labels") ){
        if( nopt+2>=argc ) ERROR_exit("need a name and a file after -time_labels") ;
        o.tl_name=(char **)realloc(o.tl_name,sizeof(char *)*(o.ntl+1)) ; o.tl_file=(char **)realloc(o.tl_file,sizeof(char *)*(o.ntl+1)) ;
@@ -4763,6 +5127,10 @@ int main( int argc , char **argv )
      if( o.cv_fit!=NULL && !strncasecmp(o.cv_fit,"reference:",10) && strcasecmp(o.cvmode,"loso") )
        ERROR_exit("-cv_fit reference scores the reference group leave-one-subject-out and the others as new subjects: use -cv loso") ;
    }
+   if( o.compress ){                                  /* opt-in while it is verified against the default */
+     if( o.model_in!=NULL || o.apply_W!=NULL )
+       ERROR_exit("-compress is for fitting a group: -model_in and -apply_W hold only the new subjects, one at a time") ;
+   }
    if( o.update_S && o.model_in==NULL ) ERROR_exit("-update_S needs -model_in") ;
    if( o.model_in!=NULL && o.apply_W!=NULL ) ERROR_exit("-model_in and -apply_W cannot be combined") ;
    if( o.model_in!=NULL || o.apply_W!=NULL ){
@@ -4845,6 +5213,20 @@ int main( int argc , char **argv )
 
    /*-- read everything, then the retained timeline, then normalize --*/
 
+   if( o.compress ){                                  /* one subject at a time, each kept as its factor R */
+     srm_ctx lc ; int use_lc=(o.axis_item && o.rel_within) ;
+     if( use_lc ){                                       /* the -score_by labels, from the table, for item reliability */
+       srm_opts oq=o ; int q ;
+       oq.quiet=1 ; memset(&lc,0,sizeof(lc)) ;
+       lc.o=&oq ; lc.sb=d.sb ; lc.nsub=nsub ; lc.quiet=1 ; d.T=d.nitem ;
+       srm_build_labels(&oq,&d,&lc) ;
+       lc.rel=(double *)malloc(sizeof(double)*2*(size_t)nsub*(1+lc.L)) ;
+       for( q=0 ; q<2*nsub*(1+lc.L) ; q++ ) lc.rel[q]=NAN ;
+     }
+     srm_data_compress_stream(&o,&d,K,use_lc ? &lc : NULL) ;
+     if( use_lc ) d.relitems=lc.rel ;
+     nrun=d.nrun ;
+   } else {
    if( o.axis_item ){
      srm_data_read_items(&o,&d) ;
      srm_data_items_timeline(&d) ;
@@ -4856,6 +5238,7 @@ int main( int argc , char **argv )
    }
    srm_data_normalize(&o,&d,o.zscore,K,0) ;
    if( o.repeated_stimulus ){ srm_average_repeats(&o,&d) ; nrun=d.nrun ; if( d.T<K ) ERROR_exit("%d time points per run; -nfeatures is %d",d.T,K) ; }
+   }
    T=d.T ; seglen=d.seglen ; time_index=d.time_index ; censor_keep=d.keep ;
 
    /*-- the fits, and cross-validation --*/
@@ -4957,7 +5340,9 @@ int main( int argc , char **argv )
        srm_prog_begin(&bar,o.progress,o.quiet,"fit","iterations",par.niter) ;
        fp.bar=&bar ; fp.istart=0 ; fp.nstart=o.nstart ; fp.first_obj=0.0 ; fp.tag=NULL ;
        par.progress=srm_fit_progress ; par.progress_ctx=&fp ;
-       rc=SRM_fit_multistart(nsub,T,nvox_v,xv,&par,o.nstart,&m,&fi,start_obj,&best) ;
+       { srm_cmp cm ; srm_cmp_set(sb,NULL,NULL,nsub,K,&par,&cm) ;
+         rc=SRM_fit_multistart(nsub,T,nvox_v,xv,&par,o.nstart,&m,&fi,start_obj,&best) ;
+         srm_cmp_free(&cm) ; }
        srm_prog_end(&bar) ;
        if( rc!=SRM_OK ) ERROR_exit("the fit failed: %s",SRM_strerror(rc)) ;
        if( !o.quiet ){
@@ -5054,7 +5439,8 @@ int main( int argc , char **argv )
                    o.repeated_stimulus ? 0 : Tin-T,Tin,o.repeated_stimulus ? "; the repeated runs averaged (-repeated_stimulus)" : "") ;
          fprintf(fq,"Subj\tGroup\tFeatures_in_mask\tFeatures_used\tFeatures_dropped\trho2\tCensored\n") ;
          for( ss=0 ; ss<nsub ; ss++ )
-           fprintf(fq,"%s\t%s\t%d\t%d\t%d\t%s\t%d\n",sb[ss].label,glabel[sb[ss].group],sb[ss].nvox_mask,sb[ss].nvox,sb[ss].ndrop,
+           fprintf(fq,"%s\t%s\t%d\t%d\t%d\t%s\t%d\n",sb[ss].label,glabel[sb[ss].group],sb[ss].compressed ? sb[ss].nvox_mask0 : sb[ss].nvox_mask,
+                   sb[ss].compressed ? (int)sb[ss].ndim : sb[ss].nvox,sb[ss].ndrop,
                    par.algo==SRM_ALGO_PROB ? (snprintf(cm,sizeof(cm),"%.9g",m->rho2[ss]),cm) : "NA",sb[ss].ncens) ;
          fclose(fq) ;
 
@@ -5096,14 +5482,19 @@ int main( int argc , char **argv )
          for( ss=0 ; ss<nsub ; ss++ ){
            char sn[128] ; srm_safe(sn,sizeof(sn),sb[ss].label) ; pv->label[ss]=strdup(sn) ;
          }
-         rc=SRM_save_model(fn,m,pv) ;
+         { int *nvr=NULL ;                             /* -compress: the model's subjects have their voxel counts */
+           if( sb[0].compressed ){ nvr=(int *)malloc(sizeof(int)*(size_t)nsub) ;
+             for( ss=0 ; ss<nsub ; ss++ ){ nvr[ss]=m->nvox[ss] ; m->nvox[ss]=(int)sb[ss].ndim ; } }
+           rc=SRM_save_model(fn,m,pv) ;
+           if( nvr!=NULL ){ for( ss=0 ; ss<nsub ; ss++ ) m->nvox[ss]=nvr[ss] ; free(nvr) ; } }
          if( rc!=SRM_OK ) ERROR_exit("cannot write the model '%s': %s",fn,SRM_strerror(rc)) ;
          SRM_provenance_free(pv) ;
          if( !o.quiet ) INFO_message("wrote %s",fn) ;
        }
 
        /* per subject: the data in the shared space (held out, under -cv), and the maps */
-       srm_write_subject_outputs(&o,&d,m,0,have_res?&res:NULL,K,argc,argv) ;
+       if( sb[0].compressed && (o.save_W || o.save_recon || o.save_r2) ) srm_write_outputs_reread(&o,&d,m,have_res?&res:NULL,K,argc,argv) ;
+       else srm_write_subject_outputs(&o,&d,m,0,have_res?&res:NULL,K,argc,argv) ;
        if( o.rel_split ) srm_reliability_split(&cx,m,o.nsplit) ;
        if( have_res ) srm_cvres_free(&res) ;
        SRM_free_fitinfo(&fi) ; SRM_free_model(m) ; free(start_obj) ;

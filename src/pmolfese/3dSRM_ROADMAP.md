@@ -310,6 +310,29 @@ by most of a copy of the data over the folds (48.3 GiB measured against a 35.8 G
 fold's copy ((T − shortest run) + longest run, under `-cv run`; one subject's data for `-cv loso` and `-model_in`)
 and one input on its full grid while it is read. Estimate 38.4 GiB, measured 38.0.
 
+**`-compress` (2026-10-11, opt-in while verified):** each subject is read, censored and z-scored one at a time,
+then replaced by R (rank × T, at most T × T) with R'R = X'X, a pivoted Cholesky of X'X formed in double
+(`SRM_compress`). Everything the fit and CV do with X goes through X'X, and W stays in the span of X, so a fit of R
+with `SRM_params.ndim` = voxels (the noise variance is per voxel) is the fit of X with W = U W_R. It starts where
+the default would, `SRM_compress_start` = U'W0 carried in as `SRM_params.w0`, so S, the scores, projections, rho2
+and the model agree with the default to about 1e-7, in every configuration tested (unit tests; check_3dSRM
+`case_compress`; the paranoia data). Voxel maps (`-save_W`, `-save_recon`) read each subject again: W = X M,
+M = `SRM_compress_map(R, W_R)` (T × k), with `SRM_compress_expand` threaded. To make fits of subsets agree too,
+every fit now gives each subject the random-start stream of its whole-table index (`SRM_params.stream`), in both
+modes. A subject therefore starts the same way in every fit; this changed the default's `-cv_fit`/`-balance`
+starts. The remaining gaps are closed:
+- `-save_r2`: each scored fold notes its W and means in R, its reference, and its held-out columns. At the re-read,
+  W = X M is scored on the voxels with `SRM_reconstruction_r2`, averaged over folds and then over fits, as in the
+  default.
+- Item-axis `-reliability within`: made from each subject's voxels before they are compressed. The `-score_by`
+  labels come from the table first.
+- `-cenmode drop -zcensor`: a first read of every subject finds the all-zero volumes.
+
+All agree with the default to about 1e-7. Not with `-model_in` or `-apply_W`, which hold only the new subjects. On the full Shen mask (22 × 161k voxels × 1310 TRs, `-cv run`, k = 50): 38.0 GiB / 6.6 min →
+3.7 GiB / 3.9 min.
+`-float16` was considered and dropped: the fit and CV hand the library every subject's data at once as floats, so
+16-bit storage would need half-precision kernels throughout; with `-compress` it would save nothing.
+
 **Performance, if wanted:** reuse each subject's Gram matrix across CV folds and `-nstart` starts (also removes the CV
 copy of the data); tuned plain-C kernels for the passes that still read the voxels (forming G, final W, projections, r2);
 form G in parallel within a subject; count the full-run read (all grid voxels) in the memory preflight, or read volume

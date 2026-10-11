@@ -2581,6 +2581,87 @@ static int test_missing_update( void )
    return 0 ;
 }
 
+/* Compressed views: R'R = X'X, rank T - runs for data centered within runs; a fit of the R (ndim = nvox, the
+   start carried over) is the fit of X: S, rho2, the objective trace, and W = X M, for DET and PROB, one W or
+   a W per run, all observed or with missing points. */
+static int test_compress( void )
+{
+   int nvox[4]={120,150,90,200} , T=72 , k=3 , seg[3]={24,24,24} , i , t , f , alg , mode ;
+   double sg[4]={0.5,0.7,0.6,0.8} ; synth s ; float *R[4] , *w0[4] ; int rank[4] ; unsigned char *obs[4] ; srm_rng rg ;
+   double ndim[4] ;
+   CHECK(synth_make(&s,4,nvox,T,k,sg,515)==0,"synth") ;
+   for( i=0 ; i<4 ; i++ ) for( f=0 ; f<nvox[i] ; f++ ){         /* center every feature within each run */
+     int r , c0=0 ;
+     for( r=0 ; r<3 ; c0+=seg[r],r++ ){
+       double m=0.0 ; for( t=c0 ; t<c0+seg[r] ; t++ ) m+=s.x[i][f*T+t] ; m/=seg[r] ;
+       for( t=c0 ; t<c0+seg[r] ; t++ ) s.x[i][f*T+t]-=(float)m ;
+     }
+   }
+   srm_rng_init(&rg,77,1) ;
+   for( i=0 ; i<4 ; i++ ){ obs[i]=(unsigned char *)malloc(T) ; for( t=0 ; t<T ; t++ ) obs[i][t]=(srm_unif(&rg)>0.15) ; ndim[i]=nvox[i] ; }
+   for( i=0 ; i<4 ; i++ ){
+     double worst=0.0 , sc=0.0 ; int a , b ;
+     CHECK(SRM_compress(s.x[i],nvox[i],T,0.0,&R[i],&rank[i])==SRM_OK,"compress") ;
+     CHECK(rank[i]==T-3,"rank T - 3 for data centered within 3 runs") ;
+     for( a=0 ; a<T ; a++ ) for( b=0 ; b<T ; b++ ){
+       double g=0.0 , h=0.0 ; int q ;
+       for( f=0 ; f<nvox[i] ; f++ ) g+=(double)s.x[i][f*T+a]*s.x[i][f*T+b] ;
+       for( q=0 ; q<rank[i] ; q++ ) h+=(double)R[i][q*T+a]*R[i][q*T+b] ;
+       worst=fmax(worst,fabs(g-h)) ; sc=fmax(sc,fabs(g)) ;
+     }
+     CHECK(worst<1e-5*sc,"R'R = X'X") ;
+   }
+   for( alg=0 ; alg<2 ; alg++ ) for( mode=0 ; mode<4 ; mode++ ){    /* mode: shared, coupled, shared+missing, coupled+missing */
+     SRM_params p ; SRM_model *mx=NULL , *mr=NULL ; SRM_fitinfo fx , fr ; float *xz[4] , *Rz[4] ; int rz[4] , it ; double es=0.0 , ns=0.0 , eo=0.0 , ew=0.0 ;
+     int miss=(mode>=2) , cpl=(mode%2) ;
+     for( i=0 ; i<4 ; i++ ){                                  /* missing points are 0 in the data */
+       xz[i]=(float *)malloc(sizeof(float)*nvox[i]*T) ;
+       for( f=0 ; f<nvox[i] ; f++ ) for( t=0 ; t<T ; t++ ) xz[i][f*T+t]=(miss && !obs[i][t]) ? 0.0f : s.x[i][f*T+t] ;
+       if( miss ){ CHECK(SRM_compress(xz[i],nvox[i],T,0.0,&Rz[i],&rz[i])==SRM_OK,"compress, missing") ; }
+       else { Rz[i]=R[i] ; rz[i]=rank[i] ; }
+       w0[i]=(float *)malloc(sizeof(float)*rz[i]*k) ;
+     }
+     SRM_params_default(&p) ; p.nfeat=k ; p.niter=25 ; p.tol=0.0 ; p.center=0 ; p.seed=31 ;
+     p.algo = alg ? SRM_ALGO_DET : SRM_ALGO_PROB ;
+     if( cpl ){ p.nseg=3 ; p.seglen=seg ; p.coupling=20.0 ; }
+     if( miss ) p.obs=(const unsigned char * const *)obs ;
+     CHECK(SRM_fit(4,T,nvox,xz,&p,&mx,&fx)==SRM_OK,"fit of X") ;
+     for( i=0 ; i<4 ; i++ ) CHECK(SRM_compress_start(xz[i],nvox[i],T,Rz[i],rz[i],k,p.seed,i,w0[i])==SRM_OK,"the start, compressed") ;
+     p.ndim=ndim ; p.w0=(float * const *)w0 ;
+     CHECK(SRM_fit(4,T,rz,Rz,&p,&mr,&fr)==SRM_OK,"fit of R") ;
+     for( t=0 ; t<k*T ; t++ ){ double e=(double)mx->s[t]-mr->s[t] ; es+=e*e ; ns+=(double)mx->s[t]*mx->s[t] ; }
+     for( it=0 ; it<=fx.niter_done && it<=fr.niter_done ; it++ ) eo=fmax(eo,fabs(fx.objective[it]-fr.objective[it])/fabs(fx.objective[it])) ;
+     for( i=0 ; i<4 ; i++ ){                                  /* W on the features, from X and M */
+       double *M=(double *)malloc(sizeof(double)*T*k) , num=0.0 , den=0.0 ; int c ;
+       CHECK(SRM_compress_map(Rz[i],rz[i],T,mr->w[i],k,M)==SRM_OK,"map") ;
+       for( f=0 ; f<nvox[i] ; f++ ) for( c=0 ; c<k ; c++ ){
+         double w=0.0 ; for( t=0 ; t<T ; t++ ) w+=(double)xz[i][f*T+t]*M[t*k+c] ;
+         num+=(w-mx->w[i][f*k+c])*(w-mx->w[i][f*k+c]) ; den+=(double)mx->w[i][f*k+c]*mx->w[i][f*k+c] ;
+       }
+       ew=fmax(ew,sqrt(num/den)) ; free(M) ;
+     }
+     if( getenv("SRM_TEST_VERBOSE") ) fprintf(stderr,"[compress %s mode %d] S %.2e obj %.2e W %.2e\n",alg?"det":"prob",mode,sqrt(es/ns),eo,ew) ;
+     CHECK(fx.niter_done==fr.niter_done,"compressed: the same number of iterations") ;
+     CHECK(sqrt(es/ns)<2e-4,"compressed: S = the uncompressed S") ;
+     CHECK(eo<1e-6,"compressed: the objective trace = the uncompressed one") ;
+     CHECK(ew<2e-4,"compressed: W = X M = the uncompressed W") ;
+     if( !alg ){ double er=0.0 ; for( i=0 ; i<4 ; i++ ) er=fmax(er,fabs(mx->rho2[i]-mr->rho2[i])/mx->rho2[i]) ;
+       CHECK(er<1e-5,"compressed: rho2 per original feature (ndim)") ; }
+     for( i=0 ; i<4 ; i++ ){ free(xz[i]) ; free(w0[i]) ; if( miss ) free(Rz[i]) ; }
+     SRM_free_model(mx) ; SRM_free_model(mr) ; SRM_free_fitinfo(&fx) ; SRM_free_fitinfo(&fr) ;
+   }
+   { float *Z=(float *)malloc(sizeof(float)*nvox[0]*T) , *Rq ; int rq ;          /* all-zero columns give zero columns of R */
+     memcpy(Z,s.x[0],sizeof(float)*nvox[0]*T) ;
+     for( f=0 ; f<nvox[0] ; f++ ){ Z[f*T+5]=0.0f ; Z[f*T+40]=0.0f ; }
+     CHECK(SRM_compress(Z,nvox[0],T,0.0,&Rq,&rq)==SRM_OK,"compress with zero columns") ;
+     { int q , bad=0 ; for( q=0 ; q<rq ; q++ ) if( Rq[q*T+5]!=0.0f || Rq[q*T+40]!=0.0f ) bad=1 ;
+       CHECK(!bad && rq==T-3,"zero columns stay zero (rank: 2 zero columns, and the one run still centered)") ; }
+     free(Z) ; free(Rq) ; }
+   for( i=0 ; i<4 ; i++ ){ free(R[i]) ; free(obs[i]) ; }
+   synth_free(&s) ;
+   return 0 ;
+}
+
 static int test_missing( void )
 {
    int nvox[4]={30,36,33,40} , T=60 , k=3 , i , t , alg , kern ;
@@ -2822,6 +2903,7 @@ int main( int argc , char **argv )
    if( test_multistart()         ) return 1 ;
    if( test_gram()               ) return 1 ;
    if( test_missing()            ) return 1 ;
+   if( test_compress()           ) return 1 ;
    if( test_missing_coupled()    ) return 1 ;
    if( test_missing_update()     ) return 1 ;
    if( test_obs_metrics()        ) return 1 ;
