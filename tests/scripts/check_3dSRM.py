@@ -838,7 +838,12 @@ def case_compress(prog, cli, work, rng):
     (d / "cens.txt").write_text("Subj Group Run Censor InputFile\n" + "\n".join(
         f"{s_} {g} {r} {d / (s_ + '_cens.1D')} {f}" for s_, g, r, _, f in rows) + "\n")
     base = ["-mask", d / "mask.nii.gz", "-progress", "off", "-overwrite", "-niter", 30, "-tol", 0, "-match_window", 5]
-    p = run([prog, "-prefix", d / "c0", "-nfeatures", K, "-cv", "run", "-dataTableFile", d / "table.txt", "-compress"] + base)
+    p = run([prog, "-prefix", d / "c0", "-nfeatures", K, "-cv", "run", "-dataTableFile", d / "table.txt"] + base)
+    check("-compress is the default when every subject has more voxels than time points (192 > 180)",
+          float("-compress: every subject is held" not in p.stdout + p.stderr), 0.0, "{:.0f}")
+    pr = run([prog, "-prefix", d / "bad", "-nfeatures", K, "-dataTableFile", d / "table.txt", "-compress", "-no_compress"] + base,
+             expect_ok=False)
+    check("E: -compress with -no_compress", float(pr.returncode == 0 or "not both" not in pr.stdout + pr.stderr), 0.0, "{:.0f}")
     log = p.stdout + p.stderr
     check("-compress: the log gives the factors' size, and says the start is the default's",
           float("-compress: every subject is held as a rank x 180 factor" not in log or "the same random start" not in log), 0.0, "{:.0f}")
@@ -857,7 +862,7 @@ def case_compress(prog, cli, work, rng):
     ]
     for label, args, tab, maps, recon in cases:
         a, b = "ref_" + str(abs(hash(label)) % 10**6), "cmp_" + str(abs(hash(label)) % 10**6)
-        run([prog, "-prefix", d / a, "-dataTableFile", d / tab] + base + args)
+        run([prog, "-prefix", d / a, "-dataTableFile", d / tab, "-no_compress"] + base + args)
         run([prog, "-prefix", d / b, "-dataTableFile", d / tab, "-compress"] + base + args)
         if "scan" in label:
             n1 = [ln for ln in (d / f"{a}.nfeat.txt").read_text().splitlines() if ln and not ln.startswith("#")][1:]
@@ -871,7 +876,7 @@ def case_compress(prog, cli, work, rng):
                         ("-cv_fit reference -balance", ["-nfeatures", K, "-cv", "loso", "-cv_fit", "reference:ctl", "-balance", 2]),
                         ("-reliability split", ["-nfeatures", K, "-cv", "run", "-reliability", "split", "-nsplit", 3])):
         a, b = "sub_ref_" + str(abs(hash(label)) % 10**6), "sub_cmp_" + str(abs(hash(label)) % 10**6)
-        run([prog, "-prefix", d / a, "-dataTableFile", d / "table.txt"] + base + args)
+        run([prog, "-prefix", d / a, "-dataTableFile", d / "table.txt", "-no_compress"] + base + args)
         run([prog, "-prefix", d / b, "-dataTableFile", d / "table.txt", "-compress"] + base + args)
         compare_compress(d, a, b, names, r2map=("-save_r2" in args), label=label)
     # the item axis (one subject of .1D items), and -repeated_stimulus with -reliability within
@@ -880,8 +885,11 @@ def case_compress(prog, cli, work, rng):
     write_item_table(d / "items.txt", irows)
     ib = ["-axis", "item", "-nfeatures", K, "-cv", "run", "-progress", "off", "-overwrite", "-niter", 30, "-tol", 0, "-proj_format", "1D",
           "-reliability", "within"]
-    run([prog, "-prefix", d / "it_ref", "-dataTableFile", d / "items.txt"] + ib)
-    run([prog, "-prefix", d / "it_cmp", "-dataTableFile", d / "items.txt", "-compress"] + ib)
+    run([prog, "-prefix", d / "it_ref", "-dataTableFile", d / "items.txt", "-no_compress"] + ib)
+    p = run([prog, "-prefix", d / "it_cmp", "-dataTableFile", d / "items.txt", "-compress"] + ib)
+    pa = run([prog, "-prefix", d / "it_auto", "-dataTableFile", d / "items.txt"] + ib)
+    check("-compress is off by default when a subject has no more features than items (a .1D subject)",
+          float("held whole (not compressed): 1 subject has no more features than items" not in pa.stdout + pa.stderr), 0.0, "{:.0f}")
     compare_compress(d, "it_ref", "it_cmp", [s_["label"] for s_ in isubs], label="-axis item -reliability within")
     RUNS = [50, 50, 50]
     try:
@@ -893,7 +901,7 @@ def case_compress(prog, cli, work, rng):
     write_nifti(d / "rep_mask.nii.gz", rcommon.astype(np.float32)[..., None])
     rb = ["-mask", d / "rep_mask.nii.gz", "-nfeatures", K, "-repeated_stimulus", "-reliability", "within", "-cv", "run",
           "-match_window", 4, "-progress", "off", "-overwrite", "-niter", 30, "-tol", 0]
-    run([prog, "-prefix", d / "rep_ref", "-dataTableFile", d / "rep.txt"] + rb)
+    run([prog, "-prefix", d / "rep_ref", "-dataTableFile", d / "rep.txt", "-no_compress"] + rb)
     run([prog, "-prefix", d / "rep_cmp", "-dataTableFile", d / "rep.txt", "-compress"] + rb)
     compare_compress(d, "rep_ref", "rep_cmp", [s_["label"] for s_ in rsubs], label="-repeated_stimulus -reliability within")
     # -cenmode drop -zcensor: all-zero volumes (two subjects) drop for everyone; -compress finds them in a first read
@@ -910,7 +918,7 @@ def case_compress(prog, cli, work, rng):
     write_nifti(d / "zc_mask.nii.gz", zcommon.astype(np.float32)[..., None])
     zb = ["-mask", d / "zc_mask.nii.gz", "-nfeatures", K, "-cv", "run", "-cenmode", "drop", "-zcensor", "-match_window", 5,
           "-progress", "off", "-overwrite", "-niter", 30, "-tol", 0]
-    run([prog, "-prefix", d / "zc_ref", "-dataTableFile", d / "zc.txt"] + zb)
+    run([prog, "-prefix", d / "zc_ref", "-dataTableFile", d / "zc.txt", "-no_compress"] + zb)
     p = run([prog, "-prefix", d / "zc_cmp", "-dataTableFile", d / "zc.txt", "-compress"] + zb)
     check("-compress -cenmode drop -zcensor: says it reads every subject once more",
           float("read once more, first" not in p.stdout + p.stderr), 0.0, "{:.0f}")

@@ -310,7 +310,10 @@ by most of a copy of the data over the folds (48.3 GiB measured against a 35.8 G
 fold's copy ((T − shortest run) + longest run, under `-cv run`; one subject's data for `-cv loso` and `-model_in`)
 and one input on its full grid while it is read. Estimate 38.4 GiB, measured 38.0.
 
-**`-compress` (2026-10-11, opt-in while verified):** each subject is read, censored and z-scored one at a time,
+**`-compress` (2026-10-11; the default since then):** it is used whenever every subject has more features than time
+points (or items), outside `-model_in` and `-apply_W`. Otherwise every subject is held whole, and the log says why.
+`-no_compress` restores the old behavior, and `-compress` forces it. Since the change, the check_3dSRM fits run
+compressed by default and still agree with their driver and numpy references. Details: each subject is read, censored and z-scored one at a time,
 then replaced by R (rank × T, at most T × T) with R'R = X'X, a pivoted Cholesky of X'X formed in double
 (`SRM_compress`). Everything the fit and CV do with X goes through X'X, and W stays in the span of X, so a fit of R
 with `SRM_params.ndim` = voxels (the noise variance is per voxel) is the fit of X with W = U W_R. It starts where

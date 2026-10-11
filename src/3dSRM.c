@@ -27,7 +27,7 @@ static char *srm_options[] = {
    "-mask", "-run_column", "-group_column", "-zscore",
    "-censor", "-zcensor", "-zcensor_warn",
    "-axis", "-item_column", "-repeated_stimulus", "-time_labels",
-   "-model_in", "-update_S", "-run_coupling", "-cv_adapt", "-apply_W", "-score_by", "-cv_fit", "-balance", "-reliability", "-compress",
+   "-model_in", "-update_S", "-run_coupling", "-cv_adapt", "-apply_W", "-score_by", "-cv_fit", "-balance", "-reliability", "-compress", "-no_compress",
    "-nsplit", "-nperm", "-cv", "-cv_blocks", "-cv_metrics", "-match_window", "-loso_iter",
    "-save_W", "-save_recon", "-save_r2", "-proj_format", "-no_projected",
    "-memory_limit", "-memory_override", "-quiet", "-progress",
@@ -810,22 +810,27 @@ static void usage_3dSRM(void)
 "  -memory_limit G      Refuse an estimated peak above G GiB. Without this\n"
 "                       option the limit is 80%% of detected physical RAM.\n"
 "  -memory_override     Continue after the memory estimate exceeds its limit.\n"
-"  -compress            ** NEW, opt-in while it is verified **\n"
+"  -no_compress         Hold every subject's data whole (voxels x T), as\n"
+"                       before -compress became the default. The results are\n"
+"                       the same up to rounding; it needs far more memory.\n"
+"  -compress            [the default when every subject has more features\n"
+"                       than time points (or items), outside -model_in and\n"
+"                       -apply_W; given explicitly, it is used regardless]\n"
 "                       Hold each subject as an exact T x T (at most) factor\n"
 "                       R of its prepared data X, with R'R = X'X, instead of\n"
 "                       voxels x T. Everything the fit and -cv do with X goes\n"
 "                       through X'X, and W always lies in the span of X, so\n"
 "                       S, the scores, the projections, rho2 and the model\n"
-"                       are those of the default, up to rounding (about\n"
-"                       1e-7; the fit starts where the default's would).\n"
+"                       are those of -no_compress, up to rounding (about\n"
+"                       1e-7; the fit starts where the uncompressed one would).\n"
 "                       Subjects are read, censored, z-scored and compressed\n"
 "                       one at a time, so the data are never all in memory:\n"
 "                       for whole-brain naturalistic data this is the\n"
 "                       difference between tens of GB and a few. -save_W and\n"
 "                       -save_recon read each subject again at the end (W on\n"
 "                       the voxels is X M, M small). With -nstart > 1 only\n"
-"                       the first start is the default's, so the best of\n"
-"                       several starts can differ from the default's.\n"
+"                       the first start is the uncompressed one's, so the\n"
+"                       best of several starts can differ from -no_compress.\n"
 "                       -save_r2 notes each scored fold's W and reference\n"
 "                       and makes the voxelwise R^2 when the subject is read\n"
 "                       again. Item reliability (-reliability within) is made\n"
@@ -840,16 +845,19 @@ static void usage_3dSRM(void)
 "  -quiet               Suppress progress and informational diagnostics.\n"
 "  -show_table          Print the parsed table and exit.\n"
 "\n"
-"  Memory is roughly the sum over subjects of voxels x time x 4 bytes for the\n"
-"  data, plus voxels x k x 4 bytes per subject for W, plus the larger of: the\n"
-"  copies -cv run makes of the largest fold (about (T - shortest run + longest\n"
-"  run) / T of the data; -cv loso and -model_in copy one subject at a time),\n"
-"  and one input being read whole, on its full grid, as floats. The estimate\n"
-"  is printed when it is over half of physical memory, or whenever\n"
-"  -memory_limit is given. For example, 22 subjects, 161k voxels, three runs\n"
-"  (526, 452, 332 TRs), k = 50, -cv run: estimated 38.4 GiB, measured 38.0.\n"
-"  Most of the time goes to matrix products of that size, run subject-\n"
-"  parallel under OpenMP.\n"
+"  Memory, compressed (the default when subjects have more features than time\n"
+"  points): one subject's data while it is read, plus one input on its full\n"
+"  grid as floats, plus each subject's factor (at most T x T x 4 bytes).\n"
+"  With -no_compress: the sum over subjects of voxels x time x 4 bytes, plus\n"
+"  voxels x k x 4 bytes per subject for W, plus the larger of the copies -cv\n"
+"  run makes of the largest fold (about (T - shortest run + longest run) / T\n"
+"  of the data; -cv loso and -model_in copy one subject at a time) and one\n"
+"  input being read. The estimate is printed when it is over half of\n"
+"  physical memory, or whenever -memory_limit is given. For example, 22\n"
+"  subjects, 161k voxels, three runs (526, 452, 332 TRs), k = 50, -cv run:\n"
+"  3.7 GiB and 3.9 min by default; 38.0 GiB and 6.6 min with -no_compress.\n"
+"  Most of the time goes to reading, and then to matrix products, run\n"
+"  subject-parallel under OpenMP.\n"
 "\n"
 "  When every subject has at least T+k voxels (T time points), the fit forms\n"
 "  each subject's (T+k) x (T+k) Gram matrix once and iterates on that, so an\n"
@@ -973,7 +981,8 @@ typedef struct {
    char   *xmat_stims ;              /* -xmat_stims: the conditions an Xmat table expands to (all) */
    double  xmat_label_frac ;         /* -xmat_label_frac: a TR is a condition's at this fraction of its peak */
    int     repeated_stimulus ;
-   int     compress ;                /* -compress: each subject held as R, R'R = X'X */
+   int     compress ;                /* each subject held as R, R'R = X'X (the default when it saves memory) */
+   int     compress_given , no_compress ;
    char   *cvmode ;                  /* none | run | loso */
    int     cv_blocks , match_window , loso_iter ; int cv_blocks_given , match_window_given ;
    char   *cv_metrics , *fold_col , *score_by , *cv_fit ;
@@ -4203,6 +4212,20 @@ static void srm_data_compress_stream( const srm_opts *o , srm_data *d , int K , 
      if( ncs>0 ) ININFO_message("censoring: %d of %d subjects have censored time points (%d in all), %s",ncs,d->nsub,ncens,
                                 o->cenmode==SRM_CEN_INTERP?"filled in by linear interpolation within each run":
                                 o->cenmode==SRM_CEN_MISSING?"missing for that subject only":"dropped for everyone") ;
+     if( o->cenmode==SRM_CEN_DROP && !d->axis_item && d->keep!=NULL ){   /* the same account as without -compress */
+       int nk=0 , t ;
+       for( t=0 ; t<d->Tin ; t++ ) nk+=(d->keep[t]==0) ;
+       ININFO_message("dropped for everyone (-cenmode drop): %d of %d time points are censored in at least one subject",nk,d->Tin) ;
+       if( nk>d->Tin/4 ) WARNING_message("-cenmode drop loses %.0f%% of the time points: every subject's censoring is lost by "
+                                         "all. Consider -cenmode interp",100.0*nk/d->Tin) ;
+     }
+     if( o->repeated_stimulus ){
+       int nmiss=0 ; for( ss=0 ; ss<d->nsub ; ss++ ) nmiss+=(d->sb[ss].obs!=NULL) ;
+       INFO_message("-repeated_stimulus: the %d runs (%d time points each) are averaged for the fit",first.rep_nrun,d->T) ;
+       if( o->cenmode==SRM_CEN_MISSING )
+         ININFO_message("each time point over the runs where the subject was observed; %d subject%s still missing somewhere "
+                        "(missing in every run)",nmiss,nmiss==1?" is":"s are") ;
+     }
      if( ndrop>0 ) ININFO_message("%d feature%s with no variance in some run %s dropped (see %s.fit.txt)",ndrop,ndrop==1?"":"s",
                                   ndrop==1?"was":"were",o->prefix) ;
      if( o->nstart==1 ) ININFO_message("the fit starts where the uncompressed fit would (the same random start, carried into "
@@ -4972,7 +4995,8 @@ int main( int argc , char **argv )
      else if( IS("-repeat_column") ){ NEEDARG("a name") ; free(o.repeat_col) ; o.repeat_col=strdup(argv[nopt++]) ; o.item_col_given=1 ; }
      else if( IS("-item_column") ){ NEEDARG("a name") ; free(o.item_col) ; o.item_col=strdup(argv[nopt++]) ; o.item_col_given=1 ; }
      else if( IS("-repeated_stimulus") ){ o.repeated_stimulus=1 ; nopt++ ; }
-     else if( IS("-compress") ){ o.compress=1 ; nopt++ ; }
+     else if( IS("-compress") ){ o.compress=1 ; o.compress_given=1 ; nopt++ ; }
+     else if( IS("-no_compress") ){ o.no_compress=1 ; nopt++ ; }
      else if( IS("-time_labels") ){
        if( nopt+2>=argc ) ERROR_exit("need a name and a file after -time_labels") ;
        o.tl_name=(char **)realloc(o.tl_name,sizeof(char *)*(o.ntl+1)) ; o.tl_file=(char **)realloc(o.tl_file,sizeof(char *)*(o.ntl+1)) ;
@@ -5127,7 +5151,8 @@ int main( int argc , char **argv )
      if( o.cv_fit!=NULL && !strncasecmp(o.cv_fit,"reference:",10) && strcasecmp(o.cvmode,"loso") )
        ERROR_exit("-cv_fit reference scores the reference group leave-one-subject-out and the others as new subjects: use -cv loso") ;
    }
-   if( o.compress ){                                  /* opt-in while it is verified against the default */
+   if( o.compress_given && o.no_compress ) ERROR_exit("give -compress or -no_compress, not both") ;
+   if( o.compress ){                                  /* given explicitly */
      if( o.model_in!=NULL || o.apply_W!=NULL )
        ERROR_exit("-compress is for fitting a group: -model_in and -apply_W hold only the new subjects, one at a time") ;
    }
@@ -5206,6 +5231,16 @@ int main( int argc , char **argv )
      }
    }
    srm_check_subject_outputs(&o,&d) ;
+
+   /*-- compress (the default) when it saves memory: every subject has more features than time points (or items) --*/
+   if( !o.no_compress && !o.compress_given ){
+     int ss2 , lim=o.axis_item ? d.nitem : d.Tin , few=0 ;
+     for( ss2=0 ; ss2<nsub ; ss2++ ) if( d.sb[ss2].nvox_mask<=lim ) few++ ;
+     o.compress=(few==0) ;
+     if( few>0 && !o.quiet )
+       INFO_message("each subject held whole (not compressed): %d subject%s %s no more features than %s (%d)",
+                    few,few==1?"":"s",few==1?"has":"have",o.axis_item?"items":"time points",lim) ;
+   }
 
    /*-- the memory contract, before the big allocations --*/
 
