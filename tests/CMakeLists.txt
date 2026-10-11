@@ -142,4 +142,33 @@ if(ENABLE_TESTS)
   )
   add_test(NAME thd_patterns:unit COMMAND thd_patterns_unit)
   set_tests_properties(thd_patterns:unit PROPERTIES LABELS "3dRSA;numeric;unit")
+
+  add_executable(
+    thd_xmat_unit
+    ${CMAKE_SOURCE_DIR}/src/thd_xmat.c
+    ${CMAKE_SOURCE_DIR}/src/thd_datatable.c
+    ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_xmat.c
+  )
+  target_include_directories(thd_xmat_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(
+    thd_xmat_unit
+    PRIVATE AFNI::mri NIFTI::nifti2 NIFTI::nifticdf m
+  )
+  add_test(NAME thd_xmat:unit COMMAND thd_xmat_unit)
+  set_tests_properties(thd_xmat:unit PROPERTIES LABELS "3dSRM;3dMVPA;numeric;unit")
+
+  add_executable(
+    thd_sampleset_unit
+    ${CMAKE_SOURCE_DIR}/src/thd_sampleset.c
+    ${CMAKE_SOURCE_DIR}/src/thd_xmat.c
+    ${CMAKE_SOURCE_DIR}/src/thd_datatable.c
+    ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_sampleset.c
+  )
+  target_include_directories(thd_sampleset_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(
+    thd_sampleset_unit
+    PRIVATE AFNI::mri NIFTI::nifti2 NIFTI::nifticdf m
+  )
+  add_test(NAME thd_sampleset:unit COMMAND thd_sampleset_unit)
+  set_tests_properties(thd_sampleset:unit PROPERTIES LABELS "3dMVPA;numeric;unit")
 endif()
