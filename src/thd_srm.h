@@ -501,6 +501,14 @@ extern int SRM_model_add_view_obs( SRM_model *m , const float *x , int nvox ,
 extern int SRM_compress( const float *x , int nvox , int ntime , double tol ,
                          float **R_out , int *rank_out ) ;
 
+/*! SRM_compress and SRM_compress_start together, from one pass over the
+    voxels (X'[X W0] at once): R, and in w0_out (rank x nfeat; NULL for none)
+    the random start of view `stream` carried into R.  The rank is at most
+    ntime, so w0_out needs ntime x nfeat floats. */
+extern int SRM_compress_ex( const float *x , int nvox , int ntime , double tol ,
+                            int nfeat , unsigned int seed , int stream ,
+                            float **R_out , int *rank_out , float *w0_out ) ;
+
 /*! The random start of view `stream` (as SRM_fit makes it from seed for an
     nvox-feature view), carried into the compressed space: w0 = U' W0
     (rank x nfeat).  A fit of the R with this as SRM_params.w0 follows the

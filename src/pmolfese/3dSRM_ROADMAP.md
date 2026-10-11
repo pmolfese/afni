@@ -191,6 +191,10 @@ subjects into a saved model (with `-cv run`); `-update_S` (EXPERIMENTAL) lets S 
 subject's W to other data. All three work on either axis, and `-apply_W` also goes from a time-axis model to item
 betas (the movie-to-task design).
 
+**Memory.** By default (`-compress`, whenever every subject has more features than time points) each subject is read,
+prepared, and held as a factor R with R'R = X'X: about 4 GiB for 22 subjects × 161k voxels × 1310 TRs, against 38 GiB
+with `-no_compress`, and the same results to about 1e-7.
+
 **Outputs.** `S.1D` (item keys in its header on the item axis), `proj.SUBJ` (labelled with item keys), `fit.txt`
 (features, rho2, censored count), `objective.1D`, `rho2.1D`, `scores.txt` and `scores_folds.txt` (Factor/Level rows),
 `coupling.txt`, `nfeat.txt`, and optional W, recon and r2 maps.
@@ -268,8 +272,8 @@ Still open: further facts as columns (events per condition, censored fraction pe
    a subject in no subset gets NA with a warning.)
 2. (Done 2026-10-10: `-reliability split` (`PREFIX.reliability.txt`, `_splits.txt`; halves warm-started from the full
    fit, mean cos^2 of the principal angles), `-reliability within` (odd vs even repeats or runs, Spearman-Brown, in
-   scores.txt with rel_ratio = isc/rel_pattern, per level too), `-repeated_stimulus` (runs averaged for the fit; not yet
-   with -score_by, -cenmode missing, -run_coupling), `-nperm` (group / level / interaction tests on the subject scores
+   scores.txt with rel_ratio = isc/rel_pattern, per level too), `-repeated_stimulus` (runs averaged for the fit; with
+   -score_by and -cenmode missing since item 6; never with -run_coupling, by design), `-nperm` (group / level / interaction tests on the subject scores
    with thd_permute: Welch or one-sample t, exact when the relabelings are few, family-wise p over a test's rows).)
 3. (Done 2026-10-10: `-cv_adapt FRAC` with `-run_coupling` under `-cv run` and `-cv loso`. Each held-out run's W
    is estimated from its first FRAC (`SRM_fit_view_coupled`, tied to the anchor with the fit's lambda) and the rest
@@ -336,23 +340,73 @@ All agree with the default to about 1e-7. Not with `-model_in` or `-apply_W`, wh
 `-float16` was considered and dropped: the fit and CV hand the library every subject's data at once as floats, so
 16-bit storage would need half-precision kernels throughout; with `-compress` it would save nothing.
 
-**Performance, if wanted:** reuse each subject's Gram matrix across CV folds and `-nstart` starts (also removes the CV
-copy of the data); tuned plain-C kernels for the passes that still read the voxels (forming G, final W, projections, r2);
-form G in parallel within a subject; count the full-run read (all grid voxels) in the memory preflight, or read volume
-by volume.
+**Performance:**
+- [x] Form G in parallel within a subject (`SRM_compress`, over voxel blocks).
+- [x] Count the full-run read (all grid voxels) in the memory preflight.
+- [x] Reuse each subject's Gram matrix across CV folds and `-nstart` starts, and drop the CV copy of the data. Superseded
+  by `-compress`: folds and starts work on R (at most T x T), and the CV copies are copies of R (0.13 GiB in all on the
+  paranoia data).
+- [x] The random start, built with each column contiguous (bit-identical starts): 1.05 → 0.19 s per subject on the full
+  mask (156k voxels, k = 50).
+- [x] `SRM_compress_ex`: X'X and X'W0 in one pass over the voxels, for R and the compressed start together (same R,
+  same start): compression with its start 2.8 → 2.6 s per subject. What is left is X'X itself, at about half of this
+  machine's double-precision peak (150 GFLOP/s on 4 threads of an M4 Max); more would mean a BLAS (Accelerate,
+  OpenBLAS), which AFNI does not depend on.
+- [ ] Reading volume by volume (the run being read, 1.9 GB on the full grid, is most of the 3.7 GiB peak, and reading
+  is now the larger cost): deferred to the next AFNI framework. Datasets are read through AFNI's `THD_` functions.
 
-**Real-data validation (2026-10-10, Finn et al. paranoia story, 22 subjects, 3 runs of 526/452/332 TRs, fmriprep
-MNI 2 mm, motion censoring from FD > 0.5 mm: 0-108 TRs per subject):** separate runs and the concatenated files with
-`-concat` give bit-identical S and scores (full Shen mask, 161k voxels). On a 27-parcel temporal ROI (18.7k voxels),
-every combination ran: censoring interp/missing/drop, `-run_coupling` + missing + `-cv_adapt`, `-cv_fit` within and
-reference with `-balance`, `-score_by Run`, `-nperm`, `-reliability split`, a k scan, `-model_in`/`-update_S` with
-missing data, and `-apply_W` with an Xmat and with missing data. Checks against numpy on the most-censored subject
-(fit projections; `-apply_W -cenmode missing`) agree to 3e-8, and `-apply_W` on the concatenated file with an Xmat
-reproduces the fit's projections exactly. Two memory problems found and fixed there (see Memory above, and: the
-library no longer copies a view with missing points when its missing values are already 0 and it is not centered,
-7.1 → 4.8 GiB on the ROI). Not exercised on real data: `-axis item` and `-repeated_stimulus` (no betas or repeats).
+### Next (as of 2026-10-11)
 
-**Other open items:** the PR description for the branch (the user keeps `*_PR.md` drafts in the repo root).
+**Before the PR:**
+- [ ] Build with AFNI's Makefile (`Makefile.INCLUDE`: `SRM_OBJS`, the `thd_xmat.o` rule) and on Linux (gcc, OpenMP),
+  then run the ctests there.
+- [ ] The PR description (`SRM_PR.md` in the repo root, as the user keeps them). Say these changes clearly:
+  - the `.srm` model file gained two optional blocks, `nsubj_t` and `rho_inv_t`;
+  - every fit now gives a subject its whole-table random-start stream, which changed the starts of `-cv_fit` and
+    `-balance` fits;
+  - `-compress` is the default.
+
+**Validation still missing on real data:**
+- [ ] `-axis item` end to end: trial-wise betas from an afni_proc GLM (`-stim_times_IM`), items from the Xmat and stats
+  bucket.
+- [ ] `-repeated_stimulus`: a movie shown more than once.
+
+**Searchlight SRM mapping (recommended; the user to sign off on options and outputs before it is built).**
+The question it answers: *where* in the brain is the response shared? For every center voxel in the mask, take a
+sphere of radius R mm. Fit a small SRM there across subjects (k ≪ the sphere's voxels; perhaps 5–10). Score it on
+held-out data with the usual CV (isc, segment matching, r2; `-score_by` levels too), and write each subject's score at
+the center. The outputs are whole-brain maps per subject, ready for 3dttest++, 3dMVM, or 3dSRM's own group tests.
+- Options, following 3dRSA's conventions: `-searchlight R` (mm), `-stride S` (score every S-th voxel in each
+  direction; 1 = every voxel), and `-searchlight_min N` (fewest voxels a sphere may have; centers with fewer are left
+  at 0).
+- Reuse: 3dRSA's sphere and neighborhood code (`src/pmolfese`), and 3dSRM's fit, CV, scoring, `-score_by`, groups,
+  `-cv_fit`/`-balance`, `-nperm`, and per-subject outputs.
+- Requires every subject on one grid with a common mask (standard space), as 3dRSA does. Per-subject masks and grids,
+  allowed in whole-brain 3dSRM, are an error here.
+- Compute: centers in parallel (OpenMP), each small fit single-threaded. Spheres have fewer voxels than time points,
+  so these are voxel-path fits, without Gram or compression. Rough cost on the paranoia data: 160k centers × 4 fits
+  (full + 3 folds) is a few hours on 4 threads, and about half an hour with `-stride 2`.
+- Memory: `-compress` does not apply (each sphere needs its own voxels). Either hold all subjects' in-mask data
+  (17 GiB on the full Shen mask; fine on a workstation), or process the brain in slabs: read each subject's slab plus
+  a margin of R, once per slab. Decide when building; the preflight should say which.
+- Outputs: `PREFIX.sl_isc.SUBJ`, `PREFIX.sl_match.SUBJ` (and `sl_r2`), as datasets on the common grid. Also a group
+  summary (mean and t over subjects per group), and per `-score_by` level when given.
+- Tests: a synthetic brain with a shared signal planted in one region; the map must find it, with chance elsewhere.
+  Each center's scores must equal a whole-brain 3dSRM fit with that sphere as the mask. Check on the paranoia data,
+  where the temporal lobe should light up.
+
+**Considered and decided against (2026-10-11):**
+- `-float16`: the fit and CV take every subject's data at once as floats; with `-compress` it would save nothing.
+- CV folds without copying the data: under `-compress` the copies are of R, which is tiny.
+- Searchlight *hyperalignment* (Guntupalli et al. 2016, sparse whole-brain transforms from local Procrustes): its
+  local spaces are voxel-sized and add up across spheres, which k-dimensional SRM spaces do not. It would be its own
+  program (a 3dHyperalign), not a 3dSRM option.
+- RSRM (Turek et al. 2018, a sparse subject-specific term): modest gains, and the term is voxels × T per subject, so it
+  defeats `-compress`. `X - W S` (from `-save_recon`) already gives the non-sparse individual part.
+- Semi-supervised SRM (Turek et al. 2017, alignment fit jointly with a classifier on task labels): it puts the labels
+  into the alignment, the circularity `-apply_W` is designed to avoid. Classification belongs downstream.
+
+**Other programs:** the Xmat work for 3dInSync and 3dRSA (above) waits for the user's decision.
 
 ### History
 
@@ -365,4 +419,8 @@ library no longer copies a view with missing points when its missing values are 
   motivation notes and the handoff); the shared `thd_xmat` module; `-cv_fit`, `-balance`, `-reliability`,
   `-repeated_stimulus`, `-nperm`; item-axis `-model_in`/`-update_S`/`-apply_W`; `-cv_adapt`; the last refused
   combinations (missing data with coupling, update and apply_W; Xmat/-concat with apply_W; repeated stimulus with
-  missing data and -score_by; -cv_adapt with -cv_fit/-balance).
+  missing data and -score_by; -cv_adapt with -cv_fit/-balance); real-data validation on the paranoia data; the -cv
+  fold-buffer and missing-data memory fixes.
+- 2026-10-11: `-compress` (built opt-in, verified against the default to 1e-7 on synthetic and real data, its gaps
+  closed (`-save_r2`, item reliability, drop with `-zcensor`), then made the default); whole-table random-start
+  streams; a Gram matrix explained in the help; searchlight SRM mapping specified (not built).

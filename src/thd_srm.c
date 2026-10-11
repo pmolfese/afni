@@ -315,24 +315,26 @@ static int srm_random_orthonormal( float *W , int nrow , int k ,
                                    unsigned long long seed , int stream )
 {
    srm_rng rng ; double *U ; int f,c,m ;
+   /* each column contiguous (U[c*nrow+f]); the draws and every sum are in the same order as ever, so the
+      start is bit for bit what it was, only faster */
    U = (double *)srm_calloc((size_t)nrow*k,sizeof(double)) ;
    if( U == NULL ) return SRM_ERR_MEMORY ;
    srm_rng_init(&rng,seed,stream) ;
    for( c=0 ; c<k ; c++ ){
-     double nrm=0.0 ;
-     for( f=0 ; f<nrow ; f++ ) U[(size_t)f*k+c] = srm_normal(&rng) ;
+     double nrm=0.0 , *uc=U+(size_t)c*nrow ;
+     for( f=0 ; f<nrow ; f++ ) uc[f] = srm_normal(&rng) ;
      for( m=0 ; m<c ; m++ ){
-       double dot=0.0 ;
-       for( f=0 ; f<nrow ; f++ ) dot += U[(size_t)f*k+m]*U[(size_t)f*k+c] ;
-       for( f=0 ; f<nrow ; f++ ) U[(size_t)f*k+c] -= dot*U[(size_t)f*k+m] ;
+       const double *um=U+(size_t)m*nrow ; double dot=0.0 ;
+       for( f=0 ; f<nrow ; f++ ) dot += um[f]*uc[f] ;
+       for( f=0 ; f<nrow ; f++ ) uc[f] -= dot*um[f] ;
      }
-     for( f=0 ; f<nrow ; f++ ) nrm += U[(size_t)f*k+c]*U[(size_t)f*k+c] ;
+     for( f=0 ; f<nrow ; f++ ) nrm += uc[f]*uc[f] ;
      nrm = sqrt(nrm) ;
      if( nrm < 1.0e-12 ){ free(U) ; return SRM_ERR_SINGULAR ; }
-     for( f=0 ; f<nrow ; f++ ) U[(size_t)f*k+c] /= nrm ;
+     for( f=0 ; f<nrow ; f++ ) uc[f] /= nrm ;
    }
    for( f=0 ; f<nrow ; f++ ) for( c=0 ; c<k ; c++ )
-     W[(size_t)f*k+c] = (float)U[(size_t)f*k+c] ;
+     W[(size_t)f*k+c] = (float)U[(size_t)c*nrow+f] ;
    free(U) ;
    return SRM_OK ;
 }
@@ -2630,10 +2632,11 @@ int SRM_model_add_view_obs( SRM_model *m , const float *x , int nvox , const uns
   Compressed views: R (rank x T) with R'R = X'X stands in for X (nvox x T)
 ==============================================================================*/
 
-/*! X'X (T x T, double, upper and lower filled) for one view, in parallel over voxel blocks. */
-static int srm_gram_of_x( const float *x , int nvox , int T , double *G )
+/*! [X W0]'[X W0] ((T+k) x (T+k), double, both halves filled) for one view, in parallel over voxel blocks;
+    k = 0 (W0 NULL) is X'X. */
+static int srm_gram_of_xw( const float *x , const float *W0 , int k , int nvox , int T , double *G )
 {
-   int nth=srm_max_threads() , err=SRM_OK , th ; size_t nn=(size_t)T*T , q ;
+   int nth=srm_max_threads() , err=SRM_OK , th , nz=T+k ; size_t nn=(size_t)nz*nz , q ;
    double **part=(double **)srm_calloc(nth,sizeof(double *)) ; float dummy=0.0f ;
    if( part==NULL ) return SRM_ERR_MEMORY ;
 SRM_PRAGMA(omp parallel for schedule(static))
@@ -2646,7 +2649,7 @@ SRM_PRAGMA(omp critical(srm_err))
        err=SRM_ERR_MEMORY ;
        continue ;
      }
-     rc=srm_gram_make(x+(size_t)f0*T,&dummy,f1-f0,T,0,part[th]) ;
+     rc=srm_gram_make(x+(size_t)f0*T,(k>0) ? W0+(size_t)f0*k : &dummy,f1-f0,T,k,part[th]) ;
      if( rc!=SRM_OK ){
 SRM_PRAGMA(omp critical(srm_err))
        err=rc ;
@@ -2661,21 +2664,39 @@ SRM_PRAGMA(omp critical(srm_err))
    return err ;
 }
 
+static int srm_rrt_solve( const float *R , int rank , int T , double *B , int ncol ) ;
+
 int SRM_compress( const float *x , int nvox , int ntime , double tol ,
                   float **R_out , int *rank_out )
 {
-   int T=ntime , r , i , j , q , rc ; double *G , *L , *dg , tr=0.0 , thr ; unsigned char *used ; float *R ;
+   return SRM_compress_ex(x,nvox,ntime,tol,0,0,0,R_out,rank_out,NULL) ;
+}
+
+int SRM_compress_ex( const float *x , int nvox , int ntime , double tol , int nfeat , unsigned int seed , int stream ,
+                     float **R_out , int *rank_out , float *w0_out )
+{
+   int T=ntime , r , i , j , q , rc , k=(w0_out!=NULL) ? nfeat : 0 , nz ; double *G , *Gz=NULL , *L , *dg , tr=0.0 , thr ;
+   unsigned char *used ; float *R , *W0=NULL ;
    if( x==NULL || R_out==NULL || rank_out==NULL || nvox<1 || ntime<1 ) return SRM_ERR_ARG ;
+   if( w0_out!=NULL && (nfeat<1 || nfeat>nvox) ) return SRM_ERR_ARG ;
    *R_out=NULL ; *rank_out=0 ;
    if( !(tol>0.0) ) tol=1.0e-12 ;
+   nz=T+k ;
    G=(double *)malloc(sizeof(double)*(size_t)T*T) ; L=(double *)calloc((size_t)T*T,sizeof(double)) ;
    dg=(double *)malloc(sizeof(double)*(size_t)T) ; used=(unsigned char *)calloc((size_t)T,1) ;
    if( G==NULL || L==NULL || dg==NULL || used==NULL ){ free(G) ; free(L) ; free(dg) ; free(used) ; return SRM_ERR_MEMORY ; }
-   rc=srm_gram_of_x(x,nvox,T,G) ;
-   if( rc!=SRM_OK ){ free(G) ; free(L) ; free(dg) ; free(used) ; return rc ; }
+   if( k>0 ){                                         /* the start, and X'[X W0] in one pass over the voxels */
+     W0=(float *)malloc(sizeof(float)*(size_t)nvox*k) ; Gz=(double *)malloc(sizeof(double)*(size_t)nz*nz) ;
+     if( W0==NULL || Gz==NULL ){ free(W0) ; free(Gz) ; free(G) ; free(L) ; free(dg) ; free(used) ; return SRM_ERR_MEMORY ; }
+     rc=srm_random_orthonormal(W0,nvox,k,seed,stream) ;
+     if( rc==SRM_OK ) rc=srm_gram_of_xw(x,W0,k,nvox,T,Gz) ;
+     free(W0) ;
+     if( rc==SRM_OK ) for( i=0 ; i<T ; i++ ) memcpy(G+(size_t)i*T,Gz+(size_t)i*nz,sizeof(double)*(size_t)T) ;
+   } else rc=srm_gram_of_xw(x,NULL,0,nvox,T,G) ;
+   if( rc!=SRM_OK ){ free(Gz) ; free(G) ; free(L) ; free(dg) ; free(used) ; return rc ; }
    for( i=0 ; i<T ; i++ ){ dg[i]=G[(size_t)i*T+i] ; tr+=dg[i] ; }
-   if( !isfinite(tr) ){ free(G) ; free(L) ; free(dg) ; free(used) ; return SRM_ERR_NONFINITE ; }
-   if( !(tr>0.0) ){ free(G) ; free(L) ; free(dg) ; free(used) ; return SRM_ERR_SINGULAR ; }
+   if( !isfinite(tr) ){ free(Gz) ; free(G) ; free(L) ; free(dg) ; free(used) ; return SRM_ERR_NONFINITE ; }
+   if( !(tr>0.0) ){ free(Gz) ; free(G) ; free(L) ; free(dg) ; free(used) ; return SRM_ERR_SINGULAR ; }
    thr=tol*tr ;
    /* pivoted Cholesky, L[i*T+r] = column r of the factor: G ~ L L' over the original indices */
    for( r=0 ; r<T ; r++ ){
@@ -2693,11 +2714,24 @@ SRM_PRAGMA(omp parallel for schedule(static))
        dg[i]-=L[(size_t)i*T+r]*L[(size_t)i*T+r] ;
      }
    }
-   if( r<1 ){ free(G) ; free(L) ; free(dg) ; free(used) ; return SRM_ERR_SINGULAR ; }
+   if( r<1 ){ free(Gz) ; free(G) ; free(L) ; free(dg) ; free(used) ; return SRM_ERR_SINGULAR ; }
    R=(float *)malloc(sizeof(float)*(size_t)r*T) ;
-   if( R==NULL ){ free(G) ; free(L) ; free(dg) ; free(used) ; return SRM_ERR_MEMORY ; }
+   if( R==NULL ){ free(Gz) ; free(G) ; free(L) ; free(dg) ; free(used) ; return SRM_ERR_MEMORY ; }
    for( q=0 ; q<r ; q++ ) for( i=0 ; i<T ; i++ ) R[(size_t)q*T+i]=(float)L[(size_t)i*T+q] ;
    free(G) ; free(L) ; free(dg) ; free(used) ;
+   if( k>0 ){                                         /* w0 = U'W0 = (R R')^-1 R (X'W0) */
+     double *RB=(double *)calloc((size_t)r*k,sizeof(double)) ; int a , c , t ;
+     if( RB==NULL ){ free(Gz) ; free(R) ; return SRM_ERR_MEMORY ; }
+     for( a=0 ; a<r ; a++ ) for( c=0 ; c<k ; c++ ){
+       double acc=0.0 ;
+       for( t=0 ; t<T ; t++ ) acc+=(double)R[(size_t)a*T+t]*Gz[(size_t)t*nz+T+c] ;
+       RB[(size_t)a*k+c]=acc ;
+     }
+     rc=srm_rrt_solve(R,r,T,RB,k) ;
+     if( rc==SRM_OK ) for( a=0 ; a<r*k ; a++ ) w0_out[a]=(float)RB[a] ;
+     free(RB) ; free(Gz) ;
+     if( rc!=SRM_OK ){ free(R) ; return rc ; }
+   }
    *R_out=R ; *rank_out=r ;
    return SRM_OK ;
 }

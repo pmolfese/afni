@@ -817,7 +817,8 @@ static void usage_3dSRM(void)
 "                       than time points (or items), outside -model_in and\n"
 "                       -apply_W; given explicitly, it is used regardless]\n"
 "                       Hold each subject as an exact T x T (at most) factor\n"
-"                       R of its prepared data X, with R'R = X'X, instead of\n"
+"                       R of its prepared data X, with R'R = X'X (its Gram\n"
+"                       matrix: see below), instead of\n"
 "                       voxels x T. Everything the fit and -cv do with X goes\n"
 "                       through X'X, and W always lies in the span of X, so\n"
 "                       S, the scores, the projections, rho2 and the model\n"
@@ -859,6 +860,9 @@ static void usage_3dSRM(void)
 "  Most of the time goes to reading, and then to matrix products, run\n"
 "  subject-parallel under OpenMP.\n"
 "\n"
+"  A Gram matrix is X'X for data X (voxels x time points): entry (s,t) is the\n"
+"  dot product of the brain patterns at time points s and t, summed over\n"
+"  voxels, so it is T x T however many voxels there are.\n"
 "  When every subject has at least T+k voxels (T time points), the fit forms\n"
 "  each subject's (T+k) x (T+k) Gram matrix once and iterates on that, so an\n"
 "  iteration costs about (T+k) x T x k per subject instead of voxels x T x k,\n"
@@ -4179,15 +4183,15 @@ static void srm_data_compress_stream( const srm_opts *o , srm_data *d , int K , 
      }
      if( s->ncens>0 ){ ncs++ ; ncens+=s->ncens ; }
      ndrop+=s->ndrop ;
-     rc=SRM_compress(s->x,s->nvox,d1.T,0.0,&R,&r) ;
+     if( o->nstart==1 && s->nvox>=K ){                  /* R, and the start the uncompressed fit would make, in one pass */
+       s->w0=(float *)malloc(sizeof(float)*(size_t)d1.T*K) ;
+       rc=SRM_compress_ex(s->x,s->nvox,d1.T,0.0,K,o->par.seed,ss,&R,&r,s->w0) ;
+     } else
+       rc=SRM_compress(s->x,s->nvox,d1.T,0.0,&R,&r) ;
      if( rc!=SRM_OK ) ERROR_exit("Subj %s: could not compress the data: %s",s->label,SRM_strerror(rc)) ;
      if( r<K ) ERROR_exit("Subj %s: the data have rank %d after z-scoring; -nfeatures is %d",s->label,r,K) ;
+     if( s->w0!=NULL ){ float *w=(float *)realloc(s->w0,sizeof(float)*(size_t)r*K) ; if( w!=NULL ) s->w0=w ; }
      s->ndim=s->nvox ; s->w0K=K ;
-     if( o->nstart==1 ){                                /* the start the uncompressed fit would make */
-       s->w0=(float *)malloc(sizeof(float)*(size_t)r*K) ;
-       rc=SRM_compress_start(s->x,s->nvox,d1.T,R,r,K,o->par.seed,ss,s->w0) ;
-       if( rc!=SRM_OK ) ERROR_exit("Subj %s: the compressed start: %s",s->label,SRM_strerror(rc)) ;
-     }
      full+=4.0*s->nvox*(double)d1.T ; kept+=4.0*r*(double)d1.T ;
      free(s->x) ; s->x=R ; s->nvox=r ; s->compressed=1 ;
      if( r<rmin ) rmin=r ;
