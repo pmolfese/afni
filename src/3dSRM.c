@@ -150,7 +150,8 @@ static void usage_3dSRM(void)
 "                       point from one start, so N of 3 to 5 is cheap\n"
 "                       insurance when the data are that uneven.\n"
 "\n"
-"  -run_coupling L      shared : one W per subject for all of their runs [default]\n"
+"  -run_coupling L      shared : one W per subject for all of their runs\n"
+"                                [default]\n"
 "                       L >= 0 : a separate W for each subject and run, each\n"
 "                                tied to a per-subject anchor W. The tie is a\n"
 "                                prior worth L time points of data: L=0 fits\n"
@@ -328,7 +329,9 @@ static void usage_3dSRM(void)
 "\n"
 "  What changes with -axis item: runs are not concatenated in time, there is\n"
 "  no temporal adjacency, so 'match' becomes item identification (the held-out\n"
-"  item must be the best correlate of its own counterpart among all items),\n"
+"  item must be the best correlate of its own counterpart among all items;\n"
+"  the correlation is across the k components, so it is weak when k is a\n"
+"  handful: compare k values with -nfeatures a,b,c),\n"
 "  and the folds of -cv are runs, or the levels of -fold_column. When those\n"
 "  differ between subjects for an item (randomized run order), each subject's\n"
 "  folds are its own: -cv loso fits the group without the subject on every\n"
@@ -457,8 +460,8 @@ static void usage_3dSRM(void)
 "                       substitute for a refit. The loss was 1-2%% up to adding\n"
 "                       about a sixth of the original subjects and 5%% at a third,\n"
 "                       so refit from the data when drift reaches a few percent.\n"
-"                       These are one data set and one split: differences of 0.001\n"
-"                       score of 0.13 are within noise.\n"
+"                       These are one data set and one split: differences of\n"
+"                       0.001 score of 0.13 are within noise.\n"
 "\n"
 "                       The gauge of S is never changed by an update, so the\n"
 "                       components and the projected series of earlier\n"
@@ -802,8 +805,15 @@ static void usage_3dSRM(void)
 "  -show_table          Print the parsed table and exit.\n"
 "\n"
 "  Memory is roughly the sum over subjects of voxels x time x 4 bytes for the\n"
-"  data, plus voxels x k x 4 bytes per subject for W. Most of the time goes to\n"
-"  matrix products of that size, run subject-parallel under OpenMP.\n"
+"  data, plus voxels x k x 4 bytes per subject for W, plus the larger of: the\n"
+"  copies -cv run makes of the largest fold (about (T - shortest run + longest\n"
+"  run) / T of the data; -cv loso and -model_in copy one subject at a time),\n"
+"  and one input being read whole, on its full grid, as floats. The estimate\n"
+"  is printed when it is over half of physical memory, or whenever\n"
+"  -memory_limit is given. For example, 22 subjects, 161k voxels, three runs\n"
+"  (526, 452, 332 TRs), k = 50, -cv run: estimated 38.4 GiB, measured 38.0.\n"
+"  Most of the time goes to matrix products of that size, run subject-\n"
+"  parallel under OpenMP.\n"
 "\n"
 "  When every subject has at least T+k voxels (T time points), the fit forms\n"
 "  each subject's (T+k) x (T+k) Gram matrix once and iterates on that, so an\n"
@@ -1322,6 +1332,29 @@ static float * srm_cols_in( const float *x , int V , int T , const int *col , in
 }
 
 /*! All columns of x except col[0..len-1], in their order, as a new V x (T-len) array. */
+/*! srm_cols_out into a caller's buffer y (V x (T-len)). */
+static void srm_cols_out_into( const float *x , int V , int T , const int *col , int len , float *y )
+{
+   int Tr=T-len , f , t , q ; byte *out=(byte *)calloc((size_t)T,1) ;
+   if( out==NULL ) ERROR_exit("out of memory building a fold") ;
+   for( t=0 ; t<len ; t++ ) out[col[t]]=1 ;
+   for( f=0 ; f<V ; f++ ){
+     const float *src=x+(size_t)f*T ; float *dst=y+(size_t)f*Tr ;
+     for( t=0,q=0 ; t<T ; t++ ) if( !out[t] ) dst[q++]=src[t] ;
+   }
+   free(out) ;
+}
+
+/*! srm_cols_in into a caller's buffer y (V x len). */
+static void srm_cols_in_into( const float *x , int V , int T , const int *col , int len , float *y )
+{
+   int f , t ;
+   for( f=0 ; f<V ; f++ ){
+     const float *src=x+(size_t)f*T ; float *dst=y+(size_t)f*len ;
+     for( t=0 ; t<len ; t++ ) dst[t]=src[col[t]] ;
+   }
+}
+
 static float * srm_cols_out( const float *x , int V , int T , const int *col , int len )
 {
    int Tr=T-len , f , t , q ; byte *out=(byte *)calloc((size_t)T,1) ;
@@ -1603,10 +1636,21 @@ static void srm_cv_by_runs( const srm_ctx *cx , const SRM_model *mfull , const s
    float ***Pf=(float ***)calloc((size_t)f->nfold,sizeof(float **)) ;     /* [fold][subject] projections */
    int *nvox=(int *)malloc(sizeof(int)*(size_t)nsub) ;
 
-   for( ii=0 ; ii<nsub ; ii++ ) nvox[ii]=cx->sb[ii].nvox ;
+   /* each subject's training and test columns live in one pair of buffers, sized for the largest fold and
+      reused: a new pair per fold, of a different size each time, is not given back to the system promptly
+      (macOS), and the peak then climbs fold by fold by most of a copy of the data */
+   int maxlen=0 , maxtr=0 ;
+   float **xtr=(float **)malloc(sizeof(float *)*(size_t)nsub) , **xte=(float **)malloc(sizeof(float *)*(size_t)nsub) ;
+   for( ff=0 ; ff<f->nfold ; ff++ ){ if( f->len[ff]>maxlen ) maxlen=f->len[ff] ; if( T-f->len[ff]>maxtr ) maxtr=T-f->len[ff] ; }
+   for( ii=0 ; ii<nsub ; ii++ ){
+     nvox[ii]=cx->sb[ii].nvox ;
+     xtr[ii]=(float *)malloc(sizeof(float)*(size_t)nvox[ii]*(size_t)maxtr) ;
+     xte[ii]=(float *)malloc(sizeof(float)*(size_t)nvox[ii]*(size_t)maxlen) ;
+     if( xtr[ii]==NULL || xte[ii]==NULL )
+       ERROR_exit("out of memory for the -cv folds (%.2f GiB per copy of the data)",4.0*nvox[ii]*(double)(maxtr+maxlen)*nsub/GIB) ;
+   }
    for( ff=0 ; ff<f->nfold ; ff++ ){
      int len=f->len[ff] , *col=f->col[ff] , Ttr=T-len ;
-     float **xtr=(float **)malloc(sizeof(float *)*(size_t)nsub) , **xte=(float **)malloc(sizeof(float *)*(size_t)nsub) ;
      SRM_params par=cx->par ; SRM_model *mf=NULL ; SRM_fitinfo fi ; srm_prog bar ; fit_prog fp ;
      int segtr[256] , rc , *all=(int *)malloc(sizeof(int)*(size_t)nsub) ;
      float **P=(float **)malloc(sizeof(float *)*(size_t)nsub) ;
@@ -1615,8 +1659,8 @@ static void srm_cv_by_runs( const srm_ctx *cx , const SRM_model *mfull , const s
 
      unsigned char **otr=NULL , **ote=NULL ;
      for( ii=0 ; ii<nsub ; ii++ ){
-       xtr[ii]=srm_cols_out(cx->sb[ii].x,nvox[ii],T,col,len) ;
-       xte[ii]=srm_cols_in(cx->sb[ii].x,nvox[ii],T,col,len) ;
+       srm_cols_out_into(cx->sb[ii].x,nvox[ii],T,col,len,xtr[ii]) ;
+       srm_cols_in_into(cx->sb[ii].x,nvox[ii],T,col,len,xte[ii]) ;
        all[ii]=ii ;
      }
      if( cx->anymiss ){                               /* each subject's observed samples, in and out of the fold */
@@ -1677,9 +1721,8 @@ static void srm_cv_by_runs( const srm_ctx *cx , const SRM_model *mfull , const s
      if( res->proj!=NULL ){
        Pf[ff]=P ; S_tr[ff]=(float *)malloc(sizeof(float)*(size_t)K*Ttr) ; memcpy(S_tr[ff],mf->s,sizeof(float)*(size_t)K*Ttr) ;
      } else { for( ii=0 ; ii<nsub ; ii++ ) free(P[ii]) ; free(P) ; }
-     for( ii=0 ; ii<nsub ; ii++ ){ free(xtr[ii]) ; free(xte[ii]) ; }
      if( otr!=NULL ){ for( ii=0 ; ii<nsub ; ii++ ){ free(otr[ii]) ; free(ote[ii]) ; } free(otr) ; free(ote) ; }
-     free(xtr) ; free(xte) ; free(all) ; free(ref_u) ; free(ref_r) ;
+     free(all) ; free(ref_u) ; free(ref_r) ;
      SRM_free_fitinfo(&fi) ; SRM_free_model(mf) ;
    }
 
@@ -1703,6 +1746,8 @@ static void srm_cv_by_runs( const srm_ctx *cx , const SRM_model *mfull , const s
        free(Pf[ff]) ; free(S_tr[ff]) ; free(Rm) ; free(Sfull_tr) ;
      }
    }
+   for( ii=0 ; ii<nsub ; ii++ ){ free(xtr[ii]) ; free(xte[ii]) ; }
+   free(xtr) ; free(xte) ;
    free(S_tr) ; free(Pf) ; free(nvox) ;
 }
 
@@ -3694,10 +3739,32 @@ static void srm_check_new_file( const srm_opts *o , const char *suffix )
 /*! The memory contract, before the big allocations. */
 static void srm_memory_preflight( const srm_opts *o , const srm_data *d , int K , int do_cv , int nsegfit )
 {
-   THD_memory_plan me ; double inb=0.0 , Wb=0.0 ; int *nv0=(int *)malloc(sizeof(int)*(size_t)d->nsub) , ss ;
-   for( ss=0 ; ss<d->nsub ; ss++ ){ nv0[ss]=d->sb[ss].nvox_mask ; inb+=4.0*d->sb[ss].nvox_mask*(double)d->Tin ; Wb+=4.0*d->sb[ss].nvox_mask*K ; }
+   THD_memory_plan me ; double inb=0.0 , Wb=0.0 , onemax=0.0 , cvb=0.0 , rdb=0.0 ;
+   int *nv0=(int *)malloc(sizeof(int)*(size_t)d->nsub) , ss , rr ;
+   for( ss=0 ; ss<d->nsub ; ss++ ){
+     const srm_subj *s=d->sb+ss ; double b=4.0*s->nvox_mask*(double)d->Tin ;
+     nv0[ss]=s->nvox_mask ; inb+=b ; Wb+=4.0*s->nvox_mask*K ; if( b>onemax ) onemax=b ;
+     if( !s->is1D && s->geom!=NULL ){                /* reading: one input whole, on its own grid, as floats */
+       double g=4.0*DSET_NVOX(s->geom)*(double)(d->axis_item ? 1 : (d->concat ? d->Tin : 0)) ;
+       if( !d->axis_item && !d->concat ) for( rr=0 ; rr<d->nrun ; rr++ ){ double gr=4.0*DSET_NVOX(s->geom)*(double)d->runlen[rr] ; if( gr>g ) g=gr ; }
+       if( d->axis_item ) g=4.0*DSET_NVOX(s->geom)*(double)DSET_NVALS(s->geom) ;
+       if( g>rdb ) rdb=g ;
+     }
+   }
+   /* cross-validation copies: -cv run over runs holds every subject's training and test columns of the largest
+      fold, (T - shortest run) + longest run; blocks and item folds about one copy; -cv loso and -model_in one
+      subject at a time */
+   if( do_cv ){
+     if( strcasecmp(o->cvmode,"loso")==0 || o->model_in!=NULL ) cvb=onemax ;
+     else if( !d->axis_item && d->nrun>1 && d->runlen!=NULL ){
+       int mn=d->runlen[0] , mx=d->runlen[0] ;
+       for( rr=1 ; rr<d->nrun ; rr++ ){ if( d->runlen[rr]<mn ) mn=d->runlen[rr] ; if( d->runlen[rr]>mx ) mx=d->runlen[rr] ; }
+       cvb=inb*(double)(d->Tin-mn+mx)/(double)d->Tin ;
+       if( o->cv_adapt>0.0 ) cvb+=inb*(double)mx/(double)d->Tin ;   /* -cv_adapt: the scored rest of a run, again */
+     } else cvb=inb ;
+   }
    memset(&me,0,sizeof(me)) ;
-   me.input=inb*(do_cv ? 2.0 : 1.0) ;        /* a cross-validation fold holds a second copy of the data */
+   me.input=inb+(cvb>rdb ? cvb : rdb) ;      /* the data, plus the larger of the fold copies and one input being read */
    me.shared=SRM_estimate_bytes(d->nsub,nv0,d->Tin,K,o->par.algo,0)
             + Wb*(nsegfit>0 ? (double)nsegfit : 0.0) + (o->nstart>1 ? Wb : 0.0) ;
    me.system=(double)AFNI_get_memsize() ;

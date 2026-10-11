@@ -413,6 +413,17 @@ double SRM_estimate_bytes( int nview , const int *nvox , int ntime ,
    return bytes ;
 }
 
+/*! 1 if every value of x (nvox x T) at a time point that obs marks missing is already 0, so that a view
+    with missing points can be used as given (no working copy) when it is not centered either. */
+static int srm_missing_zero( const float *x , int nvox , int T , const unsigned char *obs )
+{
+   int t , f ;
+   if( obs==NULL ) return 1 ;
+   for( t=0 ; t<T ; t++ ) if( !obs[t] )
+     for( f=0 ; f<nvox ; f++ ) if( x[(size_t)f*T+t]!=0.0f ) return 0 ;   /* NaN is not 0 either */
+   return 1 ;
+}
+
 /*! A copy of n doubles (NULL on failure). */
 static double * srm_dup_d( const double *a , int n )
 {
@@ -1165,7 +1176,7 @@ int SRM_fit( int nview , int ntime , const int *nvox , float * const *x ,
        if( nob==T ) ob=NULL ; else miss=1 ;
      }
      vw[ii].obs = ob ; vw[ii].nobs = nob ;
-     if( p->center || ob!=NULL ){
+     if( p->center || (ob!=NULL && !srm_missing_zero(src,nvox[ii],T,ob)) ){   /* else the data as given */
        float *xc = (float *)malloc(n*sizeof(float)) ;
        if( p->center ) mu[ii] = (float *)malloc((size_t)nvox[ii]*sizeof(float)) ;
        if( xc==NULL || (p->center && mu[ii]==NULL) ){ free(xc) ; rc=SRM_ERR_MEMORY ; goto done ; }
@@ -1598,7 +1609,7 @@ static int srm_fit_coupled( int nview , int ntime , const int *nvox ,
        if( nob==T ) ob=NULL ; else miss=1 ;
      }
      vw[ii].obs=ob ; vw[ii].nobs=nob ;
-     if( p->center || ob!=NULL ){
+     if( p->center || (ob!=NULL && !srm_missing_zero(src,nvox[ii],T,ob)) ){   /* else the data as given */
        float *xc=(float *)malloc(n*sizeof(float)) ;
        if( p->center ) mu[ii]=(float *)malloc((size_t)nvox[ii]*sizeof(float)) ;
        if( xc==NULL || (p->center && mu[ii]==NULL) ){ free(xc) ; rc=SRM_ERR_MEMORY ; goto done ; }
@@ -1999,7 +2010,7 @@ int SRM_update( SRM_model *m , int nnew , const int *nvox , float * const *x ,
        if( nob==T ) ob=NULL ; else miss=1 ;
      }
      vw[ii].obs=ob ; vw[ii].nobs=nob ;
-     if( m->center || ob!=NULL ){                   /* centered over the observed points; missing values 0 */
+     if( m->center || (ob!=NULL && !srm_missing_zero(src,nvox[ii],T,ob)) ){   /* centered over the observed points; missing values 0 */
        float *xc=(float *)malloc(n*sizeof(float)) ;
        if( m->center ) mu[ii]=(float *)malloc((size_t)nvox[ii]*sizeof(float)) ;
        if( xc==NULL || (m->center && mu[ii]==NULL) ){ free(xc) ; rc=SRM_ERR_MEMORY ; goto done ; }

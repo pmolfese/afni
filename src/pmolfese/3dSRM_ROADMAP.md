@@ -302,14 +302,31 @@ Nothing is refused as "not available in this build yet" any more. The combinatio
 design, each saying why: for example, `-run_coupling` on the item axis, `-repeated_stimulus` with `-run_coupling`,
 `-cv loso` with `-model_in`, and `-reliability` with `-model_in`.
 
+**Memory (found on the Finn paranoia data, 2026-10-10):** `-cv run` used to allocate each fold's training and test
+copies anew, at a different size per fold. macOS does not give such freed blocks back promptly, so the peak climbed
+by most of a copy of the data over the folds (48.3 GiB measured against a 35.8 GiB estimate, 22 subjects × 161k voxels
+× 1310 TRs). Each subject's pair of fold buffers is now allocated once, at the largest fold's size, and reused
+(38.0 GiB, scores bit-identical). The preflight now counts what is held: the data, plus the larger of the largest
+fold's copy ((T − shortest run) + longest run, under `-cv run`; one subject's data for `-cv loso` and `-model_in`)
+and one input on its full grid while it is read. Estimate 38.4 GiB, measured 38.0.
+
 **Performance, if wanted:** reuse each subject's Gram matrix across CV folds and `-nstart` starts (also removes the CV
 copy of the data); tuned plain-C kernels for the passes that still read the voxels (forming G, final W, projections, r2);
 form G in parallel within a subject; count the full-run read (all grid voxels) in the memory preflight, or read volume
 by volume.
 
-**Other open items:** the PR description for the branch (the user keeps `*_PR.md` drafts in the repo root); whether
-the help should say that item identification needs enough components (it correlates items across the k components, so
-it is weak for small k); three pre-existing help lines over 80 columns.
+**Real-data validation (2026-10-10, Finn et al. paranoia story, 22 subjects, 3 runs of 526/452/332 TRs, fmriprep
+MNI 2 mm, motion censoring from FD > 0.5 mm: 0-108 TRs per subject):** separate runs and the concatenated files with
+`-concat` give bit-identical S and scores (full Shen mask, 161k voxels). On a 27-parcel temporal ROI (18.7k voxels),
+every combination ran: censoring interp/missing/drop, `-run_coupling` + missing + `-cv_adapt`, `-cv_fit` within and
+reference with `-balance`, `-score_by Run`, `-nperm`, `-reliability split`, a k scan, `-model_in`/`-update_S` with
+missing data, and `-apply_W` with an Xmat and with missing data. Checks against numpy on the most-censored subject
+(fit projections; `-apply_W -cenmode missing`) agree to 3e-8, and `-apply_W` on the concatenated file with an Xmat
+reproduces the fit's projections exactly. Two memory problems found and fixed there (see Memory above, and: the
+library no longer copies a view with missing points when its missing values are already 0 and it is not centered,
+7.1 → 4.8 GiB on the ROI). Not exercised on real data: `-axis item` and `-repeated_stimulus` (no betas or repeats).
+
+**Other open items:** the PR description for the branch (the user keeps `*_PR.md` drafts in the repo root).
 
 ### History
 
