@@ -7,17 +7,26 @@ or completion state change.
 
 1. **Prediction Metrics (Complete)** -- classification and continuous-prediction
    scoring now live in `thd_mvpa.[ch]`, with known-answer tests.
-2. **Baseline Classifiers (Next)** -- add nearest-centroid and correlation
-   fit/predict operations to `thd_mvpa.[ch]`.
-3. **Fold Runner and Workspace** -- connect fold plans, preprocessing,
-   estimation, held-out prediction, and scoring with reusable buffers.
-4. **Selected-Sample Pattern Extraction** -- add the general
-   `THD_roi_samples()` path from `THD_sampleset` rows to sample-by-voxel arrays.
-5. **First 3dMVPA Classification Slice** -- build the command-line program with
-   direct and X-matrix input, fold/sample audits, predictions, ROI/searchlight
-   execution, and ACC/BACC outputs.
-6. **Inference and Expanded Estimators** -- add blocked permutations, mapwise
-   inference, ridge decoding/encoding, and nested grouped tuning.
+2. **Baseline Classifiers (Complete)** -- nearest-centroid fit/predict now
+   supports Euclidean, correlation, and cosine decisions in `thd_mvpa.[ch]`.
+3. **Fold Runner and Workspace (Complete)** -- fold plans, preprocessing,
+   centroid fitting, held-out prediction, and scoring now share reusable buffers.
+4. **Selected-Sample Pattern Extraction (Complete)** -- `THD_roi_samples()` now
+   maps all or selected `THD_sampleset` rows into sample-by-voxel arrays.
+5. **First 3dMVPA ROI Classification Slice (Complete)** -- the native program
+   now runs direct or X-matrix samples through validated ROI classification.
+6. **Volumetric Searchlights (Complete)** -- moving in-mask neighborhoods now
+   use the same extraction, fold-local modeling, and map outputs as ROI analyses.
+7. **Prediction Audit Tables (Complete)** -- opt-in row-level predictions and
+   per-fold scores retain spatial-unit IDs, sample metadata, and class labels.
+8. **Surface Searchlights (Complete)** -- geodesic neighborhoods now share the
+   volume fold runner, maps, audit tables, and strict sparse-node validation.
+9. **Blocked Permutation Inference (Complete)** -- exchangeability-aware label
+   nulls now produce synchronized PVAL/Z/Q/FWE maps for ROI and searchlights.
+10. **Ridge Decoding and Encoding (Next)** -- add primal/dual multi-output ridge
+   and continuous held-out prediction using the existing fold runner.
+11. **Nested Tuning and Expanded Estimators** -- add grouped lambda selection,
+   LDA, and other validated estimators after the ridge path is stable.
 
 ## Implementation Status
 
@@ -25,7 +34,7 @@ This checked-in copy is the living implementation record for the `somemvpa`
 branch. Update it with each completed slice so that design decisions and code do
 not drift apart.
 
-Status as of 2026-10-11:
+Status as of 2026-10-12:
 
 | Slice | Status | Implementation |
 |---|---|---|
@@ -34,7 +43,15 @@ Status as of 2026-10-11:
 | General fold plans | Complete | `thd_crossval.[ch]`, grouped/within-subject/fixed fold tests |
 | Fold-local centering and scaling | Complete | `thd_mvpa.[ch]`, train-only fit/apply tests |
 | Prediction metrics | Complete | `thd_mvpa.[ch]`, allocation-free classification/continuous scorers and known-answer tests |
-| Baseline classifiers | Next | Nearest-centroid and correlation fit/predict operations |
+| Baseline classifiers | Complete | `thd_mvpa.[ch]`, Euclidean/correlation/cosine centroid models and known-answer tests |
+| Fold runner and workspace | Complete | `THD_mvpa_workspace`, allocation-free repeated centroid CV runs, row/fold diagnostics |
+| Selected-sample pattern extraction | Complete | `THD_roi_samples()` preserves requested row/voxel order across datasets and scaled brick types, with bounded diagnostics |
+| Native program and ROI classification | Complete | `3dMVPA.c`, CMake/Make targets, direct/Xmat input, grouped CV, fold-local centroid analysis, ROI table and AFNI map |
+| Volumetric searchlights | Complete | `-searchlight` with SPHERE/RECT/RHDD/TOHD neighborhoods, one workspace per OpenMP worker, center-painted SCORE/NFEAT/NFOLD maps |
+| Prediction audit tables | Complete | `-save_predictions` and `-save_fold_scores` write deterministic ROI/searchlight-keyed TSV files with metadata, decisions, folds, counts, ACC, and BACC |
+| Surface searchlights | Complete | `-surf` exposes masked or whole-represented-domain geodesic neighborhoods, preserves sparse mesh node IDs, and rejects mismatched/malformed domains |
+| Blocked permutation inference | Complete | `-nperm`, `-seed`, and explicit `-permute_within` blocks drive identity-inclusive label nulls, empirical above-chance/P/Z/Q maps, and synchronized max-statistic FWE |
+| Ridge decoding and encoding | Next | Add regularized continuous prediction without changing sample, fold, spatial, or inference contracts |
 
 ## Purpose
 
@@ -156,6 +173,7 @@ Already provides:
 - analysis-unit painting;
 - ROI mean-series extraction;
 - `[brick][voxel]` pattern extraction into caller-owned storage;
+- selected canonical sample extraction into caller-owned `[sample][voxel]` storage;
 - the RSA-specific run-aware `THD_runset` container.
 
 The spatial abstraction is already correct for classification, decoding, and
@@ -360,21 +378,25 @@ Keep `thd_patterns` responsible for spatial operations:
 - filter or exclude overlapping analysis units;
 - paint one scalar per spatial unit.
 
-A useful general extraction primitive would resemble:
+A general selected-sample extraction primitive is now implemented as:
 
 ```c
 int THD_roi_samples(
-    THD_3dim_dataset **dset,
-    const int *dset_index,
-    const int *brick_index,
-    int nsample,
+    const THD_sampleset *ss,
+    const int *sample_index, int nsample,
     const intvec *vox,
-    float *out
+    float *out,
+    char *err, size_t errlen
 );
 ```
 
 `out` is `[sample][voxel]` and caller allocated, allowing one workspace per
-OpenMP worker.
+OpenMP worker. A NULL `sample_index` extracts all canonical rows; an explicit
+list preserves its order and may repeat rows for future resampling workflows.
+The extractor applies AFNI brick scale factors, supports mixed scalar brick
+types, validates sample/brick/voxel indices, and reports non-finite values with
+the responsible canonical sample and voxel. It reuses the same typed-brick
+copying path as the existing all-brick RSA extractor.
 
 Feature filtering belongs in the fold-aware MVPA layer when it depends on the
 data. Simple spatial validity checks may occur during extraction, but variance
@@ -383,10 +405,10 @@ be fitted on training data only.
 
 ## `thd_mvpa.[ch]`
 
-`thd_mvpa` is the dataset-agnostic numerical library. Its first implemented
-section is fold-local preprocessing; metrics, workspaces, and estimators will be
-added to the same files. It consumes arrays and fold plans, not AFNI datasets or
-command-line options.
+`thd_mvpa` is the dataset-agnostic numerical library. It now contains fold-local
+preprocessing, prediction metrics, centroid estimators, and the first reusable
+classification workspace/fold runner. It consumes arrays and fold plans, not
+AFNI datasets or command-line options.
 
 Conceptual API objects:
 
@@ -427,6 +449,23 @@ The library should provide:
 - fold-level predictions and diagnostics;
 - no static mutable configuration;
 - deterministic results independent of OpenMP thread count.
+
+`THD_mvpa_workspace_alloc()` reserves compact train/test matrices,
+preprocessing statistics, centroid storage, predictions, decisions, and score
+buffers once for a fold plan and maximum feature count. Repeated
+`THD_mvpa_run_centroid_cv()` calls perform no allocation. This is the intended
+one-workspace-per-OpenMP-worker model for ROI and searchlight execution.
+
+The runner fits preprocessing and class centroids separately inside every
+training fold, predicts only held-out rows, and restores predictions and
+per-class decisions to original sample order. Fixed train/test plans mark
+training-only rows with prediction `-1` and `NAN` decisions. It reports ACC and
+BACC per fold plus pooled held-out confusion, recall, ACC, and BACC. The pooled
+score is descriptive; within-subject or other stratified group inference must
+use the preserved fold/stratum structure rather than silently treating all rows
+as independent. Fold-context errors identify missing training classes,
+non-finite inputs, undefined classifier geometry, and invalid run-centering
+applications.
 
 ## Cross-Validation
 
@@ -549,6 +588,20 @@ euclidean
 correlation
 cosine
 ```
+
+`THD_centroid_fit()` computes each class centroid only from the supplied compact
+training matrix and requires every integer class ID to be represented.
+`THD_centroid_predict()` returns class IDs and optional per-class decisions.
+All decisions use a common higher-is-better convention: negative squared
+Euclidean distance, Pearson correlation, or cosine similarity. Exact ties are
+resolved deterministically in favor of the lowest class ID. Correlation and
+cosine fits reject degenerate class centroids, and prediction rejects a
+degenerate test pattern, rather than silently turning an undefined similarity
+into a class assignment.
+
+The standalone model owns its fitted arrays. The fold runner instead refits the
+centroid storage held by `THD_mvpa_workspace`, so repeated spatial analyses do
+not allocate model or prediction buffers.
 
 ### First general solver: ridge
 
@@ -682,6 +735,22 @@ performance.
 
 ## Permutation Inference
 
+The classification slice implements:
+
+```text
+-nperm N
+-seed S
+-permute_within COLUMN
+```
+
+`-block_column` is an alias for `-permute_within`. The block column is explicit
+and may be a subject, run, fold, or user-supplied composite exchangeability
+unit. `none` requests an unrestricted null deliberately; inference never
+silently assumes that all rows are exchangeable. The identity is included,
+small groups are enumerated exactly, and every materialized relabeling is
+checked for complete class coverage in every outer training fold before any
+spatial analysis begins.
+
 Folds are built once. For every permutation:
 
 ```text
@@ -696,6 +765,18 @@ aggregate the requested statistic
 The same permutation slot must be used at every spatial location. This makes a
 synchronized mapwise max-statistic null possible and preserves thread-count
 reproducibility.
+
+The implemented classification bucket is:
+
+```text
+SCORE ABOVE_CHANCE PVAL ZSCR QVAL PFWE ZFWE NFEAT NFOLD
+```
+
+`ABOVE_CHANCE` is the observed selected metric minus its empirical null mean.
+PVAL is its upper-tail identity-inclusive permutation probability, QVAL is BH
+over the complete ROI/searchlight family, and PFWE/ZFWE use the synchronized
+maximum score at every relabeling. ZSCR and ZFWE receive AFNI FIZT stat codes.
+Without `-nperm`, output remains the original compact SCORE/NFEAT/NFOLD bucket.
 
 The user must be able to define exchangeability through subject, run, fold, or
 an explicit block column. Invalid permutations should fail rather than silently
@@ -717,6 +798,14 @@ Reuse `THD_perm_result`, `THD_perm_emp_pvalue()`, `THD_perm_signed_z()`,
 ## Spatial Analysis and Output
 
 ### Searchlight
+
+Volumetric searchlights use `SPHERE`, `RECT`, `RHDD`, or `TOHD` neighborhoods.
+Surface searchlights use a plain positive geodesic radius and a SUMA-readable
+mesh. An explicit surface mask and every sample dataset must have the same
+dense or sparse node-row domain; without a mask, every node represented in the
+sample datasets becomes a center and eligible feature. Sparse outputs retain
+their mesh node indexes, and audit tables report mesh node IDs rather than
+internal dataset rows.
 
 For each center:
 
@@ -766,15 +855,43 @@ Essential audit options:
 -save_fold_scores FILE
 ```
 
-The prediction table should retain original table row, sample label, subject,
-run, fold, observed target, prediction, and decision score. This is part of the
-scientific result, not merely debugging output.
+The prediction table retains the spatial-unit identity and feature count,
+original table row, sample label, subject, run, item, input-fold metadata, CV
+test fold and stratum, observed and predicted class labels, correctness, and
+one decision value per class. Rows
+that a fixed split never tests remain present with `NA` predictions. The fold
+table retains each spatial unit, fold and stratum labels, train/test counts,
+ACC, and BACC. Both files are opt-in because row-level searchlight output can
+be very large. These tables are part of the scientific result, not merely
+debugging output.
 
 ## Aggressive 3dRSA Library Extraction
 
 `3dRSA.c` is now large enough that waiting for duplicate code to appear in
 `3dMVPA` would be counterproductive. Refactor behavior-preserving scientific
 code before or alongside the new program.
+
+### Current extraction assessment (2026-10-12)
+
+Keep the library count controlled. The next substantial extraction should be
+one coherent `thd_rsa.[ch]`, not separate libraries for every RSA feature. It
+should own dataset-independent RDM construction, Mantel/regression statistics,
+fitted-model CV, commonality, and their reusable workspaces. Move these in
+tested groups while leaving `3dRSA` option policy and output layout in the
+program.
+
+Extend `thd_patterns.[ch]` with two small AFNI spatial helpers already duplicated
+between the programs: exact dense/sparse surface node-domain comparison and
+copying a sparse surface node list into an output dataset. These belong beside
+ROI/searchlight construction and painting; they do not justify a new library.
+
+The present `thd_permute` plus `thd_mapinfer` boundary is sufficient. Relabeling
+sets, empirical result finalization, BH, and max accumulation are shared; each
+program's scientific null, family definition, and output-brick layout should
+remain program-owned. Likewise, do not extract CLI parsing, help text, audit
+schemas, or a generic pipeline object merely because both programs have them.
+Reconsider a shared progress/memory-preflight helper only after `3dMVPA` gains a
+second concrete implementation with the same contract.
 
 ### Move to `thd_sampleset` or general table helpers
 
@@ -824,10 +941,22 @@ could reasonably reuse or independently test.
 
 ## Testing Strategy
 
+### Development-only reference checks
+
+Independent MVPA implementations may be used from a developer environment to
+compare numerical results, searchlight semantics, failure cases, and potential
+feature directions. These are private development oracles, not dependencies:
+distributed source, tests, help, provenance, and output metadata must not name,
+import, or require an external MVPA toolbox. Checked-in tests should use
+analytic answers or self-contained fixtures so every AFNI build remains
+reproducible without a Python environment.
+
 ### Library unit tests
 
 - direct sample tables and X-matrix-expanded sample tables producing equivalent
   `THD_sampleset` organization;
+- selected-sample extraction preserving row and voxel order across datasets and
+  scaled brick types;
 - flat and compact sample-table expansion;
 - dataset selector and brick indexing;
 - categorical level encoding;
@@ -843,12 +972,22 @@ could reasonably reuse or independently test.
 
 ### Integration tests
 
+- direct-table and X-matrix-expanded ROI classifications producing identical
+  known ACC/BACC results and three-brick AFNI outputs;
+- volumetric searchlights producing known center-wise ACC/BACC, neighborhood
+  size, and fold-count maps without an impractically large location table,
+  with numerically identical maps and byte-identical opt-in audit tables across
+  one and two OpenMP workers;
+- sparse surface searchlights producing known ACC/BACC/NFEAT/NFOLD values and
+  mesh-node IDs, with identical explicit-all-node-mask and mask-free results;
+- clear failures for mismatched surface node-row domains, node IDs outside the
+  mesh, and shaped rather than geodesic surface-radius specifications;
 - synthetic separable classes with a known spatial signal location;
 - continuous target encoded in a known searchlight;
 - encoding design with known responsive voxels;
 - ROI result matching a direct C-level calculation;
-- chance data producing sane permutation p-values;
-- max-FWE behavior under a synchronized null;
+- [x] chance data producing sane identity-inclusive permutation p-values;
+- [x] max-FWE behavior under a synchronized null, identical across thread counts;
 - prediction-table rows matching original metadata;
 - clear failures for missing classes, impossible folds, grid mismatch, and
   non-finite input.
@@ -866,7 +1005,7 @@ separately documented bug is intentionally corrected.
 1. [x] Bring `thd_xmat.[ch]`, its `thd_datatable` parsing improvements, and its
    tests from `SRMthings` into the shared-library baseline.
 2. [x] Add `thd_sampleset.[ch]` and test both direct and X-matrix-expanded tables.
-3. [ ] Generalize selected-sample extraction in `thd_patterns` after the
+3. [x] Generalize selected-sample extraction in `thd_patterns` after the
    numerical fold runner is ready.
 4. [ ] Add `thd_rsa.[ch]` and move existing 3dRSA scientific helpers in coherent
    groups.
@@ -877,8 +1016,8 @@ separately documented bug is intentionally corrected.
 1. [x] Add the general fold-plan object.
 2. [x] Add leakage-safe centering/scaling.
 3. [x] Add prediction metrics.
-4. [ ] Add nearest-centroid and correlation classifiers.
-5. [ ] Add reusable workspaces and the end-to-end fold runner.
+4. [x] Add nearest-centroid and correlation classifiers.
+5. [x] Add reusable workspaces and the end-to-end fold runner.
 6. [ ] Add primal and dual multi-output ridge.
 7. [ ] Test all algorithms with small matrices having known solutions.
 
@@ -904,10 +1043,26 @@ NFOLD outputs, and strong design validation. The vertical slice must accept
 either a direct one-row-per-sample table or a subject-level table with `Xmat`;
 both must enter the same analysis path after table expansion.
 
+Current Phase 2 progress:
+
+1. [x] Add the native `3dMVPA` command shell with explicit classification,
+   target, CV, sample-role, preprocessing, centroid-distance, metric, mask, and
+   prefix options.
+2. [x] Converge direct and X-matrix tables on one `THD_sampleset` analysis path.
+3. [x] Run atlas/binary-mask ROIs through fold-local centroid classification
+   and write ACC/BACC ROI tables plus SCORE/NFEAT/NFOLD AFNI maps.
+4. [x] Expose canonical table, resolved sample, and fold audits on stdout.
+5. [x] Add volumetric searchlight execution using the same extraction and
+   workspace objects.
+6. [x] Add row-level prediction and per-fold score files, retaining original
+   sample metadata and class labels.
+7. [x] Expose geodesic surface searchlights through the same analysis-unit
+   interface, with explicit surface/domain validation and sparse-node tests.
+
 ### Phase 3: inference and fitted estimators
 
-1. Add blocked label permutations and PVAL/Z/Q/FWE outputs.
-2. Add ridge classification and continuous decoding.
+1. [x] Add blocked label permutations and PVAL/Z/Q/FWE outputs.
+2. [ ] Add ridge classification and continuous decoding.
 3. Add nested grouped lambda selection.
 4. Add diagonal and shrinkage LDA.
 5. Add native linear SVM if still scientifically useful.

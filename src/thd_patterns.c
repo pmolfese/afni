@@ -250,14 +250,30 @@ THD_roilist * THD_roilist_searchlight_surf( const char *surf_file,
                                              float radius, int all_nodes,
                                              char *err, size_t errlen )
 {
-   SUMA_SurfaceObject *SO ;
-   SUMA_GET_OFFSET_STRUCT *OffS ;
-   THD_roilist *rl ;
-   MRI_IMAGE *mim ; float *mar , fac ;
-   byte *mask ; int *n2i , *tmp ;
-   int nvox = DSET_NVOX(mset) , nnode , sparse , ncen=0 , m , kk , ii ;
+   SUMA_SurfaceObject *SO=NULL ;
+   SUMA_GET_OFFSET_STRUCT *OffS=NULL ;
+   THD_roilist *rl=NULL ;
+   MRI_IMAGE *mim=NULL ; float *mar , fac ;
+   byte *mask=NULL ; int *n2i=NULL , *tmp=NULL ;
+   int nvox=0 , nnode , sparse , ncen=0 , m , kk , ii ;
 
    if( err != NULL && errlen > 0 ) err[0]='\0' ;
+   if( surf_file==NULL || surf_file[0]=='\0' || mset==NULL ||
+       !isfinite(radius) || radius<=0.0f ){
+     thd_patterns_error(err,errlen,"surface searchlight needs a surface file, dataset, and finite radius > 0") ;
+     return NULL ;
+   }
+   nvox=DSET_NVOX(mset) ;
+   if( !(DBLK_IS_NI_SURF_DSET(mset->dblk) || DBLK_IS_GIFTI(mset->dblk)) ){
+     thd_patterns_error(err,errlen,"surface searchlight dataset '%s' is not a NIML/GIFTI surface dataset",
+                        DSET_HEADNAME(mset)) ;
+     return NULL ;
+   }
+   DSET_load(mset) ;
+   if( !DSET_LOADED(mset) ){
+     thd_patterns_error(err,errlen,"cannot load surface searchlight dataset '%s'",DSET_HEADNAME(mset)) ;
+     return NULL ;
+   }
    { SUMA_SO_File_Type ft = SUMA_GuessSurfFormatFromExtension( (char *)surf_file , NULL ) ;
      if( ft == SUMA_FT_NOT_SPECIFIED || ft == SUMA_FT_ERROR ){
        thd_patterns_error(err,errlen,
@@ -278,52 +294,124 @@ THD_roilist * THD_roilist_searchlight_surf( const char *surf_file,
    if( !SO->FN ){
      thd_patterns_error(err,errlen,
                         "surface '%s' has no node connectivity (no mesh?)",surf_file) ;
-     return NULL ;
+     SUMA_Free_Surface_Object(SO) ; return NULL ;
    }
    nnode = SO->N_Node ;
+   if( nnode<1 ){
+     thd_patterns_error(err,errlen,"surface '%s' has no nodes",surf_file) ;
+     SUMA_Free_Surface_Object(SO) ; return NULL ;
+   }
 
-   sparse = ( ( DBLK_IS_NI_SURF_DSET(mset->dblk) || DBLK_IS_GIFTI(mset->dblk) ) &&
-              mset->dblk->nnodes > 0 && mset->dblk->node_list != NULL ) ;
+   sparse = (mset->dblk->node_list != NULL) ;
+   if( sparse && mset->dblk->nnodes!=nvox ){
+     thd_patterns_error(err,errlen,
+                        "surface dataset '%s' has %d rows but %d node indexes",
+                        DSET_HEADNAME(mset),nvox,mset->dblk->nnodes) ;
+     SUMA_Free_Surface_Object(SO) ; return NULL ;
+   }
+   if( !sparse && nvox!=nnode ){
+     thd_patterns_error(err,errlen,
+                        "dense surface dataset '%s' has %d rows but mesh '%s' has %d nodes",
+                        DSET_HEADNAME(mset),nvox,surf_file,nnode) ;
+     SUMA_Free_Surface_Object(SO) ; return NULL ;
+   }
    n2i = (int *)malloc(sizeof(int)*nnode) ;
+   if( n2i==NULL ){
+     thd_patterns_error(err,errlen,"out of memory validating the surface node domain") ;
+     SUMA_Free_Surface_Object(SO) ; return NULL ;
+   }
    for( m=0 ; m<nnode ; m++ ) n2i[m]=-1 ;
    if( sparse ){
      for( ii=0 ; ii<mset->dblk->nnodes ; ii++ ){
        int nid=mset->dblk->node_list[ii] ;
-       if( nid>=0 && nid<nnode ) n2i[nid]=ii ;
+       if( nid<0 || nid>=nnode ){
+         thd_patterns_error(err,errlen,
+                            "surface dataset '%s' row %d has node %d outside mesh range 0..%d",
+                            DSET_HEADNAME(mset),ii+1,nid,nnode-1) ;
+         free(n2i) ; SUMA_Free_Surface_Object(SO) ; return NULL ;
+       }
+       if( n2i[nid]>=0 ){
+         thd_patterns_error(err,errlen,
+                            "surface dataset '%s' repeats mesh node %d in rows %d and %d",
+                            DSET_HEADNAME(mset),nid,n2i[nid]+1,ii+1) ;
+         free(n2i) ; SUMA_Free_Surface_Object(SO) ; return NULL ;
+       }
+       n2i[nid]=ii ;
      }
    } else {
-     int nn=(nvox<nnode) ? nvox : nnode ;
-     for( ii=0 ; ii<nn ; ii++ ) n2i[ii]=ii ;
+     for( ii=0 ; ii<nnode ; ii++ ) n2i[ii]=ii ;
    }
 
    mask=(byte *)calloc(nvox,sizeof(byte)) ;
+   if( mask==NULL ){
+     thd_patterns_error(err,errlen,"out of memory reading the surface mask") ;
+     free(n2i) ; SUMA_Free_Surface_Object(SO) ; return NULL ;
+   }
    if( all_nodes ){
      for( ii=0 ; ii<nvox ; ii++ ) mask[ii]=1 ;
    } else {
      fac=DSET_BRICK_FACTOR(mset,0) ; if( fac==0.0f ) fac=1.0f ;
-     mim=mri_to_float(DSET_BRICK(mset,0)) ; mar=MRI_FLOAT_PTR(mim) ;
-     for( ii=0 ; ii<nvox ; ii++ ) if( mar[ii]*fac != 0.0f ) mask[ii]=1 ;
+     mim=mri_to_float(DSET_BRICK(mset,0)) ;
+     if( mim==NULL ){
+       thd_patterns_error(err,errlen,"cannot convert surface mask '%s' to float",
+                          DSET_HEADNAME(mset)) ;
+       free(n2i) ; free(mask) ; SUMA_Free_Surface_Object(SO) ; return NULL ;
+     }
+     mar=MRI_FLOAT_PTR(mim) ;
+     for( ii=0 ; ii<nvox ; ii++ ){
+       float vv=mar[ii]*fac ;
+       if( !isfinite(vv) ){
+         int nid=sparse?mset->dblk->node_list[ii]:ii ;
+         thd_patterns_error(err,errlen,
+                            "surface mask '%s' is not finite at mesh node %d",
+                            DSET_HEADNAME(mset),nid) ;
+         mri_free(mim) ; free(n2i) ; free(mask) ; SUMA_Free_Surface_Object(SO) ;
+         return NULL ;
+       }
+       if( vv != 0.0f ) mask[ii]=1 ;
+     }
      mri_free(mim) ;
    }
 
    for( m=0 ; m<nnode ; m++ ) if( n2i[m]>=0 && mask[n2i[m]] ) ncen++ ;
-   if( ncen==0 ){ free(n2i) ; free(mask) ; return NULL ; }
+   if( ncen==0 ){
+     free(n2i) ; free(mask) ; SUMA_Free_Surface_Object(SO) ; return NULL ;
+   }
 
    rl=(THD_roilist *)calloc(1,sizeof(THD_roilist)) ;
+   if( rl==NULL ){
+     thd_patterns_error(err,errlen,"out of memory allocating surface searchlights") ;
+     free(n2i) ; free(mask) ; SUMA_Free_Surface_Object(SO) ; return NULL ;
+   }
    rl->nroi=ncen ;
    rl->val=(int *)malloc(sizeof(int)*ncen) ;
    rl->vox=(intvec *)calloc(ncen,sizeof(intvec)) ;
    rl->lab=(char **)calloc(ncen,sizeof(char *)) ;
    rl->center=(int *)malloc(sizeof(int)*ncen) ;
+   if( rl->val==NULL || rl->vox==NULL || rl->lab==NULL || rl->center==NULL ){
+     thd_patterns_error(err,errlen,"out of memory allocating surface searchlight indexes") ;
+     THD_roilist_free(rl) ; free(n2i) ; free(mask) ; SUMA_Free_Surface_Object(SO) ;
+     return NULL ;
+   }
 
    OffS=SUMA_Initialize_getoffsets(nnode) ;
    tmp=(int *)malloc(sizeof(int)*nnode) ;
+   if( OffS==NULL || tmp==NULL ){
+     thd_patterns_error(err,errlen,"out of memory allocating geodesic searchlight workspace") ;
+     if( OffS!=NULL ) SUMA_Free_getoffsets(OffS) ;
+     free(tmp) ; THD_roilist_free(rl) ; free(n2i) ; free(mask) ;
+     SUMA_Free_Surface_Object(SO) ; return NULL ;
+   }
 
    for( kk=0,m=0 ; m<nnode ; m++ ){
      int ci=(n2i[m]>=0) ? n2i[m] : -1 , il,jl,n ;
      if( ci<0 || !mask[ci] ) continue ;
 
-     SUMA_getoffsets2(m,SO,radius,OffS,NULL,0) ;
+     if( !SUMA_getoffsets2(m,SO,radius,OffS,NULL,0) ){
+       thd_patterns_error(err,errlen,"failed finding geodesic neighbors of mesh node %d",m) ;
+       SUMA_Free_getoffsets(OffS) ; free(tmp) ; THD_roilist_free(rl) ;
+       free(n2i) ; free(mask) ; SUMA_Free_Surface_Object(SO) ; return NULL ;
+     }
      n=0 ; tmp[n++]=ci ;
      for( il=1 ; il<OffS->N_layers ; il++ )
        for( jl=0 ; jl<OffS->layers[il].N_NodesInLayer ; jl++ ){
@@ -334,13 +422,21 @@ THD_roilist * THD_roilist_searchlight_surf( const char *surf_file,
      SUMA_Recycle_getoffsets(OffS) ;
 
      rl->vox[kk].ar=(int *)malloc(sizeof(int)*n) ;
+     if( rl->vox[kk].ar==NULL ){
+       thd_patterns_error(err,errlen,"out of memory storing searchlight at mesh node %d",m) ;
+       SUMA_Free_getoffsets(OffS) ; free(tmp) ; THD_roilist_free(rl) ;
+       free(n2i) ; free(mask) ; SUMA_Free_Surface_Object(SO) ; return NULL ;
+     }
      memcpy(rl->vox[kk].ar,tmp,sizeof(int)*n) ;
      rl->vox[kk].nar=n ;
-     rl->val[kk]=ci ; rl->center[kk]=ci ; kk++ ;
+     rl->val[kk]=m ;             /* reported mesh node ID */
+     rl->center[kk]=ci ;         /* row painted in the sparse/dense dataset */
+     kk++ ;
    }
 
    SUMA_Free_getoffsets(OffS) ;
    free(tmp) ; free(n2i) ; free(mask) ;
+   SUMA_Free_Surface_Object(SO) ;
    return rl ;
 }
 #endif /* USE_SUMA */
@@ -427,77 +523,156 @@ void THD_roi_mean_ts_zmask( THD_3dim_dataset *dset , intvec *vox ,
    THD_roi_mean_ts_internal(dset,vox,polort,out,keep) ;
 }
 
+static int thd_roi_brick_pattern( THD_3dim_dataset *dset, int bb,
+                                  const intvec *vox, float *out )
+{
+   int nvx=vox->nar , ii ;
+   void *ar ; float fac ;
+
+   for( ii=0 ; ii<nvx ; ii++ ) out[ii]=0.0f ;
+   if( dset==NULL || bb<0 || bb>=DSET_NVALS(dset) ) return 0 ;
+   ar=DSET_ARRAY(dset,bb) ;
+   if( ar==NULL ){ DSET_load(dset) ; ar=DSET_ARRAY(dset,bb) ; }
+   if( ar==NULL ) return 0 ;
+   fac=DSET_BRICK_FACTOR(dset,bb) ;
+   if( fac<=0.0f ) fac=1.0f ;             /* match THD_get_voxel exactly */
+
+#define COPY_SCALAR_PATTERN(type)                                                \
+   do { type *src=(type *)ar ;                                                   \
+        if( fac==1.0f )                                                          \
+          for( ii=0 ; ii<nvx ; ii++ ) out[ii]=(float)src[vox->ar[ii]] ;          \
+        else                                                                     \
+          for( ii=0 ; ii<nvx ; ii++ )                                            \
+            out[ii]=(float)src[vox->ar[ii]]*fac ;                                \
+   } while(0)
+
+   switch( DSET_BRICK_TYPE(dset,bb) ){
+     default: return 0 ;
+     case MRI_byte:   COPY_SCALAR_PATTERN(byte)   ; break ;
+     case MRI_short:  COPY_SCALAR_PATTERN(short)  ; break ;
+     case MRI_int:    COPY_SCALAR_PATTERN(int)    ; break ;
+     case MRI_float:  COPY_SCALAR_PATTERN(float)  ; break ;
+     case MRI_double: COPY_SCALAR_PATTERN(double) ; break ;
+
+     case MRI_complex:{
+       complex *src=(complex *)ar ;
+       for( ii=0 ; ii<nvx ; ii++ ){
+         complex c=src[vox->ar[ii]] ;
+         out[ii]=sqrtf(c.r*c.r+c.i*c.i)*fac ;
+       }
+     }
+     break ;
+
+     case MRI_rgb:{
+       rgbyte *src=(rgbyte *)ar ;
+       for( ii=0 ; ii<nvx ; ii++ ){
+         rgbyte c=src[vox->ar[ii]] ;
+         out[ii]=(0.299f*(float)c.r + 0.587f*(float)c.g
+                                + 0.114f*(float)c.b)*fac ;
+       }
+     }
+     break ;
+
+     case MRI_rgba:{
+       rgba *src=(rgba *)ar ;
+       for( ii=0 ; ii<nvx ; ii++ ){
+         rgba c=src[vox->ar[ii]] ;
+         float val=0.299f*(float)c.r + 0.587f*(float)c.g
+                                      + 0.114f*(float)c.b ;
+         out[ii]=val*(0.00392157f*(float)c.a)*fac ;
+       }
+     }
+     break ;
+   }
+#undef COPY_SCALAR_PATTERN
+   return 1 ;
+}
+
 void THD_roi_pattern( THD_3dim_dataset *dset , intvec *vox , float *out )
 {
-   int nvals = DSET_NVALS(dset) , nvx = vox->nar , ii , bb ;
+   int nvals = DSET_NVALS(dset) , nvx = vox->nar , bb ;
 
    /* THD_get_voxel performs dataset/type/bounds dispatch for every value.
       These voxel indices have already been validated while the ROI list was
       built, so dispatch once per brick and walk its typed array directly. */
-   for( bb=0 ; bb < nvals ; bb++ ){
-     void *ar = DSET_ARRAY(dset,bb) ;
-     float *dst = out + (size_t)bb*nvx ;
-     float fac = DSET_BRICK_FACTOR(dset,bb) ;
+   for( bb=0 ; bb<nvals ; bb++ )
+     (void)thd_roi_brick_pattern(dset,bb,vox,out+(size_t)bb*nvx) ;
+}
 
-     if( ar == NULL ){ DSET_load(dset) ; ar = DSET_ARRAY(dset,bb) ; }
-     if( ar == NULL ){
-       for( ii=0 ; ii < nvx ; ii++ ) dst[ii] = 0.0f ;
-       continue ;
-     }
-     if( fac <= 0.0f ) fac = 1.0f ;       /* match THD_get_voxel exactly */
+int THD_roi_samples( const THD_sampleset *ss,
+                     const int *sample_index, int nsample,
+                     const intvec *vox, float *out,
+                     char *err, size_t errlen )
+{
+   int ii,jj,rr,dd,bb,nvx ; THD_3dim_dataset *dset ; float *dst ;
 
-#define COPY_SCALAR_PATTERN(type)                                                \
-     do { type *src=(type *)ar ;                                                 \
-          if( fac == 1.0f )                                                      \
-            for( ii=0 ; ii < nvx ; ii++ ) dst[ii]=(float)src[vox->ar[ii]] ;      \
-          else                                                                   \
-            for( ii=0 ; ii < nvx ; ii++ )                                       \
-              dst[ii]=(float)src[vox->ar[ii]]*fac ;                              \
-     } while(0)
-
-     switch( DSET_BRICK_TYPE(dset,bb) ){
-       default:
-         for( ii=0 ; ii < nvx ; ii++ ) dst[ii] = 0.0f ;
-       break ;
-
-       case MRI_byte:   COPY_SCALAR_PATTERN(byte)   ; break ;
-       case MRI_short:  COPY_SCALAR_PATTERN(short)  ; break ;
-       case MRI_int:    COPY_SCALAR_PATTERN(int)    ; break ;
-       case MRI_float:  COPY_SCALAR_PATTERN(float)  ; break ;
-       case MRI_double: COPY_SCALAR_PATTERN(double) ; break ;
-
-       case MRI_complex:{
-         complex *src=(complex *)ar ;
-         for( ii=0 ; ii < nvx ; ii++ ){
-           complex c=src[vox->ar[ii]] ;
-           dst[ii]=sqrtf(c.r*c.r+c.i*c.i)*fac ;
-         }
-       }
-       break ;
-
-       case MRI_rgb:{
-         rgbyte *src=(rgbyte *)ar ;
-         for( ii=0 ; ii < nvx ; ii++ ){
-           rgbyte c=src[vox->ar[ii]] ;
-           dst[ii]=(0.299f*(float)c.r + 0.587f*(float)c.g
-                                  + 0.114f*(float)c.b)*fac ;
-         }
-       }
-       break ;
-
-       case MRI_rgba:{
-         rgba *src=(rgba *)ar ;
-         for( ii=0 ; ii < nvx ; ii++ ){
-           rgba c=src[vox->ar[ii]] ;
-           float val=0.299f*(float)c.r + 0.587f*(float)c.g
-                                        + 0.114f*(float)c.b ;
-           dst[ii]=val*(0.00392157f*(float)c.a)*fac ;
-         }
-       }
-       break ;
-     }
-#undef COPY_SCALAR_PATTERN
+   if( err!=NULL && errlen>0 ) err[0]='\0' ;
+   if( ss==NULL || ss->dset==NULL || ss->sample_dset==NULL ||
+       ss->sample_brick==NULL || ss->nsample<1 || ss->ndset<1 || ss->nvox<1 ){
+     thd_patterns_error(err,errlen,"invalid or empty sample set") ; return 0 ;
    }
+   if( vox==NULL || vox->ar==NULL || vox->nar<1 || out==NULL || nsample<1 ){
+     thd_patterns_error(err,errlen,"sample extraction needs samples, voxels, and output storage") ;
+     return 0 ;
+   }
+   if( sample_index==NULL && nsample!=ss->nsample ){
+     thd_patterns_error(err,errlen,
+       "NULL sample index selects all %d canonical rows, not %d",ss->nsample,nsample) ;
+     return 0 ;
+   }
+   nvx=vox->nar ;
+   if( (size_t)nsample>SIZE_MAX/sizeof(float)/(size_t)nvx ){
+     thd_patterns_error(err,errlen,"requested sample-by-voxel matrix is too large") ; return 0 ;
+   }
+   for( jj=0 ; jj<nvx ; jj++ ) if( vox->ar[jj]<0 || vox->ar[jj]>=ss->nvox ){
+     thd_patterns_error(err,errlen,
+       "ROI voxel %d has index %d outside [0,%d]",jj+1,vox->ar[jj],ss->nvox-1) ;
+     return 0 ;
+   }
+
+   for( ii=0 ; ii<nsample ; ii++ ){
+     rr=(sample_index==NULL) ? ii : sample_index[ii] ;
+     if( rr<0 || rr>=ss->nsample ){
+       thd_patterns_error(err,errlen,
+         "requested sample %d has canonical index %d outside [0,%d]",
+         ii+1,rr,ss->nsample-1) ;
+       return 0 ;
+     }
+     dd=ss->sample_dset[rr] ; bb=ss->sample_brick[rr] ;
+     if( dd<0 || dd>=ss->ndset || (dset=ss->dset[dd])==NULL ){
+       thd_patterns_error(err,errlen,
+         "canonical sample %d refers to invalid dataset index %d",rr+1,dd) ;
+       return 0 ;
+     }
+     if( DSET_NVOX(dset)!=ss->nvox ){
+       thd_patterns_error(err,errlen,
+         "canonical sample %d dataset has %d voxels; expected %d",
+         rr+1,DSET_NVOX(dset),ss->nvox) ;
+       return 0 ;
+     }
+     if( bb<0 || bb>=DSET_NVALS(dset) ){
+       thd_patterns_error(err,errlen,
+         "canonical sample %d refers to invalid brick index %d",rr+1,bb) ;
+       return 0 ;
+     }
+     dst=out+(size_t)ii*nvx ;
+     if( !thd_roi_brick_pattern(dset,bb,vox,dst) ){
+       const char *name=(ss->dset_name!=NULL && ss->dset_name[dd]!=NULL)
+                        ? ss->dset_name[dd] : "unnamed dataset" ;
+       thd_patterns_error(err,errlen,
+         "cannot extract canonical sample %d from %s brick %d",rr+1,name,bb) ;
+       return 0 ;
+     }
+     for( jj=0 ; jj<nvx ; jj++ ) if( !isfinite(dst[jj]) ){
+       const char *label=(ss->sample_label!=NULL && ss->sample_label[rr]!=NULL)
+                         ? ss->sample_label[rr] : "unlabeled" ;
+       thd_patterns_error(err,errlen,
+         "canonical sample %d (%s), voxel index %d is not finite",
+         rr+1,label,vox->ar[jj]) ;
+       return 0 ;
+     }
+   }
+   return 1 ;
 }
 
 /*============================================================================*/

@@ -48,6 +48,12 @@ int main( void )
 
    p=THD_foldplan_leave_group_out(ss,"Subj",NULL,err,sizeof(err)) ; CHECK(p!=NULL,err) ;
    CHECK(p->nfold==2 && p->ntrain[0]==4 && p->ntest[0]==4,"leave-one-subject-out") ;
+   CHECK(!strcmp(p->name[0],"s1") && !strcmp(p->name[1],"s2"),
+         "unstratified fold names retain held-out group labels") ;
+   p->ntest[0]-- ;
+   CHECK(!THD_foldplan_validate(p,err,sizeof(err)) && strstr(err,"occurs in 0 test folds")!=NULL,
+         "invalid coverage reports the preserved test-fold count") ;
+   p->ntest[0]++ ;
    THD_foldplan_free(p) ; p=NULL ;
    p=THD_foldplan_leave_group_out(ss,"Fold",NULL,err,sizeof(err)) ; CHECK(p!=NULL,err) ;
    CHECK(p->nfold==2 && p->sample_test_fold[0]==p->sample_test_fold[4],"explicit folds across subjects") ;

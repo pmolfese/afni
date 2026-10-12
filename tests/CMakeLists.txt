@@ -92,6 +92,48 @@ if(TARGET 3dRSA)
   set_tests_properties(3dRSA:numeric PROPERTIES LABELS "3dRSA;numeric")
 endif()
 
+if(TARGET 3dMVPA AND TARGET 3dUndump AND TARGET 3dbucket
+   AND TARGET 3drefit AND TARGET 3dinfo AND TARGET 3dmaskave
+   AND TARGET 3dmaskdump)
+  find_program(BASH_PROGRAM bash)
+  if(BASH_PROGRAM)
+    add_test(
+      NAME 3dMVPA:spatial-classification
+      COMMAND
+        ${BASH_PROGRAM}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_integration.sh
+        $<TARGET_FILE:3dMVPA>
+        $<TARGET_FILE:3dUndump>
+        $<TARGET_FILE:3dbucket>
+        $<TARGET_FILE:3drefit>
+        $<TARGET_FILE:3dinfo>
+        $<TARGET_FILE:3dmaskave>
+        $<TARGET_FILE:3dmaskdump>
+    )
+    set_tests_properties(3dMVPA:spatial-classification PROPERTIES
+                         LABELS "3dMVPA;numeric;integration")
+  endif()
+endif()
+
+if(TARGET 3dMVPA AND TARGET CreateIcosahedron AND TARGET ConvertDset
+   AND TARGET 3dinfo)
+  find_program(BASH_PROGRAM bash)
+  if(BASH_PROGRAM)
+    add_test(
+      NAME 3dMVPA:surface-searchlight
+      COMMAND
+        ${BASH_PROGRAM}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_surface.sh
+        $<TARGET_FILE:3dMVPA>
+        $<TARGET_FILE:CreateIcosahedron>
+        $<TARGET_FILE:ConvertDset>
+        $<TARGET_FILE:3dinfo>
+    )
+    set_tests_properties(3dMVPA:surface-searchlight PROPERTIES
+                         LABELS "3dMVPA;numeric;integration;surface")
+  endif()
+endif()
+
 if(TARGET 1dTrdm AND TARGET 3dRSA)
   add_test(
     NAME 1dTrdm:numeric
@@ -141,7 +183,7 @@ if(ENABLE_TESTS)
     PRIVATE AFNI::mri NIFTI::nifti2 NIFTI::nifticdf m
   )
   add_test(NAME thd_patterns:unit COMMAND thd_patterns_unit)
-  set_tests_properties(thd_patterns:unit PROPERTIES LABELS "3dRSA;numeric;unit")
+  set_tests_properties(thd_patterns:unit PROPERTIES LABELS "3dRSA;3dMVPA;numeric;unit")
 
   add_executable(
     thd_xmat_unit

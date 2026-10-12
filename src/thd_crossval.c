@@ -86,7 +86,10 @@ static char * cv_fold_name( const char *stratum, const char *fold, int stratifie
 {
    if( fold==NULL || (stratified && stratum==NULL) ) return NULL ;
    size_t n=strlen(fold)+(stratified?strlen(stratum)+2:1) ; char *out=(char *)malloc(n) ;
-   if( out!=NULL ) snprintf(out,n,stratified?"%s/%s":"%s",stratum,fold) ;
+   if( out!=NULL ){
+     if( stratified ) snprintf(out,n,"%s/%s",stratum,fold) ;
+     else             snprintf(out,n,"%s",fold) ;
+   }
    return out ;
 }
 
@@ -139,7 +142,9 @@ int THD_foldplan_validate( const THD_foldplan *p, char *err, int nerr )
      }
    }
    if( p->kind!=THD_CV_FIXED ) for( ii=0 ; ii<p->nsample ; ii++ ) if( ntest[ii]!=1 ){
-     free(seen) ; free(ntest) ; return cv_error(err,nerr,"sample %d occurs in %d test folds; expected exactly one",ii+1,ntest[ii]) ;
+     int count=ntest[ii] ;
+     free(seen) ; free(ntest) ;
+     return cv_error(err,nerr,"sample %d occurs in %d test folds; expected exactly one",ii+1,count) ;
    }
    free(seen) ; free(ntest) ; return 1 ;
 }

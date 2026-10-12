@@ -1,6 +1,7 @@
 #ifndef _THD_PATTERNS_HEADER_
 #define _THD_PATTERNS_HEADER_
 
+#include "thd_sampleset.h"
 #include <stddef.h>
 
 /*----------------------------------------------------------------------------
@@ -21,10 +22,10 @@
     sphere), plus a label and an optional center. */
 typedef struct {
    int     nroi ;
-   int    *val ;    /* [nroi] atlas value, or the center voxel index (searchlight) */
-   intvec *vox ;    /* [nroi] voxel indices; .nar is the voxel count */
+   int    *val ;    /* [nroi] atlas value, or center voxel/mesh-node ID         */
+   intvec *vox ;    /* [nroi] volume voxels or surface dataset rows; .nar is count */
    char  **lab ;    /* [nroi] label from the atlas label table, or NULL */
-   int    *center ; /* [nroi] center voxel to paint; -1 means paint the whole ROI */
+   int    *center ; /* [nroi] dataset row to paint; -1 means paint the whole ROI */
 } THD_roilist ;
 
 /*! Every distinct positive value in the mask becomes an ROI.  'roi_sel' is an
@@ -53,7 +54,9 @@ extern void THD_roilist_paint( float *brick, const THD_roilist *rl,
                                const float *values ) ;
 
 #ifdef USE_SUMA
-/*! Geodesic surface searchlights over the nodes represented by mset. */
+/*! Geodesic surface searchlights over the nodes represented by mset.  Sparse
+    node indexes must be unique, in the mesh range, and exactly one per dataset
+    row. val[] reports mesh node IDs while center[] stores dataset rows. */
 extern THD_roilist * THD_roilist_searchlight_surf( const char *surface,
                                                    THD_3dim_dataset *mset,
                                                    float radius, int all_nodes,
@@ -91,6 +94,20 @@ extern void THD_roi_mean_ts_zmask( THD_3dim_dataset *dset , intvec *vox ,
 
     which is why there is only one function here rather than two. */
 extern void THD_roi_pattern( THD_3dim_dataset *dset , intvec *vox , float *out ) ;
+
+/*! Extract selected canonical sample rows over one ROI/searchlight into
+    out[nsample][vox->nar].  sample_index gives zero-based THD_sampleset rows
+    in the desired output order; repeated rows are allowed.  Passing NULL
+    selects every canonical row and requires nsample == ss->nsample.
+
+    Dataset scale factors are applied.  The caller owns all storage, and no
+    allocation is performed after a dataset is loaded.  Returns 1 on success;
+    on failure, out may be partially filled and err receives a bounded
+    diagnostic when supplied. */
+extern int THD_roi_samples( const THD_sampleset *ss,
+                            const int *sample_index, int nsample,
+                            const intvec *vox, float *out,
+                            char *err, size_t errlen ) ;
 
 /*----------------------------------------------------------------------------
   Run-aware input, for cross-validated (runwise) classic RSA.

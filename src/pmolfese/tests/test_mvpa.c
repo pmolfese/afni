@@ -18,6 +18,21 @@ static void fixed_plan( THD_foldplan *p, int nsample, int *train, int ntrain,
    p->ntrain=ntr ; p->ntest=nte ; p->train=tr ; p->test=te ; p->sample_test_fold=sample_fold ;
 }
 
+static void paired_three_fold_plan( THD_foldplan *p )
+{
+   static char *name[3]={"pair1","pair2","pair3"},*stratum_label[1]={"All"} ;
+   static char group_column[]="Pair" ;
+   static int fold_stratum[3]={0,0,0},ntr[3]={4,4,4},nte[3]={2,2,2} ;
+   static int tr0[]={2,3,4,5},tr1[]={0,1,4,5},tr2[]={0,1,2,3} ;
+   static int te0[]={0,1},te1[]={2,3},te2[]={4,5},sample_fold[]={0,0,1,1,2,2} ;
+   static int *tr[3]={tr0,tr1,tr2},*te[3]={te0,te1,te2} ;
+   memset(p,0,sizeof(*p)) ;
+   p->kind=THD_CV_LEAVE_GROUP_OUT ; p->nsample=6 ; p->nfold=3 ; p->nstratum=1 ;
+   p->group_column=group_column ; p->name=name ; p->fold_stratum=fold_stratum ;
+   p->stratum_label=stratum_label ; p->ntrain=ntr ; p->ntest=nte ;
+   p->train=tr ; p->test=te ; p->sample_test_fold=sample_fold ;
+}
+
 int main( void )
 {
    float zmat[]={ 1,10,5, 3,14,5, 102,212,500, -98,-188,-500 } ;
@@ -34,8 +49,19 @@ int main( void )
    float cont_truth[]={1,2,3,4},cont_pred[]={1,3,2,5},cont_base[]={2.5,2.5,2.5,2.5} ;
    float tie_truth[]={1,1,2,3},tie_pred[]={1,2,2,3} ;
    float flat[]={2,2,2,2},zero_base[]={2,2,2,2} ;
+   float euc_train[]={0,0, 0,2, 4,0, 4,2},euc_test[]={1,1, 3,2, 2,1} ;
+   float corr_train[]={1,2,3, 2,4,6, 3,2,1, 6,4,2} ;
+   float corr_test[]={10,20,30, 9,6,3},constant_test[]={5,5,5} ;
+   float constant_train[]={1,1,1, 1,1,1, 1,2,3, 2,4,6} ;
+   float cos_train[]={1,0, 2,0, 0,1, 0,2},cos_test[]={0.8f,0.2f, 0.1f,0.9f} ;
+   float zero_pattern[]={0,0} ;
+   float cv_x[]={0,0, 10,0, 1,1, 9,1, -1,2, 11,2} ;
+   int cv_class[]={0,1,0,1,0,1},cv_group[]={0,0,1,1,2,2} ;
+   int train_class[]={0,0,1,1},predicted[3],distance=-1 ; double decision[6] ;
    THD_mvpa_class_score cscore ; THD_mvpa_continuous_score dscore ;
-   THD_foldplan plan ; THD_preprocessor *p=NULL ; char err[512] ; int fail=0,method=-1 ;
+   THD_centroid_model *cm=NULL ;
+   THD_mvpa_workspace *ws=NULL ;
+   THD_foldplan plan,cvplan ; THD_preprocessor *p=NULL ; char err[512] ; int fail=0,method=-1 ;
 
    fixed_plan(&plan,4,tr2,2,te2,2,sf2) ;
    CHECK(THD_preprocess_fold(&plan,0,THD_PREP_FEATURE_ZSCORE,zmat,3,NULL,
@@ -133,8 +159,122 @@ int main( void )
    CHECK(!THD_mvpa_metric_parse("mystery",&metric,err,sizeof(err)) && strstr(err,"mystery")!=NULL,
          "unknown metric option is rejected") ;
 
+   cm=THD_centroid_fit(THD_CENTROID_EUCLIDEAN,euc_train,train_class,4,2,2,err,sizeof(err)) ;
+   CHECK(cm!=NULL,err) ;
+   CHECK(cm->class_count[0]==2 && cm->class_count[1]==2 &&
+         CLOSE(cm->centroid[0],0) && CLOSE(cm->centroid[1],1) &&
+         CLOSE(cm->centroid[2],4) && CLOSE(cm->centroid[3],1),
+         "nearest-centroid fitting computes class means") ;
+   CHECK(THD_centroid_predict(cm,euc_test,3,2,predicted,decision,err,sizeof(err)),err) ;
+   CHECK(predicted[0]==0 && predicted[1]==1 && predicted[2]==0 &&
+         CLOSE(decision[0],-1) && CLOSE(decision[1],-9) &&
+         CLOSE(decision[2],-10) && CLOSE(decision[3],-2) &&
+         CLOSE(decision[4],-4) && CLOSE(decision[5],-4),
+         "Euclidean centroid scores and deterministic ties match known answers") ;
+   THD_centroid_free(cm) ; cm=NULL ;
+
+   cm=THD_centroid_fit(THD_CENTROID_CORRELATION,corr_train,train_class,4,3,2,err,sizeof(err)) ;
+   CHECK(cm!=NULL,err) ;
+   CHECK(THD_centroid_predict(cm,corr_test,2,3,predicted,decision,err,sizeof(err)),err) ;
+   CHECK(predicted[0]==0 && predicted[1]==1 && CLOSE(decision[0],1) &&
+         CLOSE(decision[1],-1) && CLOSE(decision[2],-1) && CLOSE(decision[3],1),
+         "correlation-to-centroid predictions match known answers") ;
+   CHECK(!THD_centroid_predict(cm,constant_test,1,3,predicted,decision,err,sizeof(err)) &&
+         strstr(err,"constant")!=NULL,"correlation rejects a constant prediction pattern") ;
+   THD_centroid_free(cm) ; cm=NULL ;
+   CHECK(THD_centroid_fit(THD_CENTROID_CORRELATION,constant_train,train_class,4,3,2,
+                          err,sizeof(err))==NULL && strstr(err,"constant")!=NULL,
+         "correlation rejects a constant training centroid") ;
+
+   cm=THD_centroid_fit(THD_CENTROID_COSINE,cos_train,train_class,4,2,2,err,sizeof(err)) ;
+   CHECK(cm!=NULL,err) ;
+   CHECK(THD_centroid_predict(cm,cos_test,2,2,predicted,NULL,err,sizeof(err)) &&
+         predicted[0]==0 && predicted[1]==1,
+         "cosine centroid prediction supports label-only output") ;
+   CHECK(!THD_centroid_predict(cm,zero_pattern,1,2,predicted,decision,err,sizeof(err)) &&
+         strstr(err,"zero norm")!=NULL,"cosine rejects a zero-norm prediction pattern") ;
+   THD_centroid_free(cm) ; cm=NULL ;
+
+   CHECK(THD_centroid_fit(THD_CENTROID_EUCLIDEAN,euc_train,train_class,4,2,3,
+                          err,sizeof(err))==NULL && strstr(err,"class 2")!=NULL,
+         "centroid fitting rejects a missing training class") ;
+   CHECK(THD_centroid_distance_parse("CORRELATION",&distance,err,sizeof(err)) &&
+         distance==THD_CENTROID_CORRELATION,
+         "centroid distance parsing is case-insensitive") ;
+   CHECK(!THD_centroid_distance_parse("mystery",&distance,err,sizeof(err)) &&
+         strstr(err,"mystery")!=NULL,"unknown centroid distance is rejected") ;
+
+   paired_three_fold_plan(&cvplan) ;
+   ws=THD_mvpa_workspace_alloc(&cvplan,2,2,THD_PREP_FEATURE_ZSCORE,NULL,err,sizeof(err)) ;
+   CHECK(ws!=NULL,err) ;
+   {
+     float *train_buffer=ws->train_x ; double *decision_buffer=ws->decision ;
+     CHECK(THD_mvpa_run_centroid_cv(&cvplan,THD_CENTROID_EUCLIDEAN,cv_x,2,
+                                    cv_class,NULL,ws,err,sizeof(err)),err) ;
+     CHECK(ws->ntest==6 && ws->score.nsample==6 && ws->score.ncorrect==6 &&
+           CLOSE(ws->score.accuracy,1) && CLOSE(ws->score.balanced_accuracy,1),
+           "fold runner computes perfect out-of-fold scores") ;
+     CHECK(!memcmp(ws->prediction,cv_class,6*sizeof(int)) &&
+           ws->confusion[0]==3 && ws->confusion[1]==0 &&
+           ws->confusion[2]==0 && ws->confusion[3]==3 &&
+           CLOSE(ws->recall[0],1) && CLOSE(ws->recall[1],1),
+           "fold runner restores predictions and diagnostics to original row order") ;
+     for( method=0 ; method<3 ; method++ )
+       CHECK(ws->fold_nsample[method]==2 && CLOSE(ws->fold_accuracy[method],1) &&
+             CLOSE(ws->fold_balanced_accuracy[method],1),
+             "fold runner records per-fold sample counts and scores") ;
+     for( method=0 ; method<12 ; method++ )
+       CHECK(isfinite(ws->decision[method]),"tested rows receive finite per-class decisions") ;
+     CHECK(THD_mvpa_run_centroid_cv(&cvplan,THD_CENTROID_EUCLIDEAN,cv_x,2,
+                                    cv_class,NULL,ws,err,sizeof(err)),err) ;
+     CHECK(ws->train_x==train_buffer && ws->decision==decision_buffer,
+           "repeated CV runs reuse workspace buffers") ;
+     {
+       int perm_index[]={0,1,2,3,4,5, 1,0,2,3,4,5} ;
+       signed char perm_sign[]={1,1,1,1,1,1, 1,1,1,1,1,1} ;
+       int perm_class[6] ; float null_score[2] ; PERM_set pset ;
+       memset(&pset,0,sizeof(pset)) ; pset.nperm=2 ; pset.nobs=6 ;
+       pset.perm=perm_index ; pset.sign=perm_sign ;
+       CHECK(THD_mvpa_run_centroid_permutations(
+                 &cvplan,THD_CENTROID_EUCLIDEAN,cv_x,2,cv_class,NULL,
+                 THD_METRIC_BALANCED_ACCURACY,&pset,perm_class,null_score,
+                 ws,err,sizeof(err)),err) ;
+       CHECK(CLOSE(null_score[0],1) && isfinite(null_score[1]),
+             "permutation runner returns the identity and relabeled CV scores") ;
+       CHECK(CLOSE(ws->score.balanced_accuracy,1) &&
+             !memcmp(ws->prediction,cv_class,6*sizeof(int)),
+             "permutation runner restores observed predictions and scores") ;
+       CHECK(!THD_mvpa_run_centroid_permutations(
+                 &cvplan,THD_CENTROID_EUCLIDEAN,cv_x,2,cv_class,NULL,
+                 THD_METRIC_PEARSON,&pset,perm_class,null_score,
+                 ws,err,sizeof(err)) && strstr(err,"accuracy")!=NULL,
+             "classification permutation runner rejects continuous metrics") ;
+     }
+   }
+   THD_mvpa_workspace_free(ws) ; ws=NULL ;
+
+   fixed_plan(&plan,6,tr4,4,te4,2,sf4) ;
+   ws=THD_mvpa_workspace_alloc(&plan,2,2,THD_PREP_NONE,NULL,err,sizeof(err)) ;
+   CHECK(ws!=NULL,err) ;
+   CHECK(THD_mvpa_run_centroid_cv(&plan,THD_CENTROID_EUCLIDEAN,cv_x,2,
+                                  cv_class,NULL,ws,err,sizeof(err)),err) ;
+   CHECK(ws->ntest==2 && ws->score.nsample==2 && ws->prediction[4]==0 &&
+         ws->prediction[5]==1 && ws->prediction[0]==-1 && isnan(ws->decision[0]),
+         "fixed CV marks training-only rows and scores only held-out rows") ;
+   THD_mvpa_workspace_free(ws) ; ws=NULL ;
+
+   ws=THD_mvpa_workspace_alloc(&cvplan,2,2,THD_PREP_RUN_CENTER,cv_group,err,sizeof(err)) ;
+   CHECK(ws!=NULL,err) ;
+   CHECK(!THD_mvpa_run_centroid_cv(&cvplan,THD_CENTROID_EUCLIDEAN,cv_x,2,
+                                   cv_class,cv_group,ws,err,sizeof(err)) &&
+         strstr(err,"fold pair1")!=NULL && strstr(err,"not present in training")!=NULL,
+         "fold runner reports run_center leakage restrictions with fold context") ;
+   THD_mvpa_workspace_free(ws) ; ws=NULL ;
+
 done:
+   THD_mvpa_workspace_free(ws) ;
+   THD_centroid_free(cm) ;
    THD_preprocess_free(p) ;
    if( fail ) return 1 ;
-   puts("PASS thd_mvpa preprocessing and prediction metrics") ; return 0 ;
+   puts("PASS thd_mvpa preprocessing, metrics, classifiers, CV, and permutation runner") ; return 0 ;
 }

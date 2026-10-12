@@ -2,12 +2,12 @@
 #define _THD_MVPA_HEADER_
 
 #include "thd_crossval.h"
+#include "thd_permute.h"
 
 /*----------------------------------------------------------------------------
-  Dataset-independent numerical support for multivariate prediction.  The
-  initial section implements training-only transformations for sample-by-
-  feature matrices.  A fitted object contains only statistics learned from
-  supplied training rows; applying it never recomputes held-out statistics.
+  Dataset-independent numerical support for multivariate prediction.  Fitted
+  objects contain only statistics learned from supplied training rows;
+  applying them never recomputes held-out statistics.
                                                      -- P Molfese, Oct 2026
 ------------------------------------------------------------------------------*/
 
@@ -24,10 +24,16 @@
 #define THD_METRIC_MAE                   5
 #define THD_METRIC_RMSE                  6
 
+#define THD_CENTROID_EUCLIDEAN           0
+#define THD_CENTROID_CORRELATION         1
+#define THD_CENTROID_COSINE              2
+
 typedef struct {
    int method , nfeature , nfit , ngroup , nconstant ;
+   int nfeature_alloc , ngroup_alloc ;
 
    int *group_value ;       /* [ngroup], training group IDs for run_center  */
+   int *group_count ;       /* [ngroup], reusable run_center counts         */
    double *center ;         /* [nfeature] or [ngroup][nfeature]             */
    double *scale ;          /* [nfeature], feature_zscore only              */
    unsigned char *constant ;/* [nfeature], zero-variance training features  */
@@ -42,6 +48,103 @@ typedef struct {
    int nsample ;
    double pearson , spearman , cv_r2 , mae , rmse ;
 } THD_mvpa_continuous_score ;
+
+typedef struct {
+   int distance , nclass , nfeature , nfit , nfeature_alloc ;
+   int *class_count ;       /* [nclass]                                  */
+   double *centroid ;       /* [nclass][nfeature]                         */
+   double *centroid_mean ;  /* [nclass], correlation distance only       */
+   double *centroid_norm ;  /* [nclass], correlation or cosine distance  */
+} THD_centroid_model ;
+
+typedef struct {
+   const THD_foldplan *plan ; /* borrowed; must outlive the workspace       */
+   const int *group_id ;      /* borrowed run_center groups, otherwise NULL */
+   int nsample , nfold , nclass , nfeature_alloc , max_train , max_test ;
+   int preprocess , ntest ;
+
+   float *train_x , *test_x ;
+   int *train_class , *test_class , *test_prediction ;
+   double *test_decision ;
+
+   THD_preprocessor *prep ;
+   THD_centroid_model *centroid ;
+   int *train_count ;
+   int *fold_confusion ;
+   double *fold_recall ;
+
+   int *prediction ;        /* [nsample], -1 when a row was not tested      */
+   double *decision ;       /* [nsample][nclass], NAN when not tested       */
+   int *fold_nsample ;      /* [nfold]                                      */
+   double *fold_accuracy ;  /* [nfold]                                      */
+   double *fold_balanced_accuracy ; /* [nfold]                               */
+   int *confusion ;         /* [nclass][nclass], truth rows                 */
+   double *recall ;         /* [nclass]                                     */
+   THD_mvpa_class_score score ;
+} THD_mvpa_workspace ;
+
+/*! Allocate buffers for repeated analyses with one fold plan.  max_feature is
+    the largest pattern width that will be passed to the runner.  For
+    run_center, group_id is borrowed and must also outlive the workspace. */
+extern THD_mvpa_workspace * THD_mvpa_workspace_alloc(
+                                      const THD_foldplan *plan,
+                                      int max_feature, int nclass,
+                                      int preprocess, const int *group_id,
+                                      char *err, int nerr ) ;
+
+/*! Run fold-local preprocessing, centroid fitting, held-out prediction, and
+    classification scoring.  Results are workspace-owned and remain valid
+    until the next call.  score pools all tested rows; fold scores preserve
+    the inputs needed for later subject/stratum-aware aggregation.  group_id
+    is required only for run_center and must match workspace allocation. */
+extern int THD_mvpa_run_centroid_cv( const THD_foldplan *plan,
+                                     int distance, const float *x,
+                                     int nfeature, const int *class_id,
+                                     const int *group_id,
+                                     THD_mvpa_workspace *workspace,
+                                     char *err, int nerr ) ;
+
+/*! Repeat the complete centroid CV analysis under every synchronized label
+    relabeling in pset.  null_score[pset->nperm] receives accuracy or balanced
+    accuracy for each slot, including the identity in slot 0.  permuted_class
+    is caller-owned scratch [plan->nsample].  On success the identity analysis
+    is restored in workspace, so its predictions and fold diagnostics remain
+    the observed result. */
+extern int THD_mvpa_run_centroid_permutations(
+                                     const THD_foldplan *plan,
+                                     int distance, const float *x,
+                                     int nfeature, const int *class_id,
+                                     const int *group_id, int metric,
+                                     const PERM_set *pset,
+                                     int *permuted_class, float *null_score,
+                                     THD_mvpa_workspace *workspace,
+                                     char *err, int nerr ) ;
+
+extern void THD_mvpa_workspace_free( THD_mvpa_workspace *workspace ) ;
+
+/*! Centroid distances: euclidean, correlation, cosine. */
+extern const char * THD_centroid_distance_name( int distance ) ;
+extern int THD_centroid_distance_parse( const char *name, int *distance,
+                                        char *err, int nerr ) ;
+
+/*! Fit class centroids from a compact [nsample][nfeature] training matrix.
+    class_id values must cover every integer in [0,nclass-1]. */
+extern THD_centroid_model * THD_centroid_fit(
+                                        int distance, const float *x,
+                                        const int *class_id,
+                                        int nsample, int nfeature, int nclass,
+                                        char *err, int nerr ) ;
+
+/*! Predict compact rows.  decision may be NULL; otherwise it receives
+    [nsample][nclass] scores where larger is always better: negative squared
+    Euclidean distance, Pearson correlation, or cosine similarity.  Exact
+    ties resolve to the lowest class ID. */
+extern int THD_centroid_predict( const THD_centroid_model *model,
+                                 const float *x, int nsample, int nfeature,
+                                 int *prediction, double *decision,
+                                 char *err, int nerr ) ;
+
+extern void THD_centroid_free( THD_centroid_model *model ) ;
 
 /*! Scalar metric option names.  Per-class recall and the confusion matrix
     are diagnostics returned with classification scores, not scalar metrics. */
