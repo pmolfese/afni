@@ -1,5 +1,41 @@
 # 3dMVPA Design and Implementation Plan
 
+## Active Roadmap
+
+Keep this ordered list at the top of the plan and update it whenever priorities
+or completion state change.
+
+1. **Prediction Metrics (Complete)** -- classification and continuous-prediction
+   scoring now live in `thd_mvpa.[ch]`, with known-answer tests.
+2. **Baseline Classifiers (Next)** -- add nearest-centroid and correlation
+   fit/predict operations to `thd_mvpa.[ch]`.
+3. **Fold Runner and Workspace** -- connect fold plans, preprocessing,
+   estimation, held-out prediction, and scoring with reusable buffers.
+4. **Selected-Sample Pattern Extraction** -- add the general
+   `THD_roi_samples()` path from `THD_sampleset` rows to sample-by-voxel arrays.
+5. **First 3dMVPA Classification Slice** -- build the command-line program with
+   direct and X-matrix input, fold/sample audits, predictions, ROI/searchlight
+   execution, and ACC/BACC outputs.
+6. **Inference and Expanded Estimators** -- add blocked permutations, mapwise
+   inference, ridge decoding/encoding, and nested grouped tuning.
+
+## Implementation Status
+
+This checked-in copy is the living implementation record for the `somemvpa`
+branch. Update it with each completed slice so that design decisions and code do
+not drift apart.
+
+Status as of 2026-10-11:
+
+| Slice | Status | Implementation |
+|---|---|---|
+| X-matrix input adapter | Complete | `thd_xmat.[ch]`, quoting-aware `thd_datatable`, unit tests |
+| Canonical sample organization | Complete | `thd_sampleset.[ch]`, direct/Xmat-expanded table tests |
+| General fold plans | Complete | `thd_crossval.[ch]`, grouped/within-subject/fixed fold tests |
+| Fold-local centering and scaling | Complete | `thd_mvpa.[ch]`, train-only fit/apply tests |
+| Prediction metrics | Complete | `thd_mvpa.[ch]`, allocation-free classification/continuous scorers and known-answer tests |
+| Baseline classifiers | Next | Nearest-centroid and correlation fit/predict operations |
+
 ## Purpose
 
 `3dMVPA` will be a native AFNI C program for multivariate predictive analysis.
@@ -65,6 +101,18 @@ The shared code should live in `thd_` libraries. Neither program should contain
 private copies of sample indexing, spatial extraction, folds, numerical
 estimators, permutation bookkeeping, or map correction.
 
+The MVPA source boundary is intentionally compact:
+
+- `thd_xmat.[ch]` adapts X-matrices and is also shared with `3dSRM`;
+- `thd_sampleset.[ch]` owns canonical sample and dataset organization;
+- `thd_crossval.[ch]` constructs and validates reusable fold plans;
+- `thd_mvpa.[ch]` owns preprocessing, metrics, workspaces, and estimators;
+- `3dMVPA.c` will own command-line policy and output orchestration.
+
+Preprocessing and prediction metrics do not get separate `thd_` source modules.
+Existing spatial and inference modules such as `thd_patterns`, `thd_permute`,
+and `thd_mapinfer` remain shared rather than being duplicated for MVPA.
+
 ## What Already Exists
 
 The AFNI tree already contains most of the neuroimaging and inference
@@ -86,7 +134,7 @@ unnecessary.
 
 ### `thd_xmat.[ch]`
 
-The `SRMthings` branch already provides:
+The `somemvpa` branch now provides:
 
 - parsing of the `X.xmat.1D` files written by `3dDeconvolve`;
 - stimulus, item, run, censoring, and design-column metadata;
@@ -251,10 +299,10 @@ s01  r2  s01_r2_betas+tlrc   s01_r2_samples.tsv
 That form should also expand into the same canonical sample table; it must not
 create a second analysis path.
 
-## New `thd_sampleset.[ch]`
+## `thd_sampleset.[ch]`
 
-The main missing input abstraction is a general observation map. It should
-preserve every sample and connect metadata rows to datasets and bricks.
+The canonical observation map now preserves every sample and connects metadata
+rows to datasets and bricks.
 
 Conceptually:
 
@@ -333,10 +381,12 @@ data. Simple spatial validity checks may occur during extraction, but variance
 thresholding, standardization, nuisance regression, and learned selection must
 be fitted on training data only.
 
-## New `thd_mvpa.[ch]`
+## `thd_mvpa.[ch]`
 
-`thd_mvpa` will be a dataset-agnostic numerical library. It will consume arrays
-and fold plans, not AFNI datasets or command-line options.
+`thd_mvpa` is the dataset-agnostic numerical library. Its first implemented
+section is fold-local preprocessing; metrics, workspaces, and estimators will be
+added to the same files. It consumes arrays and fold plans, not AFNI datasets or
+command-line options.
 
 Conceptual API objects:
 
@@ -454,6 +504,28 @@ Useful initial options:
 -scale run_center
 ```
 
+`thd_mvpa.[ch]` implements these as a fitted, dataset-independent matrix
+transformation. `feature_zscore` learns feature means and population standard
+deviations from the outer-training rows only; numerically constant training
+features are mapped to zero. `sample_center` subtracts each sample's own feature
+mean and therefore does not pool information across samples. `none` is an exact
+copy.
+
+`run_center` is deliberately strict: each feature mean for a run is learned
+from training rows, and applying the transform to a run absent from training is
+an error. In particular, the program must not silently estimate the mean of a
+held-out run from outer-test samples. This makes `run_center` incompatible with
+ordinary leave-one-run-out unless run means were estimated independently of the
+analysis samples. The eventual command help must make that scientific change
+and restriction explicit. In multi-subject analyses, the caller must supply
+subject-by-run group IDs rather than pooling identically named runs across
+subjects.
+
+The fold convenience API accepts a `THD_foldplan`, fits only
+`plan->train[fold]`, and writes compact transformed training and test matrices
+in fold-index order. Lower-level fit/apply calls support nested CV and reuse of
+one fitted transform across multiple applications.
+
 The help must explicitly state whether each operation is fold-local and whether
 it changes the scientific estimand.
 
@@ -545,6 +617,13 @@ Balanced accuracy should be the default because ordinary accuracy can hide
 class imbalance. Prediction tables should include the observed class,
 predicted class, decision scores, fold, subject, run, and original table row.
 
+`THD_mvpa_score_classification()` returns accuracy, balanced accuracy,
+per-class recall, and a truth-row by prediction-column confusion matrix. A
+class absent from the scored observations has `NAN` recall and is excluded from
+the balanced-accuracy average; fold validation separately controls whether a
+missing test class is permitted. Recall and confusion matrices are diagnostic
+tables, not scalar spatial-map metrics.
+
 ### `-mode decode`
 
 Required target:
@@ -566,6 +645,15 @@ RMSE
 
 For multivariate targets, retain per-target scores and offer an explicitly
 defined aggregate rather than silently averaging incomparable scales.
+
+`THD_mvpa_score_continuous()` returns Pearson correlation, tie-aware Spearman
+correlation, cross-validated R-squared, MAE, and RMSE. Its R-squared denominator
+uses caller-supplied predictions made without held-out outcomes, normally the
+training-fold mean repeated over that fold's test rows. It must never use the
+held-out target mean. Undefined correlations or a zero R-squared denominator
+produce `NAN`; non-finite inputs are errors. The scorer accepts caller-owned
+rank/index scratch space so repeated ROI and searchlight scoring does not
+allocate memory.
 
 ### `-mode encode`
 
@@ -775,22 +863,24 @@ separately documented bug is intentionally corrected.
 
 ### Phase 0: behavior-preserving shared-library work
 
-1. Bring `thd_xmat.[ch]`, its `thd_datatable` parsing improvements, and its
+1. [x] Bring `thd_xmat.[ch]`, its `thd_datatable` parsing improvements, and its
    tests from `SRMthings` into the shared-library baseline.
-2. Add `thd_sampleset.[ch]` and test both direct and X-matrix-expanded tables.
-3. Generalize selected-sample extraction in `thd_patterns`.
-4. Add `thd_rsa.[ch]` and move existing 3dRSA scientific helpers in coherent
+2. [x] Add `thd_sampleset.[ch]` and test both direct and X-matrix-expanded tables.
+3. [ ] Generalize selected-sample extraction in `thd_patterns` after the
+   numerical fold runner is ready.
+4. [ ] Add `thd_rsa.[ch]` and move existing 3dRSA scientific helpers in coherent
    groups.
-5. Keep 3dRSA output numerically identical and validate against its oracle.
+5. [ ] Keep 3dRSA output numerically identical and validate against its oracle.
 
 ### Phase 1: MVPA numerical core
 
-1. Add fold-plan and workspace objects.
-2. Add leakage-safe centering/scaling.
-3. Add prediction metrics.
-4. Add nearest-centroid and correlation classifiers.
-5. Add primal and dual multi-output ridge.
-6. Test all algorithms with small matrices having known solutions.
+1. [x] Add the general fold-plan object.
+2. [x] Add leakage-safe centering/scaling.
+3. [x] Add prediction metrics.
+4. [ ] Add nearest-centroid and correlation classifiers.
+5. [ ] Add reusable workspaces and the end-to-end fold runner.
+6. [ ] Add primal and dual multi-output ridge.
+7. [ ] Test all algorithms with small matrices having known solutions.
 
 ### Phase 2: first `3dMVPA` vertical slice
 

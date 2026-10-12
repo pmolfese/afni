@@ -63,7 +63,12 @@ static int ss_encode_table_column( const THD_datatable *dt, const char *column,
          free(code) ; THD_sampleset_free_levels(level,nlevel) ;
          return ss_error(err,nerr,"out of memory encoding column '%s'",column) ;
        }
-       level=more ; level[nlevel]=strdup(s) ; ll=nlevel++ ;
+       level=more ; level[nlevel]=strdup(s) ;
+       if( level[nlevel]==NULL ){
+         free(code) ; THD_sampleset_free_levels(level,nlevel) ;
+         return ss_error(err,nerr,"out of memory encoding column '%s'",column) ;
+       }
+       ll=nlevel++ ;
      }
      code[rr]=ll ;
    }
