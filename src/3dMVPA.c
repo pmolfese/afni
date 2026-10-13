@@ -183,45 +183,6 @@ static float mvpa_parse_positive_float( const char *opt, const char *arg )
 }
 #endif
 
-static int mvpa_is_surface_dset( const THD_3dim_dataset *dset )
-{
-   return dset!=NULL &&
-          (DBLK_IS_NI_SURF_DSET(dset->dblk) || DBLK_IS_GIFTI(dset->dblk)) ;
-}
-
-static int mvpa_surface_domains_match( THD_3dim_dataset *aa,
-                                       THD_3dim_dataset *bb,
-                                       char *err, size_t errlen )
-{
-   int ii,na,nb,sa,sb ;
-   if( !mvpa_is_surface_dset(aa) || !mvpa_is_surface_dset(bb) ){
-     snprintf(err,errlen,"surface searchlight inputs must all be NIML/GIFTI surface datasets") ;
-     return 0 ;
-   }
-   na=DSET_NVOX(aa) ; nb=DSET_NVOX(bb) ;
-   if( na!=nb ){
-     snprintf(err,errlen,"surface node-row domains differ: '%.350s' has %d rows but '%.350s' has %d",
-              DSET_HEADNAME(aa),na,DSET_HEADNAME(bb),nb) ;
-     return 0 ;
-   }
-   sa=(aa->dblk->node_list!=NULL) ; sb=(bb->dblk->node_list!=NULL) ;
-   if( (sa && aa->dblk->nnodes!=na) || (sb && bb->dblk->nnodes!=nb) ){
-     snprintf(err,errlen,"surface node-row metadata is malformed in '%.430s' or '%.430s'",
-              DSET_HEADNAME(aa),DSET_HEADNAME(bb)) ;
-     return 0 ;
-   }
-   for( ii=0 ; ii<na ; ii++ ){
-     int an=sa?aa->dblk->node_list[ii]:ii , bn=sb?bb->dblk->node_list[ii]:ii ;
-     if( an!=bn ){
-       snprintf(err,errlen,
-                "surface node-row domains differ at row %d: '%.350s' has node %d, '%.350s' has node %d",
-                ii+1,DSET_HEADNAME(aa),an,DSET_HEADNAME(bb),bn) ;
-       return 0 ;
-     }
-   }
-   return 1 ;
-}
-
 static void mvpa_write_roi_table( const char *fname, const THD_roilist *rl,
                                   const float *score, const float *acc,
                                   const float *bacc, const float *nfeat,
@@ -270,6 +231,7 @@ static THD_3dim_dataset * mvpa_make_roi_map( THD_3dim_dataset *mset,
 {
    const float *value[9] ;
    const char *label[9] ;
+   char domain_err[512] ;
    int is_z[9]={0,0,0,0,0,0,0,0,0},nval=0,bb ;
    THD_3dim_dataset *oset=EDIT_empty_copy(mset) ;
    if( oset==NULL ) ERROR_exit(PROGRAM_NAME ": cannot allocate the output dataset") ;
@@ -297,13 +259,8 @@ static THD_3dim_dataset * mvpa_make_roi_map( THD_3dim_dataset *mset,
      EDIT_BRICK_FACTOR(oset,bb,0.0f) ;
    }
    THD_copy_labeltable_atr(oset->dblk,mset->dblk) ;
-   if( (DBLK_IS_NI_SURF_DSET(mset->dblk)||DBLK_IS_GIFTI(mset->dblk)) &&
-       mset->dblk->nnodes>0 && mset->dblk->node_list!=NULL ){
-     int nn=mset->dblk->nnodes ;
-     oset->dblk->node_list=(int *)RwcMalloc(sizeof(int)*(size_t)nn) ;
-     oset->dblk->nnodes=nn ;
-     memcpy(oset->dblk->node_list,mset->dblk->node_list,sizeof(int)*(size_t)nn) ;
-   }
+   if( !THD_copy_surface_node_domain(oset,mset,domain_err,sizeof(domain_err)) )
+     ERROR_exit(PROGRAM_NAME ": %s",domain_err) ;
    tross_Copy_History(mset,oset) ; tross_Make_History(PROGRAM_NAME,argc,argv,oset) ;
    return oset ;
 }
@@ -642,7 +599,7 @@ int main( int argc, char **argv )
                 maskname!=NULL?"mask":"surface-domain",maskname!=NULL?maskname:ss->dset_name[0]) ;
    if( surf_file!=NULL ){
      for( ii=0 ; ii<ss->ndset ; ii++ )
-       if( !mvpa_surface_domains_match(mset,ss->dset[ii],err,sizeof(err)) )
+       if( !THD_surface_domain_match(mset,ss->dset[ii],err,sizeof(err)) )
          ERROR_exit(PROGRAM_NAME ": %s",err) ;
    } else if( !EQUIV_GRIDS(mset,ss->dset[0]) )
      ERROR_exit(PROGRAM_NAME ": mask '%s' is not on the sample dataset grid",maskname) ;
@@ -670,7 +627,7 @@ int main( int argc, char **argv )
 #endif
      } else {
        MCW_cluster *nbhd ;
-       if( mvpa_is_surface_dset(mset) )
+       if( DBLK_IS_NI_SURF_DSET(mset->dblk) || DBLK_IS_GIFTI(mset->dblk) )
          ERROR_exit(PROGRAM_NAME ": a surface -searchlight also requires -surf MESH") ;
        nbhd=THD_searchlight_parse(searchlight,fabsf(DSET_DX(mset)),
                                   fabsf(DSET_DY(mset)),fabsf(DSET_DZ(mset)),

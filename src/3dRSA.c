@@ -2,6 +2,7 @@
 #include "thd_datatable.h"
 #include "thd_mapinfer.h"
 #include "thd_simmatrix.h"
+#include "thd_rsa.h"
 #include "thd_patterns.h"
 #include "thd_phasefft.h"
 #include <ctype.h>
@@ -1218,6 +1219,9 @@ static void rsa_searchlight_memory_preflight(
       runwise whitening workspace are allocated once per OpenMP thread. */
    me.per_thread += FS*( (9.0+2.0*ncol)*ntri + ncol+1.0 + nitem*nitem ) ;
    me.per_thread += FS*( (double)nitem*nfeat + (double)(1+ndset)*nitem*nitem ) ;
+   if( mode==MODE_RDM && rdm_over==RDM_SUBJ )
+     me.per_thread += 2.0*FS*(double)nsub*THD_NTRI(maxcond)
+                    + (double)nsub*sizeof(unsigned char) ;
    if( do_loo ){
      double lpeak=4.0*nitem ; int lp ;
      for( mm=0 ; mm<nmod ; mm++ ) if( rsa_model_has_loo(mod+mm) ){
@@ -3157,21 +3161,6 @@ static int rsa_roilist_exclude_seed( THD_roilist *rl , intvec *seed , int nvox )
    return nex ;
 }
 
-/*! Remove the voxelwise mean pattern over conditions in place.  F is laid out
-    [condition][voxel].  This is the subject-wise cocktail-blank/re-meaning
-    operation used before ordinary angle-based condition RDMs. */
-
-static void rsa_center_condition_patterns( int ncond , int nvx , float *F )
-{
-   int c , v ;
-   for( v=0 ; v < nvx ; v++ ){
-     double mean=0.0 ;
-     for( c=0 ; c < ncond ; c++ ) mean += F[(size_t)c*nvx+v] ;
-     mean /= (double)ncond ;
-     for( c=0 ; c < ncond ; c++ ) F[(size_t)c*nvx+v] -= (float)mean ;
-   }
-}
-
 /*! Extract one subject's condition patterns in the declared model-matrix
     order.  Ordinary input stores all conditions as bricks in dset[jj].  A
     condition-indexed long table stores one selected brick per canonical
@@ -3208,12 +3197,8 @@ static THD_simmat * rsa_subject_rdm( int jj , THD_roilist *rl , int kk ,
 
    if( runset == NULL ){
      rsa_subject_patterns(jj,nitem,nvx,dset,condition_index,rl->vox+kk,F) ;
-     /* Euclidean differences cancel a common mean pattern algebraically. Skip
-        the subtraction there to retain exact compatibility rather than add
-        harmless floating-point roundoff. */
-     if( center_conditions && neu_metric != SIM_EUCLID )
-       rsa_center_condition_patterns(nitem,nvx,F) ;
-     return THD_simmat_from_features( nitem , nvx , F , neu_metric ) ;
+     return THD_rsa_condition_rdm(nitem,nvx,F,neu_metric,center_conditions,
+                                  NULL,0) ;
    }
 
    nr = runset->nrun[jj] ;
@@ -3292,27 +3277,31 @@ static THD_simmat * rsa_second_order_rdm(
    THD_roilist *rl , int kk , int nsub , int ncond , int nvx ,
    int cond_metric , int outer_metric , THD_3dim_dataset **dset ,
    THD_runset *runset , THD_datatable_index *condition_index,
-   int center_conditions , float *triF , float *pat ,
-   float **rpat, float *runraw, RSA_whiten *wh )
+   int center_conditions , float *pat , float **rpat, float *runraw,
+   RSA_whiten *wh, THD_rsa_rdm_workspace *rws )
 {
-   THD_simmat *sr ; int jj , aa , nctri=THD_NTRI(ncond) ;
+   THD_simmat *sr,*out=NULL ; int jj,own_ws=0 ;
+
+   if( rws==NULL ){
+     rws=THD_rsa_rdm_workspace_new(nsub,ncond) ; own_ws=1 ;
+   }
+   if( rws==NULL || !THD_rsa_rdm_workspace_reset(rws,nsub,ncond,NULL,0) )
+     goto done ;
 
    for( jj=0 ; jj < nsub ; jj++ ){
      sr=rsa_subject_rdm(jj,rl,kk,ncond,nvx,cond_metric,dset,runset,condition_index,
                         center_conditions,pat,rpat,runraw,wh) ;
-     if( sr == NULL ) return NULL ;
-     THD_simmat_to_tri(sr,triF+(size_t)jj*nctri) ;
-     /* The outer features are RDM entries in a common dissimilarity sense.
-        Correlation/rank/cosine inner constructors return similarities; 1-s
-        preserves Pearson/Spearman second-order geometry and makes cosine's
-        origin plus exported semantics unambiguous.  Euclid/crossnobis already
-        return distances (including valid negative crossnobis estimates). */
-     if( !sr->is_dist )
-       for( aa=0 ; aa < nctri ; aa++ )
-         triF[(size_t)jj*nctri+aa] = 1.0f-triF[(size_t)jj*nctri+aa] ;
+     if( sr == NULL ) goto done ;
+     if( !THD_rsa_rdm_workspace_store(rws,jj,sr,1,NULL,0) ){
+       THD_simmat_free(sr) ; goto done ;
+     }
      THD_simmat_free(sr) ;
    }
-   return THD_simmat_from_features(nsub,nctri,triF,outer_metric) ;
+   out=THD_rsa_second_order_rdm(rws,outer_metric,NULL,0) ;
+
+done:
+   if( own_ws ) THD_rsa_rdm_workspace_free(rws) ;
+   return out ;
 }
 
 /*! Build the one seed model from the main input data.  IS-RSA returns the
@@ -3329,7 +3318,7 @@ static THD_simmat * rsa_build_seed_model(
    float **classic_tri )
 {
    THD_simmat *out=NULL,*sm=NULL ; RSA_whiten wh ;
-   float *F=NULL,*pat=NULL,*triF=NULL,**rpat=NULL,*runraw=NULL,*avgtri=NULL ;
+   float *F=NULL,*pat=NULL,**rpat=NULL,*runraw=NULL ;
    unsigned char *keep=NULL ;
    int svx,jj,rr,maxrun=0,maxnt=0,maxntot=0,ntri=THD_NTRI(nvals) ;
 
@@ -3378,12 +3367,10 @@ static THD_simmat * rsa_build_seed_model(
        out=zcensor ? THD_simmat_from_features_zcensor(nsub,nvals,F,keep,neu_metric,NULL)
                    : THD_simmat_from_features(nsub,nvals,F,neu_metric) ;
      } else if( mode==MODE_RDM ){
-       int nctri=THD_NTRI(nvals) ;
-       triF=(float *)malloc(sizeof(float)*(size_t)nsub*nctri) ;
        pat=(float *)malloc(sizeof(float)*(size_t)nvals*svx) ;
        out=rsa_second_order_rdm(seedrl,0,nsub,nvals,svx,cond_metric,
                                 neu_metric,dset,runset,condition_index,center_conditions,
-                                triF,pat,rpat,runraw,&wh) ;
+                                pat,rpat,runraw,&wh,NULL) ;
      } else {
        int nf=svx*nvals ;
        F=(float *)malloc(sizeof(float)*(size_t)nsub*nf) ;
@@ -3399,20 +3386,20 @@ static THD_simmat * rsa_build_seed_model(
        sm=rsa_subject_rdm(jj,seedrl,0,nvals,svx,neu_metric,dset,runset,condition_index,
                           center_conditions,pat,rpat,runraw,&wh) ;
        if( sm==NULL ){ free(all) ; all=NULL ; goto done ; }
-       THD_simmat_to_tri(sm,all+(size_t)jj*ntri) ; THD_simmat_free(sm) ;
+       if( !THD_rsa_simmat_to_triangle(sm,all+(size_t)jj*ntri,0,NULL,0) ){
+         THD_simmat_free(sm) ; free(all) ; all=NULL ; goto done ;
+       }
+       THD_simmat_free(sm) ;
      }
-     avgtri=(float *)calloc(ntri,sizeof(float)) ;
-     for( jj=0 ; jj<nsub ; jj++ ){
-       int aa ; for( aa=0 ; aa<ntri ; aa++ ) avgtri[aa]+=all[(size_t)jj*ntri+aa] ;
-     }
-     { int aa ; for( aa=0 ; aa<ntri ; aa++ ) avgtri[aa]/=(float)nsub ; }
-     out=THD_simmat_new(nvals) ; THD_tri_to_simmat(nvals,avgtri,out) ;
-     out->is_dist=(runset!=NULL || neu_metric==SIM_EUCLID) ;
+     out=THD_rsa_mean_subject_rdms(nsub,nvals,all,
+                                   runset!=NULL || neu_metric==SIM_EUCLID,
+                                   NULL,0) ;
+     if( out==NULL ){ free(all) ; all=NULL ; goto done ; }
      if( classic_tri != NULL ) *classic_tri=all ; else free(all) ;
    }
 
 done:
-   free(F) ; free(keep) ; free(pat) ; free(triF) ; free(runraw) ; free(avgtri) ;
+   free(F) ; free(keep) ; free(pat) ; free(runraw) ;
    if( rpat!=NULL ){ for( rr=0 ; rr<maxrun ; rr++ ) free(rpat[rr]) ; free(rpat) ; }
    free(wh.residbuf) ; free(wh.Rmat) ; free(wh.Whalf) ; free(wh.wdiag) ; free(wh.wtmp) ;
    return out ;
@@ -4342,6 +4329,7 @@ int main( int argc , char *argv[] )
    THD_datatable_index *condition_index=NULL ;
    RSA_series_runs *series_runs=NULL ;
    char *maskname=NULL , *prefix="RSA" , *save_rdm=NULL , *roi_sel=NULL ;
+   char domain_err[1024] ;
    char *seed_mask=NULL , *seed_roi_sel=NULL ;
    float *seed_srdm=NULL ; int seed_excluded=0 ;
    char *runwise_file=NULL ; THD_runset *runset=NULL ;   /* -runwiseTable */
@@ -4957,7 +4945,11 @@ int main( int argc , char *argv[] )
      if( DSET_NVOX(mchk) != runset->nvox )
        ERROR_exit("3dRSA: -mask has %d voxels but the runwise datasets have %d",
                   DSET_NVOX(mchk),runset->nvox) ;
-     if( !EQUIV_GRIDS(mchk,runset->betas[0]) )
+     if( DBLK_IS_NI_SURF_DSET(mchk->dblk) || DBLK_IS_GIFTI(mchk->dblk) ||
+         DBLK_IS_NI_SURF_DSET(runset->betas[0]->dblk) || DBLK_IS_GIFTI(runset->betas[0]->dblk) ){
+       if( !THD_surface_domain_match(mchk,runset->betas[0],domain_err,sizeof(domain_err)) )
+         ERROR_exit("3dRSA: %s",domain_err) ;
+     } else if( !EQUIV_GRIDS(mchk,runset->betas[0]) )
        ERROR_exit("3dRSA: -mask and runwise datasets are on different grids;\n"
                   "       searchlight neighborhoods require matching geometry") ;
      DSET_delete(mchk) ;
@@ -5506,7 +5498,13 @@ int main( int argc , char *argv[] )
    if( seed_mask != NULL ){
      seedset=THD_open_dataset(seed_mask) ;
      if( seedset==NULL ) ERROR_exit("3dRSA: can't open -seed_mask dataset '%s'",seed_mask) ;
-     if( DSET_NVOX(seedset)!=nvox || !EQUIV_GRIDS(mset,seedset) )
+     if( DSET_NVOX(seedset)!=nvox )
+       ERROR_exit("3dRSA: -seed_mask '%s' must match the target mask/data grid",seed_mask) ;
+     if( DBLK_IS_NI_SURF_DSET(mset->dblk) || DBLK_IS_GIFTI(mset->dblk) ||
+         DBLK_IS_NI_SURF_DSET(seedset->dblk) || DBLK_IS_GIFTI(seedset->dblk) ){
+       if( !THD_surface_domain_match(mset,seedset,domain_err,sizeof(domain_err)) )
+         ERROR_exit("3dRSA: -seed_mask '%s': %s",seed_mask,domain_err) ;
+     } else if( !EQUIV_GRIDS(mset,seedset) )
        ERROR_exit("3dRSA: -seed_mask '%s' must match the target mask/data grid",seed_mask) ;
      DSET_load(seedset) ; CHECK_LOAD_ERROR(seedset) ;
      rsa_validate_mask(seedset,1,"-seed_mask") ;
@@ -5592,7 +5590,11 @@ int main( int argc , char *argv[] )
      if( DSET_NVOX(dset[jj]) != nvox )
        ERROR_exit("3dRSA: '%s' has %d voxels but the -mask has %d",
                   fn , DSET_NVOX(dset[jj]) , nvox) ;
-     if( !EQUIV_GRIDS(mset,dset[jj]) )
+     if( DBLK_IS_NI_SURF_DSET(mset->dblk) || DBLK_IS_GIFTI(mset->dblk) ||
+         DBLK_IS_NI_SURF_DSET(dset[jj]->dblk) || DBLK_IS_GIFTI(dset[jj]->dblk) ){
+       if( !THD_surface_domain_match(mset,dset[jj],domain_err,sizeof(domain_err)) )
+         ERROR_exit("3dRSA: InputFile '%s': %s",fn,domain_err) ;
+     } else if( !EQUIV_GRIDS(mset,dset[jj]) )
        WARNING_message("3dRSA: grid mismatch between -mask and '%s'",fn) ;
 
      if( series_runs!=NULL ){
@@ -6649,7 +6651,7 @@ int main( int argc , char *argv[] )
              mv[mm] = rsa_second_order_rdm(rl,kk2,nsub,mod[mm].mvals,
                                             rl->vox[kk2].nar,cond_metric,neu_metric,
                                             mod[mm].dset,NULL,NULL,center_conditions,
-                                            Fs,Fspat,NULL,NULL,NULL) ;
+                                            Fspat,NULL,NULL,NULL,NULL) ;
            } else {
              int mvv = mod[mm].mvals , nf2 = rl->vox[kk2].nar*mvv ;
              for( jj=0 ; jj < nsub ; jj++ )
@@ -7184,6 +7186,7 @@ int main( int argc , char *argv[] )
 #pragma omp parallel
  {
    THD_rdm_ws *ws , *cws=NULL ;
+   THD_rsa_rdm_workspace *rws=NULL ;
    THD_simmat *neural=NULL , *tsneural=NULL , **mv ;
    THD_simmat **rneural=NULL ;
    float *F , *tsmain=NULL , *tslag=NULL , *tsprep=NULL , *tsnorm=NULL ;
@@ -7215,7 +7218,7 @@ int main( int argc , char *argv[] )
    float *fitfoldz=NULL ; unsigned char *fitvalid=NULL ; int nfitfold=0 ;
    float **rpat=NULL,*runraw=NULL ; int maxrun_l=0 ; /* crossnobis mapped/run patterns */
    RSA_whiten wh ;                                 /* per-thread noise-whitening scratch */
-   int nfeat_max , npat_max=0 , maxvox_l , kk_ , mm_ , jj_ , nvx ;
+   int nfeat_max , npat_max=0 , maxcond_l=nvals , maxvox_l , kk_ , mm_ , jj_ , nvx ;
 
    { int wncol=joint ? nmod+nort : ((nort>0) ? 1+nort : 1) ;
      if( ncomq>0 && wncol<3 ) wncol=3 ;
@@ -7344,11 +7347,17 @@ int main( int argc , char *argv[] )
               : (mode == MODE_RDM) ? THD_NTRI(mod[mm_].mvals)
                                    : maxvox_l * mod[mm_].mvals ;
        if( nf > nfeat_max ) nfeat_max = nf ; }
-     if( mode == MODE_RDM && maxvox_l*mod[mm_].mvals > npat_max )
-       npat_max=maxvox_l*mod[mm_].mvals ;
+     if( mode == MODE_RDM ){
+       if( maxvox_l*mod[mm_].mvals > npat_max ) npat_max=maxvox_l*mod[mm_].mvals ;
+       if( mod[mm_].mvals > maxcond_l ) maxcond_l=mod[mm_].mvals ;
+     }
    }
 
    F = (float *)malloc(sizeof(float)*(size_t)nitem*nfeat_max) ;
+   if( mode == MODE_RDM && rdm_over == RDM_SUBJ ){
+     rws=THD_rsa_rdm_workspace_new(nsub,maxcond_l) ;
+     if( rws==NULL ) ERROR_exit("3dRSA: cannot allocate the RDM construction workspace") ;
+   }
    if( zcensor ) Z=(unsigned char *)malloc((size_t)nitem*nfeat_max) ;
    if( run_resolved ){
      int ru,maxrv=0,nre=joint?nmod*series_runs->nrun:series_runs->nrun ;
@@ -7520,7 +7529,7 @@ int main( int argc , char *argv[] )
          nfeat = THD_NTRI(nvals) ;
          neural = rsa_second_order_rdm(rl,kk_,nsub,nvals,nvx,
                                         cond_metric,neu_metric,dset,runset,condition_index,
-                                        center_conditions,F,ipat,rpat,runraw,&wh) ;
+                                        center_conditions,ipat,rpat,runraw,&wh,rws) ;
        } else {
          nfeat = nvx * nvals ;
          for( jj_=0 ; jj_ < nsub ; jj_++ )
@@ -7646,7 +7655,7 @@ int main( int argc , char *argv[] )
          } else if( mode == MODE_RDM ){
            mv[mm_] = rsa_second_order_rdm(rl,kk_,nsub,mod[mm_].mvals,nvx,
                                            cond_metric,neu_metric,mod[mm_].dset,NULL,NULL,
-                                           center_conditions,F,ipat,NULL,NULL,NULL) ;
+                                           center_conditions,ipat,NULL,NULL,NULL,rws) ;
          } else {
            int mv2 = mod[mm_].mvals , nf2 = nvx*mv2 ;
            for( jj_=0 ; jj_ < nsub ; jj_++ )
@@ -7989,7 +7998,8 @@ int main( int argc , char *argv[] )
        for( jj_=0 ; jj_ < nsub ; jj_++ ){
          neural = rsa_subject_rdm( jj_,rl,kk_,nitem,nvx,neu_metric,
                                    dset,runset,condition_index,center_conditions,F,rpat,runraw,&wh ) ;
-         THD_simmat_to_tri( neural , srdm + (size_t)jj_*ntri ) ;
+         if( !THD_rsa_simmat_to_triangle(neural,srdm+(size_t)jj_*ntri,0,NULL,0) )
+           ERROR_exit("3dRSA: cannot compact subject %d's condition RDM",jj_+1) ;
          if( srdmcov!=NULL )
            THD_rdm_cov_transform(nitem,srdm+(size_t)jj_*ntri,
                                  cmp_metric==CMP_CORR_COV,
@@ -8399,6 +8409,7 @@ int main( int argc , char *argv[] )
    if( wh.Whalf    != NULL ) free(wh.Whalf) ;
    if( wh.wdiag    != NULL ) free(wh.wdiag) ;
    if( wh.wtmp     != NULL ) free(wh.wtmp) ;
+   THD_rsa_rdm_workspace_free(rws) ;
    THD_rdm_ws_free(ws) ;
  }
  AFNI_OMP_END ;
@@ -9161,12 +9172,8 @@ int main( int argc , char *argv[] )
         }
       }
       THD_copy_labeltable_atr(oset->dblk,mset->dblk) ;
-      if( (DBLK_IS_NI_SURF_DSET(mset->dblk)||DBLK_IS_GIFTI(mset->dblk)) &&
-          mset->dblk->nnodes>0 && mset->dblk->node_list!=NULL ){
-        int nn=mset->dblk->nnodes ;
-        oset->dblk->node_list=(int *)RwcMalloc(sizeof(int)*nn); oset->dblk->nnodes=nn ;
-        memcpy(oset->dblk->node_list,mset->dblk->node_list,sizeof(int)*nn) ;
-      }
+      if( !THD_copy_surface_node_domain(oset,mset,domain_err,sizeof(domain_err)) )
+        ERROR_exit("3dRSA: %s",domain_err) ;
       tross_Copy_History(mset,oset); tross_Make_History("3dRSA",argc,argv,oset) ;
       DSET_write(oset); if( !quiet ) INFO_message("3dRSA: wrote dataset %s",DSET_BRIKNAME(oset)) ;
       do_dset=0 ;                    /* dedicated run-resolved writer handled it */
@@ -9520,17 +9527,8 @@ int main( int argc , char *argv[] )
 
       THD_copy_labeltable_atr( oset->dblk , mset->dblk ) ;
 
-      /* Preserve the surface node index so a sparse-node result maps back onto
-         the right nodes -- EDIT_empty_copy drops it.  We copy ONLY the node
-         list, deliberately NOT THD_copy_datablock_auxdata(), which would delete
-         our brick labels and FIZT stat codes and overwrite them from the mask. */
-      if( ( DBLK_IS_NI_SURF_DSET(mset->dblk) || DBLK_IS_GIFTI(mset->dblk) ) &&
-          mset->dblk->nnodes > 0 && mset->dblk->node_list != NULL ){
-        int nn = mset->dblk->nnodes ;
-        oset->dblk->node_list = (int *)RwcMalloc( sizeof(int)*nn ) ;
-        oset->dblk->nnodes    = nn ;
-        memcpy( oset->dblk->node_list , mset->dblk->node_list , sizeof(int)*nn ) ;
-      }
+      if( !THD_copy_surface_node_domain(oset,mset,domain_err,sizeof(domain_err)) )
+        ERROR_exit("3dRSA: %s",domain_err) ;
 
       tross_Copy_History( mset , oset ) ;
       tross_Make_History( "3dRSA" , argc , argv , oset ) ;

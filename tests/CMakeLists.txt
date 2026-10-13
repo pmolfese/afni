@@ -186,6 +186,20 @@ if(ENABLE_TESTS)
   set_tests_properties(thd_patterns:unit PROPERTIES LABELS "3dRSA;3dMVPA;numeric;unit")
 
   add_executable(
+    thd_rsa_unit
+    ${CMAKE_SOURCE_DIR}/src/thd_rsa.c
+    ${CMAKE_SOURCE_DIR}/src/thd_simmatrix.c
+    ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_rsa.c
+  )
+  target_include_directories(thd_rsa_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(
+    thd_rsa_unit
+    PRIVATE AFNI::mri NIFTI::nifti2 NIFTI::nifticdf m
+  )
+  add_test(NAME thd_rsa:unit COMMAND thd_rsa_unit)
+  set_tests_properties(thd_rsa:unit PROPERTIES LABELS "3dRSA;numeric;unit")
+
+  add_executable(
     thd_xmat_unit
     ${CMAKE_SOURCE_DIR}/src/thd_xmat.c
     ${CMAKE_SOURCE_DIR}/src/thd_datatable.c

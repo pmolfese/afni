@@ -1791,9 +1791,9 @@ sparse_array.o:sparse_array.c sparse_array.h
 	$(CCOMP) -o 3dMSE 3dMSE.o $(LFLAGS) $(LLIBS)
 
 RSA_OBJS = 3dRSA.o thd_datatable.o thd_mapinfer.o thd_patterns.o thd_permute.o \
-           thd_simmatrix.o thd_phasefft.o
+           thd_simmatrix.o thd_rsa.o thd_phasefft.o
 RSA_HDRS = thd_datatable.h thd_mapinfer.h thd_patterns.h thd_permute.h \
-           thd_simmatrix.h thd_phasefft.h niml.h AFNI_version.h
+           thd_simmatrix.h thd_rsa.h thd_phasefft.h niml.h AFNI_version.h
 
 $(RSA_OBJS): $(RSA_HDRS)
 	$(RM) $@

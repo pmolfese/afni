@@ -23,10 +23,17 @@ or completion state change.
    volume fold runner, maps, audit tables, and strict sparse-node validation.
 9. **Blocked Permutation Inference (Complete)** -- exchangeability-aware label
    nulls now produce synchronized PVAL/Z/Q/FWE maps for ROI and searchlights.
-10. **Ridge Decoding and Encoding (Next)** -- add primal/dual multi-output ridge
-   and continuous held-out prediction using the existing fold runner.
-11. **Nested Tuning and Expanded Estimators** -- add grouped lambda selection,
-   LDA, and other validated estimators after the ridge path is stable.
+10. **Shared Surface Domain Helpers (Complete)** -- `thd_patterns.[ch]` now owns
+   exact dense/sparse node-domain comparison and sparse output-domain copying
+   used by both `3dMVPA` and `3dRSA`.
+11. **`thd_rsa.[ch]` RDM Construction Extraction (Complete)** -- the coherent
+   RSA science library now owns condition centering, subject RDM construction,
+   triangle conversion, mean RDMs, and reusable second-order RDM workspaces.
+12. **Ridge Decoding and Encoding (Next)** -- resume MVPA with primal/dual
+   multi-output ridge and continuous held-out prediction using the existing
+   fold runner.
+13. **Nested Tuning and Expanded Estimators (Queued)** -- add grouped lambda
+   selection, LDA, and other validated estimators after the ridge path is stable.
 
 ## Implementation Status
 
@@ -34,7 +41,7 @@ This checked-in copy is the living implementation record for the `somemvpa`
 branch. Update it with each completed slice so that design decisions and code do
 not drift apart.
 
-Status as of 2026-10-12:
+Status as of 2026-10-13:
 
 | Slice | Status | Implementation |
 |---|---|---|
@@ -51,6 +58,8 @@ Status as of 2026-10-12:
 | Prediction audit tables | Complete | `-save_predictions` and `-save_fold_scores` write deterministic ROI/searchlight-keyed TSV files with metadata, decisions, folds, counts, ACC, and BACC |
 | Surface searchlights | Complete | `-surf` exposes masked or whole-represented-domain geodesic neighborhoods, preserves sparse mesh node IDs, and rejects mismatched/malformed domains |
 | Blocked permutation inference | Complete | `-nperm`, `-seed`, and explicit `-permute_within` blocks drive identity-inclusive label nulls, empirical above-chance/P/Z/Q maps, and synchronized max-statistic FWE |
+| Shared surface domains | Complete | `THD_surface_domain_match()` compares dense and sparse node rows exactly; `THD_copy_surface_node_domain()` preserves sparse output node IDs without replacing result labels/statistics; both programs use the shared helpers |
+| RSA RDM construction extraction | Complete | `thd_rsa.[ch]` owns dataset-independent condition centering/RDMs, exact triangle conversion, descriptive mean RDMs, and reusable second-order workspaces; direct known-answer, full oracle, and 22-subject real-data replay tests preserve numerical behavior exactly |
 | Ridge decoding and encoding | Next | Add regularized continuous prediction without changing sample, fold, spatial, or inference contracts |
 
 ## Purpose
@@ -871,19 +880,28 @@ debugging output.
 `3dMVPA` would be counterproductive. Refactor behavior-preserving scientific
 code before or alongside the new program.
 
-### Current extraction assessment (2026-10-12)
+### Current extraction assessment (2026-10-13)
 
-Keep the library count controlled. The next substantial extraction should be
-one coherent `thd_rsa.[ch]`, not separate libraries for every RSA feature. It
-should own dataset-independent RDM construction, Mantel/regression statistics,
-fitted-model CV, commonality, and their reusable workspaces. Move these in
-tested groups while leaving `3dRSA` option policy and output layout in the
-program.
+Keep the library count controlled. `thd_rsa.[ch]` is the one coherent RSA
+science library, not the start of separate libraries for every RSA feature.
+Its first completed slice owns dataset-independent condition centering and RDM
+construction, exact similarity/distance triangle conversion, descriptive mean
+RDM construction, and reusable subject-RDM storage for second-order geometry.
+`3dRSA` now supplies extracted condition patterns or crossnobis matrices to
+that core and reuses one workspace per OpenMP worker. The memory preflight
+accounts for this storage.
 
-Extend `thd_patterns.[ch]` with two small AFNI spatial helpers already duplicated
-between the programs: exact dense/sparse surface node-domain comparison and
-copying a sparse surface node list into an output dataset. These belong beside
-ROI/searchlight construction and painting; they do not justify a new library.
+Later coherent groups may move Mantel/regression statistics, fitted-model CV,
+commonality, and their reusable workspaces into the same library. Leave
+`3dRSA` option policy, dataset/ROI extraction, residual whitening, scientific
+null definitions, and output layout in the program. Resume MVPA development
+before the next RSA extraction group.
+
+Completed: `thd_patterns.[ch]` now contains the two small AFNI spatial helpers
+that were duplicated between the programs: exact dense/sparse surface
+node-domain comparison and copying a sparse surface node list into an output
+dataset. They live beside ROI/searchlight construction and painting and did not
+create another library.
 
 The present `thd_permute` plus `thd_mapinfer` boundary is sufficient. Relabeling
 sets, empirical result finalization, BH, and max accumulation are shared; each
@@ -998,6 +1016,14 @@ Library extraction must be checked against existing 3dRSA oracle and synthetic
 tests. Extraction commits should not change numerical behavior except where a
 separately documented bug is intentionally corrected.
 
+On 2026-10-13, the first `thd_rsa` extraction was also replayed on the archived
+22-subject Paranoia validation analysis (268 atlas ROIs, two behavioral models,
+5,000 synchronized label permutations, fixed seed). The refactored run produced
+a byte-identical `.rsa.1D` table and byte-identical decompressed six-brick AFNI
+payload; geometry, labels, datum types, and statistic codes also matched. Only
+expected provenance fields such as creation time, dataset ID, version, command
+history, and output prefix differed in the `.HEAD` file.
+
 ## Implementation Sequence
 
 ### Phase 0: behavior-preserving shared-library work
@@ -1007,9 +1033,15 @@ separately documented bug is intentionally corrected.
 2. [x] Add `thd_sampleset.[ch]` and test both direct and X-matrix-expanded tables.
 3. [x] Generalize selected-sample extraction in `thd_patterns` after the
    numerical fold runner is ready.
-4. [ ] Add `thd_rsa.[ch]` and move existing 3dRSA scientific helpers in coherent
-   groups.
-5. [ ] Keep 3dRSA output numerically identical and validate against its oracle.
+4. [x] Extend `thd_patterns.[ch]` with exact dense/sparse surface-domain
+   comparison and sparse output node-domain copying; use both from `3dMVPA`
+   and `3dRSA`.
+5. [x] Add `thd_rsa.[ch]` and first move dataset-independent RDM construction
+   and its reusable workspaces. Move further 3dRSA scientific helpers only in
+   coherent groups.
+6. [x] Keep 3dRSA output numerically identical for the first extraction group,
+   verified by direct known-answer tests, the existing fast/full oracles, and a
+   byte-identical 22-subject real-data validation replay.
 
 ### Phase 1: MVPA numerical core
 

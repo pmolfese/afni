@@ -275,6 +275,7 @@ add_afni_executable(
   thd_patterns.c
   thd_permute.c
   thd_simmatrix.c
+  thd_rsa.c
   thd_phasefft.c
 )
 target_link_libraries(

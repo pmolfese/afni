@@ -155,6 +155,102 @@ static void thd_patterns_error( char *err, size_t errlen, const char *fmt, ... )
    va_start(ap,fmt) ; vsnprintf(err,errlen,fmt,ap) ; va_end(ap) ;
 }
 
+static int thd_patterns_is_surface( const THD_3dim_dataset *dset )
+{
+   return dset!=NULL && ISVALID_DBLK(dset->dblk) &&
+          (DBLK_IS_NI_SURF_DSET(dset->dblk) || DBLK_IS_GIFTI(dset->dblk)) ;
+}
+
+int THD_surface_domain_match( const THD_3dim_dataset *aa,
+                              const THD_3dim_dataset *bb,
+                              char *err, size_t errlen )
+{
+   int ii,na,nb,sa,sb ;
+   if( err!=NULL && errlen>0 ) err[0]='\0' ;
+   if( !thd_patterns_is_surface(aa) || !thd_patterns_is_surface(bb) ){
+     thd_patterns_error(err,errlen,
+                        "surface inputs must both be NIML/GIFTI surface datasets") ;
+     return 0 ;
+   }
+   na=DSET_NVOX(aa) ; nb=DSET_NVOX(bb) ;
+   if( na!=nb ){
+     thd_patterns_error(err,errlen,
+                        "surface node-row domains differ: '%.350s' has %d rows but '%.350s' has %d",
+                        DSET_HEADNAME(aa),na,DSET_HEADNAME(bb),nb) ;
+     return 0 ;
+   }
+   sa=(aa->dblk->node_list!=NULL) ; sb=(bb->dblk->node_list!=NULL) ;
+   if( (sa && aa->dblk->nnodes!=na) || (sb && bb->dblk->nnodes!=nb) ){
+     thd_patterns_error(err,errlen,
+                        "surface node-row metadata is malformed in '%.430s' or '%.430s'",
+                        DSET_HEADNAME(aa),DSET_HEADNAME(bb)) ;
+     return 0 ;
+   }
+   for( ii=0 ; ii<na ; ii++ ){
+     int an=sa?aa->dblk->node_list[ii]:ii ;
+     int bn=sb?bb->dblk->node_list[ii]:ii ;
+     if( an<0 || bn<0 ){
+       thd_patterns_error(err,errlen,
+                          "surface node-row metadata is malformed at row %d: node IDs must be nonnegative",
+                          ii+1) ;
+       return 0 ;
+     }
+     if( an!=bn ){
+       thd_patterns_error(err,errlen,
+                          "surface node-row domains differ at row %d: '%.350s' has node %d, '%.350s' has node %d",
+                          ii+1,DSET_HEADNAME(aa),an,DSET_HEADNAME(bb),bn) ;
+       return 0 ;
+     }
+   }
+   return 1 ;
+}
+
+int THD_copy_surface_node_domain( THD_3dim_dataset *dst,
+                                  const THD_3dim_dataset *src,
+                                  char *err, size_t errlen )
+{
+   int nn ; int *copy=NULL ;
+   if( err!=NULL && errlen>0 ) err[0]='\0' ;
+   if( dst==NULL || src==NULL || !ISVALID_DBLK(dst->dblk) || !ISVALID_DBLK(src->dblk) ){
+     thd_patterns_error(err,errlen,"cannot copy a surface node domain from/to a null dataset") ;
+     return 0 ;
+   }
+   if( !thd_patterns_is_surface(src) ) return 1 ;
+   if( !thd_patterns_is_surface(dst) ){
+     thd_patterns_error(err,errlen,
+                        "cannot copy a surface node domain into a non-surface dataset") ;
+     return 0 ;
+   }
+   if( DSET_NVOX(dst)!=DSET_NVOX(src) ){
+     thd_patterns_error(err,errlen,
+                        "cannot copy a %d-row surface node domain into a %d-row dataset",
+                        DSET_NVOX(src),DSET_NVOX(dst)) ;
+     return 0 ;
+   }
+   if( src->dblk->node_list==NULL ){
+     if( dst!=src && dst->dblk->node_list!=NULL ) myRwcFree(dst->dblk->node_list) ;
+     if( dst!=src ) dst->dblk->nnodes=0 ;
+     return 1 ;
+   }
+   nn=src->dblk->nnodes ;
+   if( nn!=DSET_NVOX(src) ){
+     thd_patterns_error(err,errlen,
+                        "surface node-row metadata is malformed in '%.430s': %d rows but %d node IDs",
+                        DSET_HEADNAME(src),DSET_NVOX(src),nn) ;
+     return 0 ;
+   }
+   if( dst==src ) return 1 ;
+   copy=(int *)RwcMalloc(sizeof(int)*(size_t)nn) ;
+   if( copy==NULL ){
+     thd_patterns_error(err,errlen,"out of memory copying %d surface node IDs",nn) ;
+     return 0 ;
+   }
+   memcpy(copy,src->dblk->node_list,sizeof(int)*(size_t)nn) ;
+   if( dst->dblk->node_list!=NULL ) myRwcFree(dst->dblk->node_list) ;
+   dst->dblk->node_list=copy ; dst->dblk->nnodes=nn ;
+   return 1 ;
+}
+
 static int thd_parse_shape_one( const char *str, int plen, float *out )
 {
    char *ep ; double v ;
@@ -787,6 +883,7 @@ THD_runset * THD_runset_read( char *fname )
 {
    THD_datatable *dt ; THD_runset *rs ;
    int iRun , iResid , iCond , iTrial , i , s , r , r2 , ok=1 ;
+   char domain_err[1024] ;
 
    if( fname == NULL ) return NULL ;
    dt = THD_read_datatable_file( fname ) ;
@@ -862,7 +959,14 @@ THD_runset * THD_runset_read( char *fname )
      rs->nbrick[i]=DSET_NVALS(ds) ;
      if( rs->nbrick[i]>rs->maxbrick ) rs->maxbrick=rs->nbrick[i] ;
      if( rs->nvox < 0 ) rs->nvox = DSET_NVOX(ds) ;
-     else if( DSET_NVOX(ds) != rs->nvox || !EQUIV_GRIDS(ds,rs->betas[0]) ){
+     else if( DSET_NVOX(ds) != rs->nvox ){
+       ERROR_message("runwiseTable: '%s' has %d rows/voxels; the first row has %d",
+                     dt->fname[i],DSET_NVOX(ds),rs->nvox) ; ok=0 ; break ;
+     } else if( thd_patterns_is_surface(ds) || thd_patterns_is_surface(rs->betas[0]) ){
+       if( !THD_surface_domain_match(ds,rs->betas[0],domain_err,sizeof(domain_err)) ){
+         ERROR_message("runwiseTable: '%s': %s",dt->fname[i],domain_err) ; ok=0 ; break ;
+       }
+     } else if( !EQUIV_GRIDS(ds,rs->betas[0]) ){
        ERROR_message("runwiseTable: '%s' is on a different grid than the first row",
                      dt->fname[i]) ; ok=0 ; break ;
      }
@@ -910,7 +1014,17 @@ THD_runset * THD_runset_read( char *fname )
        if( rd == NULL ){
          ERROR_message("runwiseTable: can't open ResidFile '%s' (row %d)",rf,i+1) ; ok=0 ; break ;
        }
-       if( DSET_NVOX(rd) != rs->nvox || !EQUIV_GRIDS(rd,rs->betas[0]) ){
+       if( DSET_NVOX(rd) != rs->nvox ){
+         ERROR_message("runwiseTable: ResidFile '%s' has %d rows/voxels; InputFile has %d",
+                       rf,DSET_NVOX(rd),rs->nvox) ;
+         DSET_delete(rd) ; ok=0 ; break ;
+       }
+       if( thd_patterns_is_surface(rd) || thd_patterns_is_surface(rs->betas[0]) ){
+         if( !THD_surface_domain_match(rd,rs->betas[0],domain_err,sizeof(domain_err)) ){
+           ERROR_message("runwiseTable: ResidFile '%s': %s",rf,domain_err) ;
+           DSET_delete(rd) ; ok=0 ; break ;
+         }
+       } else if( !EQUIV_GRIDS(rd,rs->betas[0]) ){
          ERROR_message("runwiseTable: ResidFile '%s' is on a different grid than InputFile",rf) ;
          DSET_delete(rd) ; ok=0 ; break ;
        }

@@ -159,10 +159,81 @@ done:
    return fail ;
 }
 
+static THD_3dim_dataset * surface_domain_dset( int nrow, const int *nodes,
+                                                int nnodes )
+{
+   THD_3dim_dataset *ds=EDIT_empty_copy(NULL) ;
+   THD_ivec3 nxyz ; THD_fvec3 org,del ; int ii ;
+   LOAD_IVEC3(nxyz,nrow,1,1) ; LOAD_FVEC3(org,0.0f,0.0f,0.0f) ;
+   LOAD_FVEC3(del,1.0f,1.0f,1.0f) ;
+   EDIT_dset_items(ds,ADN_nxyz,nxyz,ADN_xyzorg,org,ADN_xyzdel,del,
+                   ADN_nvals,1,ADN_none) ;
+   ds->dblk->diskptr->storage_mode=STORAGE_BY_NI_SURF_DSET ;
+   if( nodes!=NULL ){
+     ds->dblk->node_list=(int *)RwcMalloc(sizeof(int)*(size_t)nrow) ;
+     for( ii=0 ; ii<nrow ; ii++ ) ds->dblk->node_list[ii]=nodes[ii] ;
+     ds->dblk->nnodes=nnodes ;
+   }
+   return ds ;
+}
+
+static int surface_domain_test( void )
+{
+   int identity[4]={0,1,2,3},sparse[4]={0,2,5,9},wrong[4]={0,2,5,8} ;
+   THD_3dim_dataset *dense=NULL,*dense_sparse=NULL,*aa=NULL,*bb=NULL,*bad=NULL,*dst=NULL ;
+   char err[256] ; int fail=0 ;
+
+   dense=surface_domain_dset(4,NULL,0) ;
+   dense_sparse=surface_domain_dset(4,identity,4) ;
+   aa=surface_domain_dset(4,sparse,4) ; bb=surface_domain_dset(4,sparse,4) ;
+   bad=surface_domain_dset(4,wrong,4) ; dst=surface_domain_dset(4,NULL,0) ;
+   if( dense==NULL || dense_sparse==NULL || aa==NULL || bb==NULL || bad==NULL || dst==NULL ){
+     fprintf(stderr,"FAIL construct surface-domain datasets\n") ; fail=1 ; goto done ;
+   }
+   if( !THD_surface_domain_match(dense,dense_sparse,err,sizeof(err)) ){
+     fprintf(stderr,"FAIL dense/sparse identity domain comparison: %s\n",err) ; fail=1 ;
+   }
+   if( !THD_surface_domain_match(aa,bb,err,sizeof(err)) ){
+     fprintf(stderr,"FAIL equal sparse domain comparison: %s\n",err) ; fail=1 ;
+   }
+   if( THD_surface_domain_match(aa,bad,err,sizeof(err)) ||
+       strstr(err,"differ at row 4")==NULL ){
+     fprintf(stderr,"FAIL unequal sparse domain diagnostic: %s\n",err) ; fail=1 ;
+   }
+   bad->dblk->nnodes=3 ;
+   if( THD_surface_domain_match(aa,bad,err,sizeof(err)) ||
+       strstr(err,"malformed")==NULL ){
+     fprintf(stderr,"FAIL malformed sparse domain diagnostic: %s\n",err) ; fail=1 ;
+   }
+   if( !THD_copy_surface_node_domain(dst,aa,err,sizeof(err)) ){
+     fprintf(stderr,"FAIL sparse surface domain copy: %s\n",err) ; fail=1 ;
+   } else if( dst->dblk->nnodes!=4 || dst->dblk->node_list==NULL ||
+              memcmp(dst->dblk->node_list,sparse,sizeof(sparse))!=0 ){
+     fprintf(stderr,"FAIL copied sparse surface domain contents\n") ; fail=1 ;
+   } else {
+     aa->dblk->node_list[1]=7 ;
+     if( dst->dblk->node_list[1]!=2 ){
+       fprintf(stderr,"FAIL surface domain copy aliases source storage\n") ; fail=1 ;
+     }
+     aa->dblk->node_list[1]=2 ;
+   }
+   if( !THD_copy_surface_node_domain(dst,dense,err,sizeof(err)) ||
+       dst->dblk->node_list!=NULL || dst->dblk->nnodes!=0 ){
+     fprintf(stderr,"FAIL dense surface domain clears sparse destination: %s\n",err) ; fail=1 ;
+   }
+
+done:
+   if( dense!=NULL ) DSET_delete(dense) ;
+   if( dense_sparse!=NULL ) DSET_delete(dense_sparse) ;
+   if( aa!=NULL ) DSET_delete(aa) ; if( bb!=NULL ) DSET_delete(bb) ;
+   if( bad!=NULL ) DSET_delete(bad) ; if( dst!=NULL ) DSET_delete(dst) ;
+   return fail ;
+}
+
 int main( void )
 {
-   int fail=parser_test()+paint_test()+sample_extraction_test() ;
+   int fail=parser_test()+paint_test()+sample_extraction_test()+surface_domain_test() ;
    if( fail ) return 1 ;
-   puts("PASS thd_patterns geometry, painting, and selected-sample extraction") ;
+   puts("PASS thd_patterns geometry, domains, painting, and selected-sample extraction") ;
    return 0 ;
 }

@@ -53,6 +53,24 @@ extern MCW_cluster * THD_searchlight_parse( const char *spec,
 extern void THD_roilist_paint( float *brick, const THD_roilist *rl,
                                const float *values ) ;
 
+/*! Compare the represented node domain of two NIML/GIFTI surface datasets.
+    A dense dataset implicitly represents node i at row i; a sparse dataset
+    uses dblk->node_list.  Thus dense and sparse inputs can match, but only
+    when every row resolves to exactly the same node ID.  Returns 1 on an
+    exact match and writes a bounded diagnostic on failure. */
+extern int THD_surface_domain_match( const THD_3dim_dataset *aa,
+                                     const THD_3dim_dataset *bb,
+                                     char *err, size_t errlen ) ;
+
+/*! Copy only the sparse surface node domain from src to dst.  This deliberately
+    leaves brick labels, statistics, and other auxiliary data untouched.  A
+    dense surface source clears any stale destination node list; a non-surface
+    source succeeds without changing the destination.  Surface source and
+    destination row counts must match. */
+extern int THD_copy_surface_node_domain( THD_3dim_dataset *dst,
+                                         const THD_3dim_dataset *src,
+                                         char *err, size_t errlen ) ;
+
 #ifdef USE_SUMA
 /*! Geodesic surface searchlights over the nodes represented by mset.  Sparse
     node indexes must be unique, in the mesh range, and exactly one per dataset
