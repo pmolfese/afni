@@ -1,6 +1,7 @@
 #include "thd_mvpa.h"
 
 #include <float.h>
+#include <limits.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -885,6 +886,22 @@ int THD_ridge_fit(THD_ridge_workspace *w,const float *x,const float *y,
    w->n=n;w->p=p;w->q=q;w->fitted=1;return 1;
 }
 
+int THD_ridge_coefficients(const THD_ridge_workspace *w,double *coef,
+ double *intercept,char *err,int nerr)
+{
+   int j,o;
+   if(!w || !w->fitted || !coef || !intercept)
+      return pp_error(err,nerr,"ridge coefficient export needs a fitted model and output buffers");
+   for(o=0;o<w->q;o++){
+      double v=w->ym[o];
+      for(j=0;j<w->p;j++)v-=w->xm[j]*w->coef[(size_t)j*w->q+o];
+      if(!isfinite(v))return pp_error(err,nerr,"ridge intercept is not finite");
+      intercept[o]=v;
+   }
+   memcpy(coef,w->coef,sizeof(double)*(size_t)w->p*w->q);
+   return 1;
+}
+
 int THD_ridge_predict(const THD_ridge_workspace *w,const float *x,int n,
                       float *out,char *err,int nerr)
 {
@@ -1119,10 +1136,151 @@ int THD_mvpa_run_ridge_permutations(THD_mvpa_ridge_workspace *w,
    return 1;
 }
 
+/* Native L2-regularized, squared-hinge linear SVM. Each one-vs-rest problem
+   minimizes .5*(||w||^2+b^2) + C*sum(max(0,1-y*(Xw+b))^2).
+   Appending a constant 1 gives a penalized intercept. The nonnegative dual
+   has Hessian y_i*y_j*(x_i.x_j+1) + I/(2*C). Exact cyclic coordinate updates
+   maintain w,b; an independent final-sweep KKT check certifies convergence.
+   No kernel matrix, random state, warm starts or per-fit allocations. */
+struct THD_svm_model {
+   int maxn,maxp,nclass,p,fitted,max_iterations;
+   double residual;
+   double *weight,*alpha,*diagonal;
+   int *count;
+};
+
+void THD_svm_free(THD_svm_model *m)
+{
+   if(!m)return;
+   free(m->weight);free(m->alpha);free(m->diagonal);free(m->count);free(m);
+}
+
+THD_svm_model *THD_svm_alloc(int n,int p,int nc,char *err,int nerr)
+{
+   THD_svm_model *m;
+   if(n<2 || p<1 || p==INT_MAX || nc<2 ||
+      (size_t)(p+1)>SIZE_MAX/sizeof(double)/(size_t)nc){
+      pp_error(err,nerr,"SVM needs samples, features, at least two classes and bounded dimensions");return NULL;
+   }
+   m=calloc(1,sizeof(*m));
+   if(!m){pp_error(err,nerr,"cannot allocate SVM");return NULL;}
+   m->maxn=n;m->maxp=p;m->nclass=nc;
+   m->weight=malloc(sizeof(double)*(size_t)(p+1)*nc);
+   m->alpha=malloc(sizeof(double)*(size_t)n);m->diagonal=malloc(sizeof(double)*(size_t)n);
+   m->count=malloc(sizeof(int)*(size_t)nc);
+   if(!m->weight || !m->alpha || !m->diagonal || !m->count){
+      THD_svm_free(m);pp_error(err,nerr,"cannot allocate SVM buffers");return NULL;
+   }
+   return m;
+}
+
+int THD_svm_fit(THD_svm_model *m,const float *x,const int *classes,int n,int p,
+ double cost,double tol,int maxiter,char *err,int nerr)
+{
+   int i,j,c,iteration,constant=1;double penalty=.5/cost;
+   if(m)m->fitted=0;
+   if(!m || !x || !classes || n<2 || n>m->maxn || p<1 || p>m->maxp ||
+      !isfinite(cost) || cost<=0 || !isfinite(penalty) || penalty<=0 ||
+      !isfinite(tol) || tol<1e-12 || tol>1e-2 || maxiter<1)
+      return pp_error(err,nerr,"invalid SVM dimensions, positive C, tolerance [1e-12,1e-2], or iteration limit");
+   memset(m->count,0,sizeof(int)*(size_t)m->nclass);
+   for(i=0;i<n;i++){
+      double d=1+penalty;
+      if(classes[i]<0 || classes[i]>=m->nclass)return pp_error(err,nerr,"SVM class index is invalid");
+      m->count[classes[i]]++;
+      for(j=0;j<p;j++){
+         double v=x[(size_t)i*p+j];
+         if(!isfinite(v))return pp_error(err,nerr,"SVM predictor is not finite");
+         d+=v*v;
+         if(i>0 && v!=x[j])constant=0;
+      }
+      m->diagonal[i]=d;
+   }
+   for(c=0;c<m->nclass;c++)if(!m->count[c])return pp_error(err,nerr,"SVM training set has no class %d",c+1);
+   memset(m->weight,0,sizeof(double)*(size_t)(p+1)*m->nclass);
+   m->max_iterations=0;m->residual=0;
+   if(constant){
+      /* All rows share z=[x,1]. The minimum-norm weight is z*f/||z||^2,
+         where f=(npos-nneg)/(n+1/(2*C*||z||^2)). Both labels are present,
+         hence |f|<1 and all rows lie in the quadratic hinge region. This
+         exact reduction avoids very slow dual cancellation at large C. */
+      double norm=1;
+      for(j=0;j<p;j++)norm+=(double)x[j]*x[j];
+      for(c=0;c<m->nclass;c++){
+         double margin=(2.0*m->count[c]-n)/(n+penalty/norm);
+         double *weight=m->weight+(size_t)c*(p+1),s;
+         for(j=0;j<p;j++)weight[j]=x[j]*margin/norm;
+         weight[p]=margin/norm;
+         s=weight[p];for(j=0;j<p;j++)s+=weight[j]*x[j];
+         for(i=0;i<n;i++){
+            double y=classes[i]==c?1:-1,alpha=(1-y*margin)/penalty;
+            double residual=fabs(y*s-1+penalty*alpha);
+            if(!isfinite(alpha) || !isfinite(residual) || residual>tol)
+               return pp_error(err,nerr,"constant-pattern SVM solution exceeds numeric precision; reduce C or rescale");
+            if(residual>m->residual)m->residual=residual;
+         }
+      }
+      m->max_iterations=1;m->p=p;m->fitted=1;return 1;
+   }
+   for(c=0;c<m->nclass;c++){
+      double *weight=m->weight+(size_t)c*(p+1),residual=HUGE_VAL;
+      memset(m->alpha,0,sizeof(double)*(size_t)n);
+      for(iteration=0;iteration<maxiter;iteration++){
+         for(i=0;i<n;i++){
+            double y=classes[i]==c?1:-1,s=weight[p],gradient,alpha,delta;
+            for(j=0;j<p;j++)s+=weight[j]*x[(size_t)i*p+j];
+            gradient=y*s-1+penalty*m->alpha[i];
+            alpha=fmax(0,m->alpha[i]-gradient/m->diagonal[i]);
+            delta=(alpha-m->alpha[i])*y;m->alpha[i]=alpha;
+            if(!isfinite(alpha) || !isfinite(gradient))return pp_error(err,nerr,"SVM iterate is not finite; rescale predictors or reduce C");
+            for(j=0;j<p;j++)weight[j]+=delta*x[(size_t)i*p+j];
+            weight[p]+=delta;
+         }
+         residual=0;
+         for(i=0;i<n;i++){
+            double y=classes[i]==c?1:-1,s=weight[p],gradient,pg;
+            for(j=0;j<p;j++)s+=weight[j]*x[(size_t)i*p+j];
+            gradient=y*s-1+penalty*m->alpha[i];
+            if(!isfinite(gradient))return pp_error(err,nerr,"SVM convergence residual is not finite");
+            pg=m->alpha[i]>0?fabs(gradient):fmax(0,-gradient);
+            if(pg>residual)residual=pg;
+         }
+         if(residual<=tol)break;
+      }
+      if(iteration==maxiter)return pp_error(err,nerr,"SVM class %d did not converge after %d sweeps (KKT residual %.9g > %.9g); increase -svm_max_iter, rescale, or reduce C",c+1,maxiter,residual,tol);
+      if(iteration+1>m->max_iterations)m->max_iterations=iteration+1;
+      if(residual>m->residual)m->residual=residual;
+   }
+   m->p=p;m->fitted=1;return 1;
+}
+
+int THD_svm_predict(const THD_svm_model *m,const float *x,int n,int p,
+ int *prediction,double *decision,char *err,int nerr)
+{
+   int i,j,c;
+   if(!m || !m->fitted || !x || !prediction || n<1 || p!=m->p)
+      return pp_error(err,nerr,"SVM prediction needs a fitted model and matching rows");
+   for(i=0;i<n;i++){
+      double bestscore=-HUGE_VAL;int best=0;
+      for(j=0;j<p;j++)if(!isfinite(x[(size_t)i*p+j]))return pp_error(err,nerr,"SVM prediction input is not finite");
+      for(c=0;c<m->nclass;c++){
+         const double *weight=m->weight+(size_t)c*(p+1);double s=weight[p];
+         for(j=0;j<p;j++)s+=weight[j]*x[(size_t)i*p+j];
+         if(!isfinite(s))return pp_error(err,nerr,"SVM decision is not finite");
+         if(decision)decision[(size_t)i*m->nclass+c]=s;
+         if(s>bestscore){bestscore=s;best=c;}
+      }
+      prediction[i]=best;
+   }
+   return 1;
+}
+
 void THD_mvpa_workspace_free( THD_mvpa_workspace *w )
 {
    if( w==NULL ) return ;
    THD_mvpa_ridge_workspace_free(w->ridge_cv);free(w->class_response);
+   THD_svm_free(w->svm);free(w->svm_grid);free(w->svm_selected);free(w->svm_loss);
+   free(w->fold_svm_residual);free(w->fold_svm_iterations);free(w->svm_inner_train);free(w->svm_inner_test);
    THD_lda_free(w->lda);free(w->fold_covariance_scale);free(w->fold_variance_floor);free(w->fold_covariance_form);
    free(w->train_x) ; free(w->test_x) ;
    free(w->train_class) ; free(w->test_class) ; free(w->test_prediction) ;
@@ -1219,7 +1377,7 @@ int THD_mvpa_classification_set_ridge(THD_mvpa_workspace *w,double lambda,
  const THD_nested_foldplan *nested,const double *grid,int nlambda,char *err,int nerr)
 {
    THD_mvpa_ridge_workspace *ridge;float *response;
-   if(!w || w->ridge_cv || w->lda || !isfinite(lambda) || lambda<=0 ||
+   if(!w || w->ridge_cv || w->lda || w->svm || !isfinite(lambda) || lambda<=0 ||
       (!nested && (grid || nlambda)))
       return pp_error(err,nerr,"ridge classifier needs an unconfigured workspace and positive lambda");
    ridge=THD_mvpa_ridge_workspace_alloc(w->plan,w->nfeature_alloc,w->nclass,w->preprocess,err,nerr);
@@ -1236,7 +1394,7 @@ int THD_mvpa_classification_set_lda(THD_mvpa_workspace *w,int mode,double alpha,
  double floor,int empirical,char *err,int nerr)
 {
    THD_lda_model *lda;double *scale,*vf;int *form,f;
-   if(!w || w->ridge_cv || w->lda || !isfinite(floor) || floor<1e-12 || floor>1 ||
+   if(!w || w->ridge_cv || w->lda || w->svm || !isfinite(floor) || floor<1e-12 || floor>1 ||
       (mode==THD_LDA_SHRINKAGE && (!isfinite(alpha) || alpha<=0 || alpha>1)))
       return pp_error(err,nerr,"LDA needs an unconfigured workspace, a valid variance floor and shrinkage");
    for(f=0;f<w->nfold;f++)if(w->plan->ntrain[f]<=w->nclass)
@@ -1253,6 +1411,89 @@ int THD_mvpa_classification_set_lda(THD_mvpa_workspace *w,int mode,double alpha,
    w->fold_covariance_scale=scale;w->fold_variance_floor=vf;w->fold_covariance_form=form;return 1;
 }
 
+int THD_mvpa_classification_set_svm(THD_mvpa_workspace *w,double cost,double tol,
+ int maxiter,int metric,const THD_nested_foldplan *nested,const double *grid,int ng,
+ char *err,int nerr)
+{
+   THD_svm_model *svm;double *selected,*loss=NULL,*copy=NULL,*residual;
+   int *iterations,*train=NULL,*test=NULL,f,i,j;
+   if(!w || w->ridge_cv || w->lda || w->svm || !isfinite(cost) || cost<=0 ||
+      !isfinite(.5/cost) || .5/cost<=0 || !isfinite(tol) || tol<1e-12 || tol>1e-2 || maxiter<1 ||
+      (metric!=THD_METRIC_ACCURACY && metric!=THD_METRIC_BALANCED_ACCURACY) ||
+      (nested?(!grid || ng<2 || nested->outer!=w->plan || !nested->inner):(grid || ng)))
+      return pp_error(err,nerr,"SVM needs an unconfigured workspace, valid C/solver options and matching optional nested folds");
+   if(nested){
+      if((size_t)ng>SIZE_MAX/sizeof(double)/(size_t)w->nfold)
+         return pp_error(err,nerr,"SVM tuning grid is too large");
+      for(i=0;i<ng;i++){
+         if(!isfinite(grid[i]) || grid[i]<=0 || !isfinite(.5/grid[i]) || .5/grid[i]<=0)
+            return pp_error(err,nerr,"SVM C grid values must be finite, positive and numerically representable");
+         for(j=0;j<i;j++)if(grid[i]==grid[j])return pp_error(err,nerr,"SVM C grid contains duplicates");
+      }
+      for(f=0;f<w->nfold;f++){
+         const THD_foldplan *in=nested->inner[f];
+         if(!THD_foldplan_validate(in,err,nerr))return 0;
+         if(in->nsample!=w->plan->ntrain[f] || in->nfold<2 || in->kind==THD_CV_FIXED)
+            return pp_error(err,nerr,"SVM tuning needs grouped inner folds over exactly each outer training set");
+      }
+   }
+   svm=THD_svm_alloc(w->max_train,w->nfeature_alloc,w->nclass,err,nerr);
+   selected=malloc(sizeof(double)*(size_t)w->nfold);residual=malloc(sizeof(double)*(size_t)w->nfold);
+   iterations=malloc(sizeof(int)*(size_t)w->nfold);
+   if(nested){
+      copy=malloc(sizeof(double)*(size_t)ng);loss=malloc(sizeof(double)*(size_t)w->nfold*ng);
+      train=malloc(sizeof(int)*(size_t)w->nsample);test=malloc(sizeof(int)*(size_t)w->nsample);
+   }
+   if(!svm || !selected || !residual || !iterations || (nested && (!copy || !loss || !train || !test))){
+      THD_svm_free(svm);free(selected);free(residual);free(iterations);free(copy);free(loss);free(train);free(test);
+      return pp_error(err,nerr,"cannot allocate SVM classification/tuning buffers");
+   }
+   if(nested)memcpy(copy,grid,sizeof(double)*(size_t)ng);
+   w->svm=svm;w->svm_cost=cost;w->svm_tolerance=tol;w->svm_max_iter=maxiter;w->svm_metric=metric;
+   w->svm_nested=nested;w->svm_grid=copy;w->svm_ngrid=ng;w->svm_selected=selected;w->svm_loss=loss;
+   w->fold_svm_residual=residual;w->fold_svm_iterations=iterations;
+   w->svm_inner_train=train;w->svm_inner_test=test;return 1;
+}
+
+static int svm_tune_fold(THD_mvpa_workspace *w,int outer,const float *x,int p,
+ const int *classes,const int *groups,char *err,int nerr)
+{
+   const THD_foldplan *in=w->svm_nested->inner[outer];int l,f,i,best=0;
+   double bestloss=HUGE_VAL;char why[512];
+   for(l=0;l<w->svm_ngrid;l++){
+      int total=0;THD_mvpa_class_score score;
+      memset(w->fold_confusion,0,sizeof(int)*(size_t)w->nclass*w->nclass);
+      for(f=0;f<in->nfold;f++){
+         int nt=in->ntrain[f],ne=in->ntest[f];
+         for(i=0;i<nt;i++)w->svm_inner_train[i]=w->plan->train[outer][in->train[f][i]];
+         for(i=0;i<ne;i++)w->svm_inner_test[i]=w->plan->train[outer][in->test[f][i]];
+         if(!pp_refit(w->prep,w->preprocess,x,w->nsample,p,w->svm_inner_train,nt,groups,0,why,sizeof(why)) ||
+            !pp_apply(w->prep,x,w->nsample,p,w->svm_inner_train,nt,groups,w->train_x,0,why,sizeof(why)))
+            return pp_error(err,nerr,"outer fold %s, inner fold %s SVM preprocessing: %s",w->plan->name[outer],in->name[f],why);
+         for(i=0;i<nt;i++)w->train_class[i]=classes[w->svm_inner_train[i]];
+         if(!THD_svm_fit(w->svm,w->train_x,w->train_class,nt,p,w->svm_grid[l],w->svm_tolerance,w->svm_max_iter,why,sizeof(why)))
+            return pp_error(err,nerr,"outer fold %s, inner fold %s, C %.9g: %s",w->plan->name[outer],in->name[f],w->svm_grid[l],why);
+         /* An inner test group can exceed the largest outer test group. Apply
+            one row at a time so existing test buffers remain sufficient. */
+         for(i=0;i<ne;i++){
+            int row=w->svm_inner_test[i];
+            if(!pp_apply(w->prep,x,w->nsample,p,&row,1,groups,w->test_x,0,why,sizeof(why)) ||
+               !THD_svm_predict(w->svm,w->test_x,1,p,w->test_prediction,NULL,why,sizeof(why)))
+               return pp_error(err,nerr,"outer fold %s, inner fold %s SVM prediction: %s",w->plan->name[outer],in->name[f],why);
+            w->fold_confusion[(size_t)classes[row]*w->nclass+w->test_prediction[0]]++;total++;
+         }
+      }
+      mvpa_class_score_from_confusion(w->fold_confusion,total,w->nclass,w->fold_recall,&score);
+      {
+         double loss=1-(w->svm_metric==THD_METRIC_ACCURACY?score.accuracy:score.balanced_accuracy);
+         if(!isfinite(loss))return pp_error(err,nerr,"SVM inner validation score is undefined");
+         w->svm_loss[(size_t)outer*w->svm_ngrid+l]=loss;
+         if(loss<bestloss || (loss==bestloss && w->svm_grid[l]<w->svm_grid[best])){best=l;bestloss=loss;}
+      }
+   }
+   w->svm_selected[outer]=w->svm_grid[best];return 1;
+}
+
 int THD_mvpa_run_classification_cv( const THD_foldplan *plan,
                                int distance, const float *x,
                                int nfeature, const int *class_id,
@@ -1264,7 +1505,7 @@ int THD_mvpa_run_classification_cv( const THD_foldplan *plan,
    if( w==NULL || plan==NULL || plan!=w->plan || x==NULL || class_id==NULL ||
        nfeature<1 || nfeature>w->nfeature_alloc )
      return pp_error(err,nerr,"CV inputs do not match the allocated MVPA workspace") ;
-   if( !w->ridge_cv && !w->lda && THD_centroid_distance_name(distance)==NULL )
+   if( !w->ridge_cv && !w->lda && !w->svm && THD_centroid_distance_name(distance)==NULL )
      return pp_error(err,nerr,"invalid centroid distance %d",distance) ;
    if( w->preprocess==THD_PREP_RUN_CENTER && group_id!=w->group_id )
      return pp_error(err,nerr,"run_center group IDs do not match the allocated workspace") ;
@@ -1312,6 +1553,11 @@ int THD_mvpa_run_classification_cv( const THD_foldplan *plan,
    for( ff=0 ; ff<w->nfold ; ff++ ){
      int ntrain=plan->ntrain[ff],ntest=plan->ntest[ff] ;
      if(!w->ridge_cv){
+     if(w->svm){
+       w->svm_selected[ff]=w->svm_cost;
+       if(w->svm_nested && !svm_tune_fold(w,ff,x,nfeature,class_id,group_id,why,sizeof(why)))
+         return pp_error(err,nerr,"SVM tuning: %s",why);
+     }
      if( !pp_refit(w->prep,w->preprocess,x,w->nsample,nfeature,
                    plan->train[ff],ntrain,group_id,0,why,sizeof(why)) )
        return pp_error(err,nerr,"fold %s preprocessing fit: %s",plan->name[ff],why) ;
@@ -1322,7 +1568,13 @@ int THD_mvpa_run_classification_cv( const THD_foldplan *plan,
        return pp_error(err,nerr,"fold %s preprocessing apply: %s",plan->name[ff],why) ;
      for( ii=0 ; ii<ntrain ; ii++ ) w->train_class[ii]=class_id[plan->train[ff][ii]] ;
      for( ii=0 ; ii<ntest ; ii++ ) w->test_class[ii]=class_id[plan->test[ff][ii]] ;
-     if(w->lda){
+     if(w->svm){
+       if(!THD_svm_fit(w->svm,w->train_x,w->train_class,ntrain,nfeature,w->svm_selected[ff],
+                      w->svm_tolerance,w->svm_max_iter,why,sizeof(why)) ||
+          !THD_svm_predict(w->svm,w->test_x,ntest,nfeature,w->test_prediction,w->test_decision,why,sizeof(why)))
+         return pp_error(err,nerr,"fold %s SVM: %s",plan->name[ff],why);
+       w->fold_svm_iterations[ff]=w->svm->max_iterations;w->fold_svm_residual[ff]=w->svm->residual;
+     }else if(w->lda){
        if(!THD_lda_fit(w->lda,w->train_x,w->train_class,ntrain,nfeature,w->lda_shrinkage,
                       w->lda_variance_floor,w->lda_empirical_prior,why,sizeof(why)) ||
           !THD_lda_predict(w->lda,w->test_x,ntest,nfeature,w->test_prediction,w->test_decision,why,sizeof(why)))
@@ -1415,7 +1667,7 @@ int THD_mvpa_run_classification_permutations(
 int THD_mvpa_run_centroid_cv(const THD_foldplan *plan,int distance,const float *x,
  int p,const int *classes,const int *groups,THD_mvpa_workspace *w,char *err,int nerr)
 {
-   if(w && (w->ridge_cv || w->lda))return pp_error(err,nerr,"centroid runner needs a centroid-configured workspace");
+   if(w && (w->ridge_cv || w->lda || w->svm))return pp_error(err,nerr,"centroid runner needs a centroid-configured workspace");
    return THD_mvpa_run_classification_cv(plan,distance,x,p,classes,groups,w,err,nerr);
 }
 
@@ -1423,7 +1675,7 @@ int THD_mvpa_run_centroid_permutations(const THD_foldplan *plan,int distance,
  const float *x,int p,const int *classes,const int *groups,int metric,
  const PERM_set *pset,int *permuted,float *scores,THD_mvpa_workspace *w,char *err,int nerr)
 {
-   if(w && (w->ridge_cv || w->lda))return pp_error(err,nerr,"centroid runner needs a centroid-configured workspace");
+   if(w && (w->ridge_cv || w->lda || w->svm))return pp_error(err,nerr,"centroid runner needs a centroid-configured workspace");
    return THD_mvpa_run_classification_permutations(plan,distance,x,p,classes,groups,
       metric,pset,permuted,scores,w,err,nerr);
 }

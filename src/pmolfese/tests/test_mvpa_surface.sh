@@ -133,6 +133,34 @@ awk 'BEGIN{id[1]=0;id[2]=2;id[3]=5;id[4]=9}
 cmp "$work/ridge_observed.pred.tsv" "$work/ridge_class_1.pred.tsv"
 cmp "$work/ridge_observed.niml.dset.tuning.tsv" "$work/ridge_class_1.niml.dset.tuning.tsv"
 
+# Native SVM uses the same sparse mesh identities and synchronized label null.
+for workers in 1 2; do
+  OMP_NUM_THREADS=$workers "$mvpa" -mode classify -method svm \
+    -dataTableFile "$work/ridge_class.tsv" -target_column Condition -cv_column Run \
+    -mask "$work/mask.niml.dset" -surf "$work/mesh.gii" -searchlight 100 \
+    -svm_c_grid 10,.01 -nperm 99 -permute_within Run -seed 42 \
+    -prefix "$work/svm_class_$workers.niml.dset" \
+    -save_predictions "$work/svm_class_$workers.pred.tsv" \
+    -save_fold_scores "$work/svm_class_$workers.fold.tsv"
+  "$convertdset" -o_1Dp_stdout -input "$work/svm_class_$workers.niml.dset" \
+    -prepend_node_index_1D > "$work/svm_class_$workers.1D"
+done
+cmp "$work/svm_class_1.1D" "$work/svm_class_2.1D"
+cmp "$work/svm_class_1.pred.tsv" "$work/svm_class_2.pred.tsv"
+cmp "$work/svm_class_1.fold.tsv" "$work/svm_class_2.fold.tsv"
+cmp "$work/svm_class_1.niml.dset.tuning.tsv" "$work/svm_class_2.niml.dset.tuning.tsv"
+awk 'BEGIN{id[1]=0;id[2]=2;id[3]=5;id[4]=9}
+  NF{n++;if($1!=id[n] || $2!=1 || $4!=.25 || $7!=.25 || $10!=3)exit 1}
+  END{if(n!=4)exit 1}' "$work/svm_class_1.1D"
+"$mvpa" -mode classify -method svm -dataTableFile "$work/ridge_class.tsv" \
+  -target_column Condition -cv_column Run -mask "$work/mask.niml.dset" \
+  -surf "$work/mesh.gii" -searchlight 100 -svm_c_grid 10,.01 \
+  -prefix "$work/svm_observed.niml.dset" -save_predictions "$work/svm_observed.pred.tsv" \
+  -save_fold_scores "$work/svm_observed.fold.tsv"
+cmp "$work/svm_observed.pred.tsv" "$work/svm_class_1.pred.tsv"
+cmp "$work/svm_observed.fold.tsv" "$work/svm_class_1.fold.tsv"
+cmp "$work/svm_observed.niml.dset.tuning.tsv" "$work/svm_class_1.niml.dset.tuning.tsv"
+
 for method in lda_diag lda_shrinkage; do
   for workers in 1 2; do
     OMP_NUM_THREADS=$workers "$mvpa" -mode classify -method "$method" \
@@ -174,13 +202,30 @@ EOF
 OMP_NUM_THREADS=2 "$mvpa" -mode decode -dataTableFile "$work/continuous.tsv" \
   -target_column Rating -cv_column Run -scale none -mask "$work/mask.niml.dset" \
   -surf "$work/mesh.gii" -searchlight 100 -prefix "$work/decode.niml.dset" \
-  -save_predictions "$work/decode.pred.tsv" -save_fold_scores "$work/decode.fold.tsv"
+  -save_predictions "$work/decode.pred.tsv" -save_fold_scores "$work/decode.fold.tsv" \
+  -save_coefficients "$work/dcoef"
 OMP_NUM_THREADS=1 "$mvpa" -mode decode -dataTableFile "$work/continuous.tsv" \
   -target_column Rating -cv_column Run -scale none -mask "$work/mask.niml.dset" \
   -surf "$work/mesh.gii" -searchlight 100 -prefix "$work/decode_one.niml.dset" \
-  -save_predictions "$work/decode_one.pred.tsv" -save_fold_scores "$work/decode_one.fold.tsv"
+  -save_predictions "$work/decode_one.pred.tsv" -save_fold_scores "$work/decode_one.fold.tsv" \
+  -save_coefficients "$work/dcoef_one.niml.dset"
 cmp "$work/decode.pred.tsv" "$work/decode_one.pred.tsv"
 cmp "$work/decode.fold.tsv" "$work/decode_one.fold.tsv"
+# Every unit keeps mesh IDs, including sparse holes, and maps neural weights.
+for unit in 0 2 5 9; do
+  "$convertdset" -o_1Dp_stdout -input "$work/dcoef.unit_$unit.niml.dset" \
+    -prepend_node_index_1D > "$work/dcoef.1D"
+  "$convertdset" -o_1Dp_stdout -input "$work/dcoef_one.unit_$unit.niml.dset" \
+    -prepend_node_index_1D > "$work/dcoef_one.1D"
+  cmp "$work/dcoef.1D" "$work/dcoef_one.1D"
+  awk 'function abs(x){return x<0?-x:x}
+    BEGIN{id[1]=0;id[2]=2;id[3]=5;id[4]=9}
+    NF{n++;if($1!=id[n] || abs($2-(n<=2?82/165:0))>1e-6)exit 1}
+    END{if(n!=4)exit 1}' "$work/dcoef.1D"
+done
+awk -F '\t' '/^#/ || $1=="Unit"{next} {n++;seen[$2]=1}
+  END{if(n!=16 || !seen["node_0"] || !seen["node_2"] || !seen["node_5"] || !seen["node_9"])exit 1}' "$work/dcoef.coefficients.tsv"
+
 cmp "$work/decode.niml.dset.continuous.tsv" "$work/decode_one.niml.dset.continuous.tsv"
 "$convertdset" -o_1Dp_stdout -input "$work/decode.niml.dset" \
   -prepend_node_index_1D > "$work/decode.1D"
@@ -188,11 +233,18 @@ awk 'BEGIN{id[1]=0;id[2]=2;id[3]=5;id[4]=9} NF{n++;if($1!=id[n] || $2<.9 || $8!=
 
 "$mvpa" -mode encode -dataTableFile "$work/continuous.tsv" \
   -design_columns Rating -cv_column Run -scale none -mask "$work/mask.niml.dset" \
-  -score voxel -prefix "$work/encode.niml.dset" -save_predictions "$work/encode.pred.tsv"
+  -score voxel -prefix "$work/encode.niml.dset" -save_predictions "$work/encode.pred.tsv" \
+  -save_coefficients "$work/ecoef"
 "$convertdset" -o_1Dp_stdout -input "$work/encode.niml.dset" \
   -prepend_node_index_1D > "$work/encode.1D"
 awk 'BEGIN{id[1]=0;id[2]=2;id[3]=5;id[4]=9} NF{n++;if($1!=id[n])exit 1; if(n<=2){if($2<.9 || $8!=1)exit 1}else if($2!=0 || $8!=0)exit 1} END{if(n!=4)exit 1}' "$work/encode.1D"
 awk -F '\t' 'NR>1 {seen[$2]=1} END{if(!seen["node_0"] || !seen["node_2"] || !seen["node_5"] || !seen["node_9"])exit 1}' "$work/encode.pred.tsv"
+"$convertdset" -o_1Dp_stdout -input "$work/ecoef.niml.dset" \
+  -prepend_node_index_1D > "$work/ecoef.1D"
+awk 'function abs(x){return x<0?-x:x}
+  BEGIN{id[1]=0;id[2]=2;id[3]=5;id[4]=9}
+  NF{n++;if($1!=id[n] || abs($2-(n<=2?82/83:0))>1e-6 || abs($3-(n<=2?5/83:5))>1e-6)exit 1}
+  END{if(n!=4)exit 1}' "$work/ecoef.1D"
 OMP_NUM_THREADS=2 "$mvpa" -mode encode -dataTableFile "$work/continuous.tsv" \
   -design_columns Rating -cv_column Run -scale none -mask "$work/mask.niml.dset" \
   -surf "$work/mesh.gii" -searchlight 100 -score pattern -prefix "$work/encode_pattern.niml.dset"

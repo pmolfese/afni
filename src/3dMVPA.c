@@ -32,11 +32,12 @@ static char *mvpa_options[]={
    "-target_column","-target_columns","-design_columns","-lambda","-score",
    "-lambda_grid","-inner_cv_column","-inner_cv_k",
    "-shrinkage","-class_prior","-variance_floor",
+   "-svm_c","-svm_c_grid","-svm_tol","-svm_max_iter",
    "-cv_column","-cv","-cv_k","-within_column",
    "-subject_column","-run_column","-item_column","-fold_column","-sample_column",
    "-mask","-roi_sel","-searchlight","-surf","-method","-distance","-scale","-metric","-prefix",
    "-nperm","-seed","-permute_within","-block_column",
-   "-save_predictions","-save_fold_scores",
+   "-save_predictions","-save_fold_scores","-save_coefficients","-coef_lambda",
    "-show_table","-show_samples","-show_folds","-quiet","-help","-h",NULL
 } ;
 
@@ -97,11 +98,35 @@ static void usage_3dMVPA( void )
 "\n"
 "Model options:                                              ~1~\n"
 "\n"
-"  -method METHOD         Classify: centroid [default], ridge, lda_diag, or\n"
+"  -method METHOD         Classify: centroid [default], ridge, svm, lda_diag, or\n"
 "                         lda_shrinkage. Ridge is required for decode/encode.\n"
 "                         Ridge classification fits one 0/1 response per class\n"
 "                         with argmax decisions; exact ties choose the first\n"
 "                         encoded class. Decisions are not probabilities.\n"
+"  -svm_c C|auto          Native linear SVM only: positive cost [1]. Each\n"
+"                         one-vs-rest model minimizes .5*(||w||^2+b^2) +\n"
+"                         C*sum(max(0,1-y*(Xw+b))^2). The intercept b IS\n"
+"                         penalized (constant feature = 1); no class weights.\n"
+"                         Larger C penalizes margin violations more strongly.\n"
+"                         Raw class margins are not probabilities; argmax wins,\n"
+"                         exact ties choose the first encoded class.\n"
+"  -svm_c_grid C1,C2,... Positive distinct candidates; enables grouped nested\n"
+"                         selection [auto default: 0.01,0.1,1,10,100]. Cannot\n"
+"                         accompany numeric -svm_c. Uses -inner_cv_column and\n"
+"                         -inner_cv_k; minimize 1-ACC/BACC (selected -metric)\n"
+"                         over pooled inner held-out rows. Ties choose SMALLER\n"
+"                         C. Every inner training set needs every class.\n"
+"                         Scaling, selection and fitting repeat per permutation.\n"
+"                         PREFIX.tuning.tsv records all candidate losses.\n"
+"  -svm_tol T            Absolute projected-dual-gradient tolerance [1e-6],\n"
+"                         range [1e-12,1e-2]. Deterministic cyclic coordinate\n"
+"                         descent verifies final KKT residual for every class.\n"
+"  -svm_max_iter N       Maximum sweeps per class [10000]. Nonconvergence is\n"
+"                         an error; increase this limit, rescale, or reduce C.\n"
+"                         Fold audits append C, InnerNFold, InnerLoss, maximum\n"
+"                         class SolverIterations and SolverResidual. SVM is\n"
+"                         classification-only; descriptive coefficient export\n"
+"                         currently remains ridge-only.\n"
 "  -shrinkage A           lda_shrinkage only: fixed covariance shrinkage in\n"
 "                         (0,1] [0.1]. Use (1-A)*S + max(A,F)*T*I, where S is\n"
 "                         pooled within-class covariance, T its mean variance,\n"
@@ -136,7 +161,8 @@ static void usage_3dMVPA( void )
 "  -inner_cv_k K          Balance whole inner groups into K folds [default:\n"
 "                         leave one group out]. Every outer training set must\n"
 "                         contain at least two inner groups (or K if given).\n"
-"                         Preprocessing is refitted within every inner split.\n"
+"                         Shared by ridge and SVM tuning. Preprocessing is\n"
+"                         refitted within every inner split.\n"
 "                         PREFIX.tuning.tsv records all candidate losses;\n"
 "                         fold audits append selected penalties and losses.\n"
 "  -distance D            Centroid only: euclidean [default], correlation, cosine.\n"
@@ -210,6 +236,30 @@ static void usage_3dMVPA( void )
 "                         QVAL, PFWE, and ZFWE before NFEAT and NFOLD.\n"
 "                         ROI analysis also writes PREFIX.roi.tsv with SCORE,\n"
 "                         ACC, BACC, NFEAT, and NFOLD for every ROI.\n"
+"  -save_coefficients CPREFIX  Ridge only: separate descriptive full-data refit.\n"
+"                         Writes CPREFIX.coefficients.tsv and .preprocessing.tsv.\n"
+"                         Encoding without searchlights writes CPREFIX maps: one\n"
+"                         brick per design column plus REFIT_INTERCEPT. Other\n"
+"                         analyses write CPREFIX.unit_ID per ROI/searchlight: one\n"
+"                         brick per decoding target/class (encoding: per design\n"
+"                         column plus intercept). Weights occupy neural feature/\n"
+"                         response voxels/nodes, preserving sparse node IDs.\n"
+"                         Overlapping neighborhoods retain separate models;\n"
+"                         this can create many datasets and large audit files.\n"
+"                         TSV identifies unit, feature, response, map and brick;\n"
+"                         intercepts and all fitted preprocessing are retained.\n"
+"                         y = intercept + sum(preprocessed_X * coefficient).\n"
+"                         Weights use the requested -scale predictor units;\n"
+"                         responses are unscaled (class responses: 0/1).\n"
+"                         feature_zscore uses full-data population SD; sample_\n"
+"                         center subtracts each row mean; run_center subtracts\n"
+"                         full-data subject/run means recorded in preprocessing.\n"
+"                         These are descriptive predictive weights, NOT held-out\n"
+"                         scores, activation/Haufe maps, or significance tests.\n"
+"                         Correlated features and scaling affect weight values.\n"
+"  -coef_lambda L         Positive full-data refit penalty [fixed -lambda].\n"
+"                         Required with tuned CV; never changes CV penalties,\n"
+"                         scores, predictions or permutation inference.\n"
 "  -save_predictions FILE Write one held-out prediction row per sample and\n"
 "                         spatial unit, including sample metadata, test fold,\n"
 "                         observed/predicted class labels, and every class\n"
@@ -452,6 +502,14 @@ static void mvpa_write_fold_rows( FILE *fp, THD_3dim_dataset *mset,
        fprintf(fp,"\t%.17g\t%d\t%d\t%.17g",rw->selected_lambda[ff],
                rw->nested?rw->nested->inner[ff]->nfold:0,rw->inner_nvalid[ff],loss);
      }
+     if(workspace->svm){
+       double loss=NAN;int l;
+       if(workspace->svm_nested)for(l=0;l<workspace->svm_ngrid;l++)
+         if(workspace->svm_grid[l]==workspace->svm_selected[ff])loss=workspace->svm_loss[(size_t)ff*workspace->svm_ngrid+l];
+       fprintf(fp,"\t%.17g\t%d\t%.17g\t%d\t%.17g",workspace->svm_selected[ff],
+         workspace->svm_nested?workspace->svm_nested->inner[ff]->nfold:0,loss,
+         workspace->fold_svm_iterations[ff],workspace->fold_svm_residual[ff]);
+     }
      if(workspace->lda){
        int form=workspace->fold_covariance_form[ff];
        fprintf(fp,"\t%.17g\t%.17g\t%.17g\t%s",workspace->lda_shrinkage,
@@ -522,13 +580,13 @@ static THD_roilist *mvpa_voxel_units(THD_3dim_dataset *mask)
    THD_roilist_free(atlas);return units;
 }
 
-static double *mvpa_lambda_grid(const char *text,int *count)
+static double *mvpa_penalty_grid(const char *text,int *count,const char *what)
 {
    int n=1,i,j;char *copy=strdup(text),*cur,*next,*end;double *grid;
-   if(!copy)ERROR_exit(PROGRAM_NAME ": cannot allocate lambda grid");
+   if(!copy)ERROR_exit(PROGRAM_NAME ": cannot allocate penalty grid");
    for(cur=copy;*cur;cur++)if(*cur==',')n++;
    if(n<2)ERROR_exit(PROGRAM_NAME ": lambda grid needs at least two candidates");
-   grid=malloc(sizeof(double)*(size_t)n);if(!grid)ERROR_exit(PROGRAM_NAME ": cannot allocate lambda candidates");
+   grid=malloc(sizeof(double)*(size_t)n);if(!grid)ERROR_exit(PROGRAM_NAME ": cannot allocate penalty candidates");
    cur=copy;
    for(i=0;i<n;i++){
       next=strchr(cur,',');if(next)*next++='\0';errno=0;grid[i]=strtod(cur,&end);
@@ -813,6 +871,167 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
    THD_sampleset_free_levels(names,na);free(attr);free(values);free(paint);free(tablefile);
 }
 
+/* Descriptive refits are an independent final pass. They cannot replace CV
+   predictions, tuning diagnostics or permutation statistics. Neural axes are
+   mapped at their actual feature/response rows, never at searchlight centers. */
+static THD_3dim_dataset *mvpa_coefficient_map(THD_3dim_dataset *mset,
+ const char *prefix,int nb,int argc,char **argv)
+{
+   int b;char err[512];THD_3dim_dataset *out=EDIT_empty_copy(mset);
+   if(!out || nb<1 || nb>32760)ERROR_exit(PROGRAM_NAME ": invalid coefficient map dimensions");
+   EDIT_dset_items(out,ADN_prefix,prefix,ADN_nvals,nb,ADN_ntt,0,
+                  ADN_type,HEAD_FUNC_TYPE,ADN_func_type,FUNC_BUCK_TYPE,ADN_none);
+   if(THD_deathcon() && THD_is_file(DSET_HEADNAME(out)))
+      ERROR_exit(PROGRAM_NAME ": coefficient dataset '%s' already exists",prefix);
+   for(b=0;b<nb;b++){
+      float *v=calloc((size_t)DSET_NVOX(mset),sizeof(float));
+      if(!v)ERROR_exit(PROGRAM_NAME ": cannot allocate coefficient map");
+      EDIT_substitute_brick(out,b,MRI_float,v);
+      EDIT_BRICK_TO_NOSTAT(out,b);EDIT_BRICK_FACTOR(out,b,0.0f);
+   }
+   if(!THD_copy_surface_node_domain(out,mset,err,sizeof(err)))ERROR_exit(PROGRAM_NAME ": %s",err);
+   tross_Copy_History(mset,out);tross_Make_History(PROGRAM_NAME,argc,argv,out);
+   return out;
+}
+
+static void mvpa_neural_id(char *text,int size,THD_3dim_dataset *mset,int row)
+{
+   int surface=DBLK_IS_NI_SURF_DSET(mset->dblk) || DBLK_IS_GIFTI(mset->dblk);
+   int id=surface && mset->dblk->node_list?mset->dblk->node_list[row]:row;
+   snprintf(text,size,"%s_%d",surface?"node":"voxel",id);
+}
+
+static float mvpa_coefficient_float(double v)
+{
+   if(!isfinite(v) || fabs(v)>FLT_MAX)
+      ERROR_exit(PROGRAM_NAME ": descriptive coefficient exceeds map float range");
+   return (float)v;
+}
+
+static void mvpa_coefficient_prefix(char *name,size_t capacity,
+ THD_3dim_dataset *mset,const char *prefix,int combined,int id)
+{
+   int surface=DBLK_IS_NI_SURF_DSET(mset->dblk) || DBLK_IS_GIFTI(mset->dblk);
+   size_t stemlen=strlen(prefix);
+   if(surface && stemlen>=10 && !strcmp(prefix+stemlen-10,".niml.dset"))stemlen-=10;
+   if(combined)snprintf(name,capacity,"%.*s%s",(int)stemlen,prefix,surface?".niml.dset":"");
+   else snprintf(name,capacity,"%.*s.unit_%d%s",(int)stemlen,prefix,id,surface?".niml.dset":"");
+}
+
+static void mvpa_descriptive_coefficients(THD_sampleset *ss,THD_3dim_dataset *mset,
+ THD_roilist *rl,int encoding,int searchlight,const char *columns,
+ const int *classes,char **class_names,int nc,int preprocess,const int *groups,
+ double lambda,const char *prefix,int quiet,int argc,char **argv)
+{
+   char **names=NULL,err[1024],feature[256],response[256],label[256];
+   char *fname=malloc(strlen(prefix)+32),*mapname=malloc(strlen(prefix)+64);
+   float *attr,*neural,*transformed;double *coef,*intercept;
+   int na,n=ss->nsample,maxvox=THD_roilist_maxvox(rl),maxp,maxq,*rows;
+   int r,j,o,g,i,combined=encoding && !searchlight;
+   FILE *table,*prepfile;THD_ridge_workspace *ridge;THD_3dim_dataset *out=NULL;
+   if(!fname || !mapname)ERROR_exit(PROGRAM_NAME ": cannot name descriptive outputs");
+   if(classes){
+      na=nc;names=class_names;attr=calloc((size_t)n*nc,sizeof(float));
+      if(!attr)ERROR_exit(PROGRAM_NAME ": cannot allocate descriptive class indicators");
+      for(i=0;i<n;i++)attr[(size_t)i*nc+classes[i]]=1;
+   }else attr=mvpa_numeric_columns(ss,columns,&names,&na);
+   maxp=encoding?na:maxvox;maxq=encoding?maxvox:na;
+   if((size_t)maxp>SIZE_MAX/sizeof(double)/(size_t)maxq ||
+      (size_t)n>SIZE_MAX/sizeof(float)/(size_t)maxp)
+      ERROR_exit(PROGRAM_NAME ": descriptive refit dimensions too large");
+   rows=malloc(sizeof(int)*(size_t)n);neural=malloc(sizeof(float)*(size_t)n*maxvox);
+   transformed=malloc(sizeof(float)*(size_t)n*maxp);
+   coef=malloc(sizeof(double)*(size_t)maxp*maxq);intercept=malloc(sizeof(double)*(size_t)maxq);
+   ridge=THD_ridge_alloc(n,maxp,maxq,err,sizeof(err));
+   if(!rows || !neural || !transformed || !coef || !intercept || !ridge)
+      ERROR_exit(PROGRAM_NAME ": cannot allocate descriptive refit");
+   for(i=0;i<n;i++)rows[i]=i;
+   sprintf(fname,"%s.coefficients.tsv",prefix);table=mvpa_open_audit(fname,"descriptive coefficients");
+   fprintf(table,"# Descriptive full-data ridge refit; NOT held-out scores, activation/Haufe maps, or coefficient significance.\n");
+   fprintf(table,"# scale=%s; lambda=%.17g; nfit=%d; objective=sum_squared_error+lambda*sum_squared_slopes; intercept_unpenalized\n",
+           THD_preprocess_name(preprocess),lambda,n);
+   fprintf(table,"# y = Intercept + sum(preprocessed_feature * Coefficient); responses retain original units%s.\n",
+           classes?" (classification: 0/1 indicators; decisions are not probabilities)":"");
+   fprintf(table,"# Preprocessing fitted on ALL samples; see PREFIX.preprocessing.tsv. Weights use transformed predictor units.\n");
+   fprintf(table,"# Map bricks are zero-based; outside-unit values are zero. Overlapping fits have separate unit maps.\n");
+   fprintf(table,"Unit\tFeature\tResponse\tCoefficient\tIntercept\tLambda\tNFit\tMapPrefix\tMapBrick\n");
+   sprintf(fname,"%s.preprocessing.tsv",prefix);prepfile=mvpa_open_audit(fname,"descriptive preprocessing");
+   fprintf(prepfile,"# scale=%s; feature_zscore: (x-center)/scale (population SD); constant features become zero.\n",THD_preprocess_name(preprocess));
+   fprintf(prepfile,"# none: x unchanged; sample_center: subtract each sample's own mean across this unit's predictors.\n");
+   fprintf(prepfile,"# run_center: subtract full-data subject/run feature means; Group is SubjectRunID below.\n");
+   if(groups)for(i=0;i<n;i++){
+      fprintf(prepfile,"# SampleGroup\t%d\t%d\t",ss->table_row[i]+1,groups[i]);
+      mvpa_tsv_text(prepfile,ss->subject_label[ss->subject[i]]);fputc('\t',prepfile);
+      mvpa_tsv_text(prepfile,ss->run_label[ss->run[i]]);fputc('\n',prepfile);
+   }
+   fprintf(prepfile,"Unit\tFeature\tGroup\tCenter\tScale\tConstant\n");
+   if(combined){
+      mvpa_coefficient_prefix(mapname,strlen(prefix)+64,mset,prefix,1,0);
+      out=mvpa_coefficient_map(mset,mapname,na+1,argc,argv);
+   }
+   for(r=0;r<rl->nroi;r++){
+      int p=encoding?na:rl->vox[r].nar,q=encoding?rl->vox[r].nar:na;
+      const float *xx,*yy;THD_preprocessor *prep;
+      if(!THD_roi_samples(ss,NULL,n,rl->vox+r,neural,err,sizeof(err)))ERROR_exit(PROGRAM_NAME ": %s",err);
+      xx=encoding?attr:neural;yy=encoding?neural:attr;
+      prep=THD_preprocess_fit(preprocess,xx,n,p,rows,n,groups,err,sizeof(err));
+      if(!prep || !THD_preprocess_apply(prep,xx,n,p,rows,n,groups,transformed,err,sizeof(err)) ||
+         !THD_ridge_fit(ridge,transformed,yy,n,p,q,lambda,THD_RIDGE_AUTO,err,sizeof(err)) ||
+         !THD_ridge_coefficients(ridge,coef,intercept,err,sizeof(err)))
+         ERROR_exit(PROGRAM_NAME ": descriptive unit %d: %s",rl->val[r],err);
+      if(!combined){
+         mvpa_coefficient_prefix(mapname,strlen(prefix)+64,mset,prefix,0,rl->val[r]);
+         out=mvpa_coefficient_map(mset,mapname,encoding?na+1:na,argc,argv);
+      }
+      for(j=0;j<p;j++){
+         const char *feature_id;
+         if(!encoding)mvpa_neural_id(feature,sizeof(feature),mset,rl->vox[r].ar[j]);
+         feature_id=encoding?names[j]:feature;
+         for(g=0;g<(preprocess==THD_PREP_RUN_CENTER?prep->ngroup:1);g++){
+            double center=0,scale=1;int constant=0;
+            if(preprocess==THD_PREP_FEATURE_ZSCORE){center=prep->center[j];scale=prep->scale[j];constant=prep->constant[j];}
+            if(preprocess==THD_PREP_RUN_CENTER)center=prep->center[(size_t)g*p+j];
+            fprintf(prepfile,"%d\t",rl->val[r]);mvpa_tsv_text(prepfile,feature_id);
+            if(preprocess==THD_PREP_RUN_CENTER)fprintf(prepfile,"\t%d",prep->group_value[g]);
+            else fputs("\tNA",prepfile);
+            fprintf(prepfile,"\t%.17g\t%.17g\t%d\n",center,scale,constant);
+         }
+         for(o=0;o<q;o++){
+            int brick=encoding?j:o,row=rl->vox[r].ar[encoding?o:j];
+            const char *response_id;
+            if(encoding)mvpa_neural_id(response,sizeof(response),mset,row);
+            response_id=encoding?response:names[o];
+            fprintf(table,"%d\t",rl->val[r]);mvpa_tsv_text(table,feature_id);fputc('\t',table);mvpa_tsv_text(table,response_id);
+            fprintf(table,"\t%.17g\t%.17g\t%.17g\t%d\t",coef[(size_t)j*q+o],intercept[o],lambda,n);
+            mvpa_tsv_text(table,mapname);fprintf(table,"\t%d\n",brick);
+            ((float *)DSET_ARRAY(out,brick))[row]=mvpa_coefficient_float(coef[(size_t)j*q+o]);
+         }
+      }
+      for(i=0;i<na;i++){
+         snprintf(label,sizeof(label),"REFIT_B%d_%s",i,names[i]);EDIT_BRICK_LABEL(out,i,label);
+      }
+      if(encoding){
+         EDIT_BRICK_LABEL(out,na,"REFIT_INTERCEPT");
+         for(o=0;o<q;o++)((float *)DSET_ARRAY(out,na))[rl->vox[r].ar[o]]=mvpa_coefficient_float(intercept[o]);
+      }
+      THD_preprocess_free(prep);
+      if(!combined){
+         if(DSET_write(out)!=True)ERROR_exit(PROGRAM_NAME ": failed writing coefficient map");
+         DSET_delete(out);out=NULL;
+      }
+   }
+   if(combined){
+      if(DSET_write(out)!=True)ERROR_exit(PROGRAM_NAME ": failed writing coefficient map");
+      DSET_delete(out);
+   }
+   if(ferror(table) || fclose(table))ERROR_exit(PROGRAM_NAME ": error writing coefficients");
+   if(ferror(prepfile) || fclose(prepfile))ERROR_exit(PROGRAM_NAME ": error writing descriptive preprocessing");
+   if(!quiet)INFO_message(PROGRAM_NAME ": descriptive full-data coefficients: %d units, lambda %.9g; %s.coefficients.tsv",rl->nroi,lambda,prefix);
+   THD_ridge_free(ridge);free(rows);free(neural);free(transformed);free(coef);free(intercept);
+   if(!classes)THD_sampleset_free_levels(names,na);
+   free(attr);free(fname);free(mapname);
+}
+
 int main( int argc, char **argv )
 {
    THD_datatable *tab=NULL,*expanded=NULL ; THD_sampleset *ss=NULL ;
@@ -827,6 +1046,9 @@ int main( int argc, char **argv )
    char *fold_column=NULL,*sample_column=NULL,*xmat_stims=NULL ;
    char *maskname=NULL,*roi_sel=NULL,*searchlight=NULL,*surf_file=NULL ;
    char *prefix="MVPA",*method=NULL,*design_columns=NULL,*score_mode=NULL ;
+   char *coef_prefix=NULL;double coef_lambda=0;int coef_lambda_given=0;
+   int svm_class=0,svm_tune=0,svm_numeric=0,svm_options=0,svm_ngrid=0,svm_max_iter=10000;
+   double svm_cost=1,svm_tolerance=1e-6,*svm_grid=NULL;char *svm_grid_text=NULL;
    double lambda=1.0;int continuous=0,encoding=0,voxel_encoding=0,ridge_class=0,distance_given=0;
    int lda_mode=-1,shrinkage_given=0,floor_given=0,empirical_prior=0;
    double shrinkage=.1,variance_floor=1e-6;char *class_prior=NULL;
@@ -869,6 +1091,33 @@ int main( int argc, char **argv )
            ERROR_exit(PROGRAM_NAME ": -lambda must be finite and positive, or auto");
        }
        nopt++;
+     }
+     else if(IS("-svm_c")){
+       char *end;NEEDARG("a positive C or auto");svm_options=1;
+       if(svm_tune || svm_numeric)ERROR_exit(PROGRAM_NAME ": -svm_c was specified twice");
+       if(!strcasecmp(argv[nopt],"auto"))svm_tune=1;
+       else{
+         errno=0;svm_cost=strtod(argv[nopt],&end);svm_numeric=1;
+         if(errno || end==argv[nopt] || *end || !isfinite(svm_cost) || svm_cost<=0 || !isfinite(.5/svm_cost) || .5/svm_cost<=0)
+           ERROR_exit(PROGRAM_NAME ": -svm_c must be finite and positive, or auto");
+       }
+       nopt++;
+     }
+     else if(IS("-svm_c_grid")){
+       NEEDARG("comma-separated positive C values");svm_options=1;
+       if(svm_grid_text)ERROR_exit(PROGRAM_NAME ": -svm_c_grid was specified twice");
+       svm_grid_text=argv[nopt++];
+     }
+     else if(IS("-svm_tol")){
+       char *end;NEEDARG("a tolerance in [1e-12,1e-2]");svm_options=1;
+       errno=0;svm_tolerance=strtod(argv[nopt],&end);
+       if(errno || end==argv[nopt] || *end || !isfinite(svm_tolerance) || svm_tolerance<1e-12 || svm_tolerance>1e-2)
+         ERROR_exit(PROGRAM_NAME ": -svm_tol must be in [1e-12,1e-2]");
+       nopt++;
+     }
+     else if(IS("-svm_max_iter")){
+       NEEDARG("a positive sweep limit");svm_options=1;
+       svm_max_iter=(int)mvpa_parse_long("-svm_max_iter",argv[nopt++],1,INT_MAX);
      }
      else if( IS("-lambda_grid") ){
        NEEDARG("comma-separated positive penalties");
@@ -915,7 +1164,7 @@ int main( int argc, char **argv )
          ERROR_exit(PROGRAM_NAME ": -class_prior must be equal or empirical");
        empirical_prior=!strcasecmp(class_prior,"empirical");
      }
-     else if( IS("-method") ){ NEEDARG("centroid, ridge, lda_diag, or lda_shrinkage") ; method=argv[nopt++] ; }
+     else if( IS("-method") ){ NEEDARG("centroid, ridge, svm, lda_diag, or lda_shrinkage") ; method=argv[nopt++] ; }
      else if( IS("-distance") ){ NEEDARG("euclidean, correlation, or cosine") ; distance_name=argv[nopt++] ;distance_given=1; }
      else if( IS("-scale") ){ NEEDARG("none, feature_zscore, sample_center, or run_center") ; scale_name=argv[nopt++] ; }
      else if( IS("-metric") ){ NEEDARG("a prediction metric") ; metric_name=argv[nopt++] ; }
@@ -927,6 +1176,19 @@ int main( int argc, char **argv )
        permute_within=argv[nopt++] ;
      }
      else if( IS("-prefix") ){ NEEDARG("an output prefix") ; prefix=argv[nopt++] ; }
+     else if(IS("-save_coefficients")){
+       NEEDARG("a separate descriptive output prefix");
+       if(coef_prefix)ERROR_exit(PROGRAM_NAME ": -save_coefficients was specified twice");
+       coef_prefix=argv[nopt++];
+     }
+     else if(IS("-coef_lambda")){
+       char *end;NEEDARG("a positive descriptive refit penalty");
+       if(coef_lambda_given)ERROR_exit(PROGRAM_NAME ": -coef_lambda was specified twice");
+       errno=0;coef_lambda=strtod(argv[nopt],&end);coef_lambda_given=1;
+       if(errno || end==argv[nopt] || *end || !isfinite(coef_lambda) || coef_lambda<=0)
+         ERROR_exit(PROGRAM_NAME ": -coef_lambda must be finite and positive");
+       nopt++;
+     }
      else if( IS("-save_predictions") ){ NEEDARG("a filename") ; save_predictions=argv[nopt++] ; }
      else if( IS("-save_fold_scores") ){ NEEDARG("a filename") ; save_fold_scores=argv[nopt++] ; }
      else if( IS("-show_table") ){ show_table=1 ; nopt++ ; }
@@ -953,6 +1215,10 @@ int main( int argc, char **argv )
    encoding=!strcasecmp(mode,"encode");continuous=encoding || !strcasecmp(mode,"decode");
    if(!method)method=continuous?"ridge":"centroid";
    ridge_class=!continuous && !strcasecmp(method,"ridge");
+   svm_class=!continuous && !strcasecmp(method,"svm");
+   if(svm_options && !svm_class)ERROR_exit(PROGRAM_NAME ": SVM options require -mode classify -method svm");
+   if(svm_grid_text && svm_numeric)ERROR_exit(PROGRAM_NAME ": -svm_c_grid cannot accompany numeric -svm_c");
+   if(svm_grid_text)svm_tune=1;
    if(!continuous && !strcasecmp(method,"lda_diag"))lda_mode=THD_LDA_DIAGONAL;
    if(!continuous && !strcasecmp(method,"lda_shrinkage"))lda_mode=THD_LDA_SHRINKAGE;
    if(lda_mode<0 && (shrinkage_given || floor_given || class_prior))
@@ -961,11 +1227,21 @@ int main( int argc, char **argv )
      ERROR_exit(PROGRAM_NAME ": -shrinkage requires -method lda_shrinkage");
    if(grid_text && numeric_lambda)ERROR_exit(PROGRAM_NAME ": -lambda_grid cannot accompany a numeric -lambda");
    if(grid_text)tune=1;
-   if((tune || numeric_lambda || inner_column || inner_k) && !continuous && !ridge_class)
+   if((tune || numeric_lambda) && !continuous && !ridge_class)
      ERROR_exit(PROGRAM_NAME ": ridge lambda and inner-CV options require -method ridge");
-   if((ridge_class || lda_mode>=0) && distance_given)ERROR_exit(PROGRAM_NAME ": -distance is only used by centroid classification");
-   if(!tune && (inner_column || inner_k))ERROR_exit(PROGRAM_NAME ": inner-CV options require -lambda auto or -lambda_grid");
-   if(tune)lambda_grid=mvpa_lambda_grid(grid_text?grid_text:"0.01,0.1,1,10,100",&nlambda);
+   if((ridge_class || svm_class || lda_mode>=0) && distance_given)ERROR_exit(PROGRAM_NAME ": -distance is only used by centroid classification");
+   if(!tune && !svm_tune && (inner_column || inner_k))ERROR_exit(PROGRAM_NAME ": inner-CV options require tuned ridge or SVM penalties");
+   if(tune)lambda_grid=mvpa_penalty_grid(grid_text?grid_text:"0.01,0.1,1,10,100",&nlambda,"lambda");
+   if(svm_tune)svm_grid=mvpa_penalty_grid(svm_grid_text?svm_grid_text:"0.01,0.1,1,10,100",&svm_ngrid,"SVM C");
+   if(coef_lambda_given && !coef_prefix)ERROR_exit(PROGRAM_NAME ": -coef_lambda requires -save_coefficients");
+   if(coef_prefix){
+     if(strcasecmp(method,"ridge"))ERROR_exit(PROGRAM_NAME ": -save_coefficients requires -method ridge");
+     if(!THD_filename_ok(coef_prefix) || !strcmp(coef_prefix,prefix))
+       ERROR_exit(PROGRAM_NAME ": descriptive coefficient prefix must be legal and different from -prefix");
+     if(tune && !coef_lambda_given)
+       ERROR_exit(PROGRAM_NAME ": tuned CV requires an explicit -coef_lambda for descriptive full-data refits");
+     if(!coef_lambda_given)coef_lambda=lambda;
+   }
    if(!metric_name)metric_name=continuous?"cross_validated_r2":"balanced_accuracy";
    if(encoding){
      if(!design_columns)ERROR_exit(PROGRAM_NAME ": encoding requires -design_columns");
@@ -995,8 +1271,8 @@ int main( int argc, char **argv )
    if( save_predictions!=NULL && save_fold_scores!=NULL &&
        strcmp(save_predictions,save_fold_scores)==0 )
      ERROR_exit(PROGRAM_NAME ": -save_predictions and -save_fold_scores need different files") ;
-   if(continuous?strcasecmp(method,"ridge")!=0:(!ridge_class && lda_mode<0 && strcasecmp(method,"centroid")!=0))
-     ERROR_exit(PROGRAM_NAME ": mode %s requires -method %s",mode,continuous?"ridge":"centroid, ridge, lda_diag, or lda_shrinkage") ;
+   if(continuous?strcasecmp(method,"ridge")!=0:(!ridge_class && !svm_class && lda_mode<0 && strcasecmp(method,"centroid")!=0))
+     ERROR_exit(PROGRAM_NAME ": mode %s requires -method %s",mode,continuous?"ridge":"centroid, ridge, svm, lda_diag, or lda_shrinkage") ;
    if( !THD_filename_ok(prefix) ) ERROR_exit(PROGRAM_NAME ": illegal -prefix '%s'",prefix) ;
    if( !THD_centroid_distance_parse(distance_name,&distance,err,sizeof(err)) )
      ERROR_exit(PROGRAM_NAME ": %s",err) ;
@@ -1039,7 +1315,7 @@ int main( int argc, char **argv )
    if( !continuous && !THD_foldplan_check_classes(plan,class_id,nclass,0,err,sizeof(err)) )
      ERROR_exit(PROGRAM_NAME ": %s",err) ;
    if( show_folds ) THD_foldplan_print(plan,ss,stdout) ;
-   if(tune){
+   if(tune || svm_tune){
      int *inner_groups=NULL,ng=0;char **labels=NULL;
      if(!inner_column)inner_column=cv_column;
      if(!THD_sampleset_encode_column(ss,inner_column,&inner_groups,&labels,&ng,err,sizeof(err)))
@@ -1048,7 +1324,7 @@ int main( int argc, char **argv )
      free(inner_groups);THD_sampleset_free_levels(labels,ng);
      if(!nested)ERROR_exit(PROGRAM_NAME ": %s",err);
      if(show_folds)THD_nested_foldplan_print(nested,ss,stdout);
-     if(!quiet)INFO_message(PROGRAM_NAME ": nested ridge selection over %d penalties; inner groups from %s",nlambda,inner_column);
+     if(!quiet)INFO_message(PROGRAM_NAME ": nested %s selection over %d penalties; inner groups from %s",svm_class?"SVM C":"ridge",svm_class?svm_ngrid:nlambda,inner_column);
    }
 
    if( nperm>0 ){
@@ -1170,6 +1446,35 @@ int main( int argc, char **argv )
      if( rl==NULL || rl->nroi<1 )
        ERROR_exit(PROGRAM_NAME ": mask has no selected positive-valued ROIs") ;
    }
+   if(coef_prefix){
+     const char *suffix[]={".coefficients.tsv",".preprocessing.tsv"};int c;
+     char *cf=malloc(strlen(coef_prefix)+32);
+     if(!cf)ERROR_exit(PROGRAM_NAME ": cannot name coefficient audits");
+     for(c=0;c<2;c++){
+       sprintf(cf,"%s%s",coef_prefix,suffix[c]);
+       if((save_predictions && !strcmp(cf,save_predictions)) ||
+          (save_fold_scores && !strcmp(cf,save_fold_scores)))
+         ERROR_exit(PROGRAM_NAME ": coefficient and prediction/fold audit filenames must differ");
+       if(THD_deathcon() && THD_is_file(cf))ERROR_exit(PROGRAM_NAME ": coefficient audit '%s' already exists",cf);
+     }
+     free(cf);
+     {
+       int c,combined=encoding && searchlight==NULL;
+       char *name=malloc(strlen(coef_prefix)+64);
+       THD_3dim_dataset *score_check=EDIT_empty_copy(mset),*coef_check=EDIT_empty_copy(mset);
+       if(!name || !score_check || !coef_check)ERROR_exit(PROGRAM_NAME ": cannot check coefficient output paths");
+       EDIT_dset_items(score_check,ADN_prefix,prefix,ADN_none);
+       for(c=0;c<(combined?1:rl->nroi);c++){
+         mvpa_coefficient_prefix(name,strlen(coef_prefix)+64,mset,coef_prefix,combined,rl->val[c]);
+         EDIT_dset_items(coef_check,ADN_prefix,name,ADN_none);
+         if(!strcmp(DSET_HEADNAME(score_check),DSET_HEADNAME(coef_check)))
+           ERROR_exit(PROGRAM_NAME ": coefficient maps and held-out score dataset must differ");
+         if(THD_deathcon() && THD_is_file(DSET_HEADNAME(coef_check)))
+           ERROR_exit(PROGRAM_NAME ": coefficient dataset '%s' already exists",name);
+       }
+       DSET_delete(score_check);DSET_delete(coef_check);free(name);
+     }
+   }
    maxvox=THD_roilist_maxvox(rl) ;
    if( maxvox<1 || (size_t)ss->nsample>SIZE_MAX/sizeof(float)/(size_t)maxvox )
      ERROR_exit(PROGRAM_NAME ": sample-by-voxel workspace is too large") ;
@@ -1187,6 +1492,9 @@ int main( int argc, char **argv )
      mvpa_continuous_analysis(ss,plan,mset,rl,encoding,encoding?design_columns:target_column,
        preprocess,group_id,lambda,metric,prefix,save_predictions,save_fold_scores,
        nworker,quiet,nested,lambda_grid,nlambda,inner_column,perm_set,permute_within,argc,argv);
+     if(coef_prefix)mvpa_descriptive_coefficients(ss,mset,rl,encoding,searchlight!=NULL,
+       encoding?design_columns:target_column,NULL,NULL,0,preprocess,group_id,coef_lambda,
+       coef_prefix,quiet,argc,argv);
      DSET_delete(mset);THD_roilist_free(rl);THD_nested_foldplan_free(nested);THD_foldplan_free(plan);
      free(lambda_grid);
      THD_perm_set_free(perm_set);
@@ -1226,6 +1534,8 @@ int main( int argc, char **argv )
      if(ridge_class && !THD_mvpa_classification_set_ridge(workspace[ii],lambda,nested,
                                      lambda_grid,nlambda,err,sizeof(err)))
        ERROR_exit(PROGRAM_NAME ": %s",err);
+     if(svm_class && !THD_mvpa_classification_set_svm(workspace[ii],svm_cost,svm_tolerance,
+       svm_max_iter,metric,nested,svm_grid,svm_ngrid,err,sizeof(err)))ERROR_exit(PROGRAM_NAME ": %s",err);
      if(lda_mode>=0 && !THD_mvpa_classification_set_lda(workspace[ii],lda_mode,shrinkage,
                           variance_floor,empirical_prior,err,sizeof(err)))ERROR_exit(PROGRAM_NAME ": %s",err);
      if( perm_set!=NULL ){
@@ -1251,6 +1561,7 @@ int main( int argc, char **argv )
      mvpa_write_audit_header(prediction_fp,"row-level held-out predictions",
                              target_column,class_label,nclass,searchlight!=NULL,
                              surf_file!=NULL) ;
+     if(svm_class)fprintf(prediction_fp,"# Method: svm; loss=squared_hinge; intercept_penalized=1; C=%.17g; tuning=%s; tolerance=%.17g; max_iter=%d; decisions=raw_one_vs_rest_margins_not_probabilities\n",svm_cost,nested?"nested":"fixed",svm_tolerance,svm_max_iter);
      if(ridge_class)fputs("# Method: ridge; DecisionClass columns are 0/1-regression scores, not probabilities.\n",prediction_fp);
      if(lda_mode>=0)fprintf(prediction_fp,"# Method: %s; class_prior=%s; shrinkage=%.17g; relative_variance_floor=%.17g; decisions=centered_linear_discriminants_not_probabilities\n",
                            method,empirical_prior?"empirical":"equal",lda_mode==THD_LDA_DIAGONAL?0:shrinkage,variance_floor);
@@ -1263,23 +1574,30 @@ int main( int argc, char **argv )
      mvpa_write_audit_header(fold_fp,"per-fold classification scores",
                              target_column,class_label,nclass,searchlight!=NULL,
                              surf_file!=NULL) ;
+     if(svm_class)fprintf(fold_fp,"# Method: svm; loss=squared_hinge; intercept_penalized=1; tolerance=%.17g; max_iter=%d; inner_objective=1-%s; ties=smallest_C\n",svm_tolerance,svm_max_iter,THD_mvpa_metric_name(metric));
      if(lda_mode>=0)fprintf(fold_fp,"# Method: %s; class_prior=%s; covariance_denominator=ntrain-nclass; relative_variance_floor=%.17g\n",
                            method,empirical_prior?"empirical":"equal",variance_floor);
      fputs("UnitType\tUnitID\tUnitLabel\tI\tJ\tK\tNFeat\tCVFold\tStratum\tNTrain\tNTest\tACC\tBACC",fold_fp) ;
+     if(svm_class)fputs("\tC\tInnerNFold\tInnerLoss\tSolverIterations\tSolverResidual",fold_fp);
      if(ridge_class)fputs("\tLambda\tInnerNFold\tInnerNValid\tInnerLoss",fold_fp);
      if(lda_mode>=0)fputs("\tShrinkage\tCovarianceScale\tVarianceFloor\tCovarianceForm",fold_fp);
      fputc('\n',fold_fp);
    }
-   if(ridge_class && nested){
+   if((ridge_class || svm_class) && nested){
      class_tunefile=malloc(strlen(prefix)+20);
      if(!class_tunefile)ERROR_exit(PROGRAM_NAME ": cannot name classification tuning audit");
      sprintf(class_tunefile,"%s.tuning.tsv",prefix);
      if((save_predictions && !strcmp(save_predictions,class_tunefile)) ||
         (save_fold_scores && !strcmp(save_fold_scores,class_tunefile)))
        ERROR_exit(PROGRAM_NAME ": tuning audit and prediction/fold filenames must differ");
-     class_tuning=mvpa_open_audit(class_tunefile,"classification lambda tuning audit");
+     class_tuning=mvpa_open_audit(class_tunefile,"classification tuning audit");
+     if(svm_class){
+       fprintf(class_tuning,"# method=svm; inner_group=%s; objective=1-%s; ties=smallest_C; intercept_penalized=1\n",inner_column,THD_mvpa_metric_name(metric));
+       fputs("Unit\tCVFold\tCVStratum\tInnerNFold\tC\tInnerLoss\tSelected\n",class_tuning);
+     }else{
      fprintf(class_tuning,"# method=ridge; coding=one_hot_0_1; inner_group=%s; objective=mean_class_SSE_over_training_mean_baseline_SSE; ties=largest_lambda\n",inner_column);
      fputs("Unit\tCVFold\tCVStratum\tInnerNFold\tInnerNValid\tLambda\tInnerLoss\tSelected\n",class_tuning);
+     }
    }
    if( searchlight!=NULL && !quiet )
      INFO_message(PROGRAM_NAME ": %d centers, at most %d features, %d worker%s",
@@ -1346,7 +1664,16 @@ int main( int argc, char **argv )
        if( ok && fold_fp!=NULL )
          mvpa_write_fold_rows(fold_fp,mset,rl,rr,searchlight!=NULL,
                               surf_file!=NULL,plan,workspace[tid]) ;
-       if(ok && class_tuning){
+       if(ok && class_tuning && svm_class){
+         int f,l;const THD_mvpa_workspace *sw=workspace[tid];
+         for(f=0;f<plan->nfold;f++)for(l=0;l<svm_ngrid;l++){
+           fprintf(class_tuning,"%d\t",rl->val[rr]);mvpa_tsv_text(class_tuning,plan->name[f]);
+           fputc('\t',class_tuning);mvpa_tsv_text(class_tuning,plan->stratum_label[plan->fold_stratum[f]]);
+           fprintf(class_tuning,"\t%d\t%.17g\t%.17g\t%d\n",nested->inner[f]->nfold,
+             svm_grid[l],sw->svm_loss[(size_t)f*svm_ngrid+l],svm_grid[l]==sw->svm_selected[f]);
+         }
+       }
+       if(ok && class_tuning && ridge_class){
          int f,l;const THD_mvpa_ridge_workspace *rw=workspace[tid]->ridge_cv;
          for(f=0;f<plan->nfold;f++)for(l=0;l<nlambda;l++){
            fprintf(class_tuning,"%d\t",rl->val[rr]);mvpa_tsv_text(class_tuning,plan->name[f]);
@@ -1405,6 +1732,9 @@ int main( int argc, char **argv )
      INFO_message(PROGRAM_NAME ": wrote dataset %s",DSET_BRIKNAME(oset)) ;
    }
 
+   if(coef_prefix)mvpa_descriptive_coefficients(ss,mset,rl,0,searchlight!=NULL,
+     target_column,class_id,class_label,nclass,preprocess,group_id,coef_lambda,
+     coef_prefix,quiet,argc,argv);
    DSET_delete(oset) ; DSET_delete(mset) ; THD_roilist_free(rl) ;
    for( ii=0 ; ii<nworker ; ii++ ){
      THD_mvpa_workspace_free(workspace[ii]) ; free(x[ii]) ;
@@ -1418,6 +1748,6 @@ int main( int argc, char **argv )
    THD_sampleset_free_levels(class_label,nclass) ; free(class_id) ; free(group_id) ;
    THD_sampleset_free(ss) ; free(score) ; free(acc) ; free(bacc) ;
    free(nfeat) ; free(nfold) ; free(qval) ; free(table_name) ;
-   free(lambda_grid);free(class_tunefile);
+   free(lambda_grid);free(svm_grid);free(class_tunefile);
    return 0 ;
 }

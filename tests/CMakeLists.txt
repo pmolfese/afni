@@ -120,6 +120,20 @@ if(TARGET 3dMVPA AND TARGET 3dUndump AND TARGET 3dbucket
         $<TARGET_FILE:3dinfo> $<TARGET_FILE:3dmaskdump>
     )
     set_tests_properties(3dMVPA:ridge PROPERTIES LABELS "3dMVPA;numeric;integration")
+    add_test(
+      NAME 3dMVPA:coefficients
+      COMMAND ${BASH_PROGRAM}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_coefficients.sh
+        $<TARGET_FILE:3dMVPA> $<TARGET_FILE:3dUndump> $<TARGET_FILE:3dmaskdump>
+    )
+    set_tests_properties(3dMVPA:coefficients PROPERTIES LABELS "3dMVPA;numeric;integration")
+    add_test(
+      NAME 3dMVPA:svm
+      COMMAND ${BASH_PROGRAM}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_svm.sh
+        $<TARGET_FILE:3dMVPA> $<TARGET_FILE:3dUndump> $<TARGET_FILE:3dmaskdump>
+    )
+    set_tests_properties(3dMVPA:svm PROPERTIES LABELS "3dMVPA;numeric;integration")
   endif()
 endif()
 

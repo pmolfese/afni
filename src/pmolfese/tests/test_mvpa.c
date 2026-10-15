@@ -33,27 +33,127 @@ static void paired_three_fold_plan( THD_foldplan *p )
    p->train=tr ; p->test=te ; p->sample_test_fold=sample_fold ;
 }
 
+static int svm_test(void)
+{
+   int fail=0,i,j,pred[6],classes[]={0,1},majority[]={0,0,1};char err[1024];
+   float x[]={-1,1},shifted[]={0,2},zero[]={0,0,0},wide[128]={0};
+   double decision[12],saved[12],grid[]={10,.01},nulls[2],losses[6];
+   float cvx[]={-1,1,-1,1,-1,1},null_score[2];int cvclass[]={0,1,0,1,0,1};
+   int groups[]={0,0,1,1,2,2},permuted[6];
+   THD_svm_model *m=NULL;THD_mvpa_workspace *w=NULL;THD_nested_foldplan *nested=NULL;
+   THD_foldplan plan;PERM_set set;int perm[]={0,1,2,3,4,5, 1,0,2,3,4,5};
+   signed char sign[]={1,1,1,1,1,1,1,1,1,1,1,1};
+   m=THD_svm_alloc(6,64,2,err,sizeof(err));CHECK(m,err);
+   CHECK(!THD_svm_predict(m,x,2,1,pred,decision,err,sizeof(err)),"unfitted SVM rejects prediction");
+   CHECK(THD_svm_fit(m,x,classes,2,1,1,1e-10,10000,err,sizeof(err)),err);
+   CHECK(THD_svm_predict(m,x,2,1,pred,decision,err,sizeof(err)),err);
+   CHECK(pred[0]==0 && pred[1]==1 && CLOSE(decision[0],.8) && CLOSE(decision[1],-.8) && CLOSE(decision[3],.8),
+         "native squared-hinge SVM matches analytic w=4C/(1+4C), b=0");
+   CHECK(THD_svm_fit(m,shifted,classes,2,1,1,1e-10,10000,err,sizeof(err)),err);
+   CHECK(THD_svm_predict(m,shifted,2,1,pred,decision,err,sizeof(err)),err);
+   CHECK(CLOSE(decision[1],-16.0/29) && CLOSE(decision[3],24.0/29),
+         "penalized intercept and slope match independent two-variable analytic solution");
+   CHECK(THD_svm_fit(m,zero,majority,3,1,1,1e-10,10000,err,sizeof(err)),err);
+   CHECK(THD_svm_predict(m,zero,3,1,pred,decision,err,sizeof(err)),err);
+   CHECK(pred[0]==0 && CLOSE(decision[0],2.0/7) && CLOSE(decision[1],-2.0/7),
+         "constant patterns with unequal class counts have analytic penalized biases");
+   zero[0]=zero[1]=zero[2]=5;
+   CHECK(THD_svm_fit(m,zero,majority,3,1,100,1e-10,1,err,sizeof(err)),err);
+   CHECK(THD_svm_predict(m,zero,3,1,pred,decision,err,sizeof(err)),err);
+   CHECK(CLOSE(decision[0],5200.0/15601) && CLOSE(decision[1],-5200.0/15601),
+         "identical nonzero patterns at high C use exact constant-pattern reduction");
+   wide[0]=-1;wide[64]=1;
+   CHECK(THD_svm_fit(m,wide,classes,2,64,1,1e-10,10000,err,sizeof(err)),err);
+   CHECK(THD_svm_predict(m,wide,2,64,pred,decision,err,sizeof(err)),err);
+   CHECK(CLOSE(decision[0],.8) && CLOSE(decision[3],.8),"SVM handles p much greater than n and zero-variance redundant features");
+   CHECK(!THD_svm_fit(m,shifted,classes,2,1,1,1e-12,1,err,sizeof(err)) && strstr(err,"did not converge"),
+         "unfinished coordinate descent fails explicitly");
+   CHECK(!THD_svm_predict(m,x,2,1,pred,decision,err,sizeof(err)),"failed SVM refit invalidates old fitted state");
+   CHECK(!THD_svm_fit(m,x,classes,2,1,0,1e-6,10000,err,sizeof(err)),"SVM rejects nonpositive C");
+   CHECK(!THD_svm_fit(m,x,classes,2,1,1,NAN,10000,err,sizeof(err)),"SVM rejects nonfinite tolerance");
+   x[0]=NAN;CHECK(!THD_svm_fit(m,x,classes,2,1,1,1e-6,10000,err,sizeof(err)),"SVM rejects nonfinite predictors");x[0]=-1;
+   THD_svm_free(m);m=NULL;
+   {
+      float multi[]={2,0,-2,0,0,2},probe[]={2,0,-2,0,0,2};int mc[]={0,1,2};
+      m=THD_svm_alloc(3,2,3,err,sizeof(err));CHECK(m,err);
+      CHECK(THD_svm_fit(m,multi,mc,3,2,.5,1e-9,10000,err,sizeof(err)),err);
+      CHECK(THD_svm_predict(m,probe,3,2,pred,decision,err,sizeof(err)),err);
+      for(i=0;i<3;i++)CHECK(pred[i]==i,"one-vs-rest multiclass argmax recovers three separable classes");
+      memcpy(saved,decision,sizeof(double)*9);
+      CHECK(THD_svm_fit(m,multi,mc,3,2,.5,1e-9,10000,err,sizeof(err)),err);
+      CHECK(THD_svm_predict(m,probe,3,2,pred,decision,err,sizeof(err)),err);
+      CHECK(!memcmp(saved,decision,sizeof(double)*9),"repeated SVM fits are byte deterministic");
+      mc[2]=1;CHECK(!THD_svm_fit(m,multi,mc,3,2,.5,1e-9,10000,err,sizeof(err)) && strstr(err,"no class"),"SVM refuses missing one-vs-rest classes");
+   }
+   paired_three_fold_plan(&plan);
+   nested=THD_nested_foldplan_grouped(&plan,groups,0,err,sizeof(err));CHECK(nested,err);
+   w=THD_mvpa_workspace_alloc(&plan,1,2,THD_PREP_FEATURE_ZSCORE,NULL,err,sizeof(err));CHECK(w,err);
+   CHECK(THD_mvpa_classification_set_svm(w,1,1e-9,10000,THD_METRIC_BALANCED_ACCURACY,nested,grid,2,err,sizeof(err)),err);
+   CHECK(!THD_mvpa_run_centroid_cv(&plan,0,cvx,1,cvclass,NULL,w,err,sizeof(err)),"centroid entry point refuses an SVM workspace");
+   CHECK(THD_mvpa_run_classification_cv(&plan,0,cvx,1,cvclass,NULL,w,err,sizeof(err)),err);
+   CHECK(CLOSE(w->score.balanced_accuracy,1),"SVM fold runner scores known separable held-out patterns");
+   for(i=0;i<3;i++)CHECK(w->svm_selected[i]==.01 && w->svm_loss[i*2]==0 && w->svm_loss[i*2+1]==0 &&
+     w->fold_svm_residual[i]<=1e-9 && w->fold_svm_iterations[i]>0,"nested SVM ties choose smaller C and outer fits report verified convergence");
+   memcpy(saved,w->decision,sizeof(saved));memcpy(losses,w->svm_loss,sizeof(losses));
+   cvx[0]=-7;cvx[1]=9;
+   CHECK(THD_mvpa_run_classification_cv(&plan,0,cvx,1,cvclass,NULL,w,err,sizeof(err)),err);
+   CHECK(w->svm_selected[0]==.01 && CLOSE(w->decision[0],7*saved[0]) && CLOSE(w->decision[2],9*saved[2]),
+         "outer held-out feature changes are transformed by unchanged training-only scaling and SVM fit");
+   cvx[0]=-1;cvx[1]=1;
+   cvclass[0]=1;cvclass[1]=0;
+   CHECK(THD_mvpa_run_classification_cv(&plan,0,cvx,1,cvclass,NULL,w,err,sizeof(err)),err);
+   CHECK(w->svm_selected[0]==.01 && CLOSE(w->decision[0],saved[0]) && CLOSE(w->decision[1],saved[1]),
+         "outer held-out class changes cannot affect preprocessing, tuning, or model decisions for that fold");
+   cvclass[0]=0;cvclass[1]=1;
+   memset(&set,0,sizeof(set));set.nobs=6;set.nperm=2;set.perm=perm;set.sign=sign;
+   CHECK(THD_mvpa_run_classification_permutations(&plan,0,cvx,1,cvclass,NULL,
+      THD_METRIC_BALANCED_ACCURACY,&set,permuted,null_score,w,err,sizeof(err)),err);
+   CHECK(!memcmp(saved,w->decision,sizeof(saved)) && !memcmp(losses,w->svm_loss,sizeof(losses)),
+         "SVM permutations restore observed decisions and nested tuning audits exactly");
+   for(i=0;i<2;i++){
+      for(j=0;j<6;j++)permuted[j]=cvclass[perm[i*6+j]];
+      CHECK(THD_mvpa_run_classification_cv(&plan,0,cvx,1,permuted,NULL,w,err,sizeof(err)),err);
+      nulls[i]=w->score.balanced_accuracy;
+      CHECK(CLOSE(nulls[i],null_score[i]),"SVM null scores match explicit complete preprocessing/tuning/model refits");
+   }
+done:
+   THD_svm_free(m);THD_mvpa_workspace_free(w);THD_nested_foldplan_free(nested);return fail;
+}
+
 static int ridge_test(void)
 {
    int fail=0,i;char err[512];
    float x[]={-1,1,3,-3},y[]={8,-1,12,5,16,11,4,-7},prediction[8];
    float wide[]={1,2,3,4,5, 2,1,0,-1,-2, 0,1,0,1,0};
    float wy[]={2,-1, 5,3, -2,4},primal[6],dual[6];
+   double coef[10],intercept[2],primal_coef[10];
    int tr[]={0,1},te[]={2,3},sf[]={-1,-1,0,0};THD_foldplan plan;
    THD_ridge_workspace *r=NULL;THD_mvpa_ridge_workspace *w=NULL;
    r=THD_ridge_alloc(5,5,2,err,sizeof(err));CHECK(r,err);
    CHECK(THD_ridge_fit(r,x,y,2,1,2,2,THD_RIDGE_AUTO,err,sizeof(err)),err);
+   CHECK(THD_ridge_coefficients(r,coef,intercept,err,sizeof(err)),err);
+   CHECK(CLOSE(coef[0],1) && CLOSE(coef[1],1.5) && CLOSE(intercept[0],10) && CLOSE(intercept[1],2),
+         "exported ridge slopes/intercepts match analytic multi-response answers");
    CHECK(THD_ridge_predict(r,x,4,prediction,err,sizeof(err)),err);
    CHECK(CLOSE(prediction[4],13) && CLOSE(prediction[5],6.5) &&
          CLOSE(prediction[6],7) && CLOSE(prediction[7],-2.5),
          "ridge slopes shrink while both unpenalized intercepts match known answers");
    CHECK(THD_ridge_fit(r,wide,wy,3,5,2,0.7,THD_RIDGE_PRIMAL,err,sizeof(err)),err);
    CHECK(THD_ridge_predict(r,wide,3,primal,err,sizeof(err)),err);
+   CHECK(THD_ridge_coefficients(r,primal_coef,intercept,err,sizeof(err)),err);
    CHECK(THD_ridge_fit(r,wide,wy,3,5,2,0.7,THD_RIDGE_DUAL,err,sizeof(err)),err);
    CHECK(THD_ridge_predict(r,wide,3,dual,err,sizeof(err)),err);
+   CHECK(THD_ridge_coefficients(r,coef,intercept,err,sizeof(err)),err);
+   for(i=0;i<10;i++)CHECK(CLOSE(primal_coef[i],coef[i]),"primal/dual exported slopes agree");
+   for(i=0;i<6;i++){
+      int j;double v=intercept[i%2];
+      for(j=0;j<5;j++)v+=wide[(i/2)*5+j]*coef[j*2+i%2];
+      CHECK(CLOSE(v,dual[i]),"exported weights and intercept reconstruct predictions");
+   }
    for(i=0;i<6;i++)CHECK(CLOSE(primal[i],dual[i]),"primal/dual multi-output predictions agree on a rank-deficient wide matrix");
    CHECK(!THD_ridge_fit(r,x,y,2,1,2,0,THD_RIDGE_AUTO,err,sizeof(err)),"zero ridge penalty is rejected");
    CHECK(!THD_ridge_predict(r,x,4,prediction,err,sizeof(err)),"failed refit invalidates the previous ridge model");
+   CHECK(!THD_ridge_coefficients(r,coef,intercept,err,sizeof(err)),"failed ridge refit cannot export stale coefficients");
    fixed_plan(&plan,4,tr,2,te,2,sf);
    w=THD_mvpa_ridge_workspace_alloc(&plan,1,2,THD_PREP_NONE,err,sizeof(err));CHECK(w,err);
    CHECK(THD_mvpa_run_ridge_cv(w,x,1,y,2,NULL,2,err,sizeof(err)),err);
@@ -593,6 +693,6 @@ done:
    THD_mvpa_workspace_free(ws) ;
    THD_centroid_free(cm) ;
    THD_preprocess_free(p) ;
-   if( fail || ridge_test() || nested_ridge_test() || ridge_permutation_test() || ridge_classification_test() || lda_test() ) return 1 ;
+   if( fail || svm_test() || ridge_test() || nested_ridge_test() || ridge_permutation_test() || ridge_classification_test() || lda_test() ) return 1 ;
    puts("PASS thd_mvpa preprocessing, metrics, classifiers, CV, and permutation runner") ; return 0 ;
 }

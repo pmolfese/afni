@@ -48,11 +48,62 @@ or completion state change.
 17. **Shrinkage LDA (Complete)** -- configurable spherical covariance shrinkage
    uses primal/sample-space solves for correlated high-dimensional patterns,
    with training-only fit diagnostics and known-answer stability tests.
-18. **Descriptive Coefficient Maps (Next)** -- expose requested full-data ridge
-   coefficients separately from held-out scores, with feature/response IDs and
-   explicit scaling and interpretation contracts.
-19. **Native Linear SVM (Queued)** -- assess and add a validated native linear
-   margin-based classifier after the current estimators and coefficient outputs.
+18. **Descriptive Coefficient Maps (Complete)** -- opt-in full-data ridge
+   refits export coefficients, intercepts, preprocessing, feature/response IDs,
+   and volume/sparse-surface maps separately from held-out scores.
+19. **Native Linear SVM (Complete)** -- native squared-hinge one-versus-rest
+   classification, grouped training-only C selection, verified convergence,
+   prediction/fold/tuning audits, and fully refitted blocked label inference.
+
+
+20. **Classification and Subject-Summary Audits (Proposed; Next, awaiting user direction)**
+   -- export confusion matrices, per-class recall, and explicit subject/stratum
+   summaries without conflating pooled prediction with population inference.
+21. **Explicit Train/Test Partition Options (Proposed)** -- expose the existing
+   fixed-partition library machinery for prespecified independent test sets.
+22. **Fold-Local Nuisance Adjustment (Proposed)** -- define and implement
+   training-only covariate adjustment, with an explicit scientific target and
+   compatible inference contract.
+23. **Fold-Local Feature Selection (Proposed)** -- select informative features
+   inside training splits, audit their original IDs, and tune feature counts
+   within grouped inner CV.
+24. **Fold-Local PCA (Proposed)** -- fit and apply training-only projections,
+   with nested component-count selection and fully refitted permutation paths.
+25. **Haufe/Activation-Pattern Outputs (Proposed)** -- add descriptive signal
+   patterns with explicit scaling and interpretation contracts alongside
+   existing decoder coefficient outputs.
+26. **Paired Model Comparisons (Proposed)** -- compare models on identical
+   held-out observations; specify and validate a separate null before adding
+   inferential model contrasts.
+27. **Saved-Model Application (Proposed)** -- persist fitted preprocessing,
+   feature definitions, model parameters and labels for validated application
+   to genuinely new datasets.
+
+
+28. **Elastic-Net Regression (Proposed)** -- add sparse, regularized continuous
+   decoding/encoding with nested penalty-strength and mixing-ratio selection.
+29. **Regularized Logistic Regression (Proposed)** -- add L2-regularized binary
+   and multinomial classification with probability-aware scoring and explicit
+   calibration assessment; elastic-net classification penalties are a later
+   extension.
+30. **Partial Least Squares Regression (Proposed)** -- add supervised latent
+   components for single/multiple-target decoding and multi-response encoding,
+   with training-only fitting and nested component-count selection.
+31. **Linear Support-Vector Regression (Proposed)** -- add epsilon-insensitive
+   continuous decoding, with encoding support assessed for computational cost,
+   nested C/epsilon selection and explicit solver convergence.
+32. **Robust Huber Regression (Proposed; Later Priority)** -- add an optional
+   robust loss for continuous decode/encode applications where large response
+   residuals dominate squared-error fits, with nested regularization/loss tuning.
+
+Items 20–32 are proposed scope, not implemented capabilities. Adding them to
+this roadmap does not authorize implementation; obtain user direction before
+starting item 20 and before advancing to each subsequent item.
+
+Development cadence: complete one authorized roadmap item, explain why each
+part matters and its success metric, report what fMRI users can now do, then
+ask whether to proceed to the next item or expand the plan/scope. Completing
+an item does not authorize starting the next one.
 
 ## Implementation Status
 
@@ -60,7 +111,7 @@ This checked-in copy is the living implementation record for the `somemvpa`
 branch. Update it with each completed slice so that design decisions and code do
 not drift apart.
 
-Status as of 2026-10-14:
+Status as of 2026-10-15:
 
 | Slice | Status | Implementation |
 |---|---|---|
@@ -84,6 +135,8 @@ Status as of 2026-10-14:
 | Continuous permutation inference | Complete | Joint blocked target/design-row nulls rerun preprocessing, nested tuning, and ridge fits; identity-inclusive empirical P/Z, spatial BH Q and synchronized max-statistic FWE work for ROI, volume, and sparse surfaces, with undefined-score safeguards and inference audits |
 | Ridge classification | Complete | The shared classification runner uses 0/1 class indicators, multi-output ridge with unpenalized intercepts, and deterministic argmax decisions; fixed/grouped nested penalties, class coverage validation, observed audits and fully refitted blocked label inference work for ROI, volume and sparse surfaces |
 | Diagonal and shrinkage LDA | Complete | `thd_mvpa.[ch]` owns allocation-free repeated LDA fits with pooled training covariance, equal/empirical priors, explicit variance floors, and primal/Woodbury shrinkage solves; shared ROI/volume/surface classification audits and synchronized label inference preserve original sample/node IDs |
+| Descriptive coefficient maps | Complete | `-save_coefficients CPREFIX` adds an independent full-data ridge refit for decode, encode, and ridge classification; coefficient/intercept and preprocessing TSVs identify every predictor/response and map brick, with volume/sparse-surface output and explicit fixed refit penalties for tuned CV |
+| Native linear SVM | Complete | `THD_svm_model` and `-method svm` provide deterministic squared-hinge classification with a penalized intercept, fixed/grouped nested C selection, explicit convergence diagnostics, shared ROI/volume/surface audits and fully refitted blocked label nulls |
 
 ## Purpose
 
@@ -701,6 +754,87 @@ units. Untested fixed-split rows retain NaN predictions. Each response receives
 pooled held-out and per-fold Pearson, Spearman, cross-validated R2, MAE, and
 RMSE scores. No target statistics are estimated from held-out responses.
 
+### Descriptive full-data ridge coefficients (completed 2026-10-15)
+
+Why: predictive scores establish generalization, while descriptive refits let
+users inspect the fitted predictor/response relationships. They answer
+complementary questions and must remain distinct scientific outputs.
+
+| Part | Why are we doing this? | Success metric / validation |
+|---|---|---|
+| Numerical coefficient export | Expose the solver's fitted slopes and unpenalized intercept without duplicating numerical algorithms | Analytic multi-response slopes/intercepts agree; exported primal/dual slopes agree and reconstruct model predictions; failed fits cannot export stale models |
+| Independent full-data refits | Let users request a descriptive model without contaminating held-out estimation or inference | Byte-identical prediction, continuous-result and inference tables, numerically identical score maps with/without exports; unchanged tuned predictions and candidate-loss audits |
+| Spatial maps and identifiers | Locate encoding effects and decoding/class weights while retaining distinct overlapping models | Known-answer volume map values, sparse mesh IDs 0/2/5/9, explicit feature/response-to-map/brick mapping, and identical output values across one/two workers |
+| Scaling and interpretation | Make weights interpretable in their actual predictor/response spaces | Known population-SD scaling and constant-feature flags, sample-centered analytic slopes, full-data run-group centers and sample/group mapping; explicit descriptive labels and no statistic codes |
+| Penalty/output validation | Make the refit reproducible and protect held-out outputs | Tuned CV requires explicit positive `-coef_lambda`; fixed penalties default to `-lambda`; invalid modes/penalties, file collisions, and existing coefficient outputs are rejected |
+
+`-save_coefficients CPREFIX` runs a separate final descriptive pass after the
+observed CV/permutation outputs have been finalized. It fits preprocessing and
+ridge on **all canonical samples**, pooled across CV strata, without producing
+full-data performance scores. The numerical library adds
+`THD_ridge_coefficients()` to export `[feature][response]` slopes and response
+intercepts in the exact predictor space passed to the solver.
+
+`-coef_lambda L` sets a finite positive refit penalty, with objective
+`sum_squared_error + L * sum_squared_slopes`; intercepts are unpenalized.
+For fixed CV penalties it defaults to `-lambda`. With `-lambda auto` or
+`-lambda_grid`, an explicit `-coef_lambda` is mandatory. No outer-fold penalty
+is silently reused or averaged, and this option never affects CV tuning.
+Full-data penalty selection is outside this slice.
+
+Outputs:
+
+- `CPREFIX.coefficients.tsv` records spatial unit, feature and response IDs,
+  slope, response intercept, refit penalty, total sample count, map prefix and
+  zero-based map brick. Neural IDs are `voxel_INDEX` or `node_MESHID`; named
+  numeric columns and class labels are preserved. Classification responses
+  are the existing 0/1 class indicators, with scores that are not probabilities.
+- `CPREFIX.preprocessing.tsv` records feature centers/scales and constant
+  flags, or each full-data subject/run group mean and original sample/group
+  membership. Weights satisfy `y = intercept + preprocessed_X * coefficient`.
+  `feature_zscore` uses population SD and sets constant features to zero;
+  responses stay in their original units. `sample_center` subtracts each
+  sample's mean across that unit's predictors; `run_center` subtracts the
+  recorded group feature means. These are transformed-space weights, not
+  automatically converted raw-space weights.
+- Encoding without searchlights writes `CPREFIX` with one coefficient brick
+  per design column and `REFIT_INTERCEPT`, placing values at response
+  voxels/nodes. Nonoverlapping ROI fits share the same map; voxel encoding
+  avoids creating a dataset for every singleton response.
+- Decoding and ridge classification write `CPREFIX.unit_ID` per ROI or
+  searchlight, with one coefficient brick per target/class at neural feature
+  locations. Searchlight encoding also keeps one dataset per unit, with design
+  coefficient bricks and an intercept. Overlapping neighborhoods are never
+  merged or center-painted. Surface map names end in `.niml.dset` and retain
+  sparse mesh IDs. Values outside a unit are zero; use the TSV feature/response
+  list to distinguish excluded locations from fitted zero weights.
+
+Map labels begin with `REFIT_`, carry no inference statistic codes, and retain
+command history. Searchlight exports can produce many full-domain datasets
+and large tables, so they remain opt-in. Coefficient and score dataset paths
+must differ, audit paths cannot collide, and existing outputs respect AFNI's
+overwrite policy.
+
+What fMRI users can now do: inspect how each external design variable weights
+neural responses, or how neural features contribute to predicting continuous
+targets and categorical class indicators, while retaining their original
+held-out validation and inference. These predictive weights depend on
+regularization, scaling and correlations among predictors. They are **not
+activation/Haufe maps, independent voxel effects, or coefficient significance
+tests**. Saved-model application and Haufe transforms remain future scope.
+
+Example additions to an existing ridge analysis:
+
+```text
+-save_coefficients descriptive_weights
+# With tuned CV, also specify a descriptive refit penalty:
+-coef_lambda 1
+```
+
+Validation: `thd_mvpa:unit`, `3dMVPA:coefficients`, and the extended
+`3dMVPA:surface-searchlight` test cover the contracts above; the existing
+classification and ridge integration suites preserve prior behavior.
+
 ### Additional classifiers
 
 Ridge classification is implemented with `-mode classify -method ridge`.
@@ -799,17 +933,117 @@ ROI/volume/sparse-surface CLI tests cover both estimators, explicit priors,
 restored prediction/fold audits, exact blocked surface p-values, and worker-count
 reproducibility. No new library module or external runtime dependency is added.
 
-After centroid, ridge, and LDA:
+### Native linear SVM (completed 2026-10-15)
 
-1. native linear L2 SVM with one-vs-rest multiclass composition;
-2. multinomial ridge logistic regression if calibrated scores are needed.
+Why: a margin-based classifier gives fMRI users another explicit predictive
+model for categorical condition information, while retaining the same sample,
+CV, spatial and inference definitions as the other classification methods.
+The implementation is native C in `thd_mvpa.[ch]`; it adds no external runtime,
+model format, library module, kernel or saved-model application path.
 
-Keep the initial SVM linear. Kernels, real-time support, SVM-light model
-compatibility, and transductive modes are out of scope.
+| Part | Why are we doing this? | Success metric / validation |
+|---|---|---|
+| Native squared-hinge solver | Provide a reproducible margin-based estimator with an explicit objective | Analytic symmetric margins, shifted-input slope/intercept solution, unequal-class constant-pattern solution, wide/rank-deficient matrices, and three-class argmax tests pass |
+| Convergence and constant-pattern reduction | Prevent unfinished optimization from being reported as a valid scientific result, and handle flat brain regions efficiently | Every successful class fit passes its final absolute projected-gradient tolerance; insufficient sweeps fail and invalidate the model; identical nonzero patterns at large C match a closed-form solution in one step |
+| Training-only fitting and grouped C selection | Choose regularization without using outer test patterns or labels | Perturbing outer held-out features/labels leaves the corresponding training transformation and selected model unchanged; tied inner scores select the smaller C; missing inner training classes fail clearly |
+| Spatial output, decisions and audits | Make SVM results inspectable in the existing AFNI workflow | ROI scores, analytic volume margins (40/41), multiclass decision columns, selected C/candidate losses and solver diagnostics pass; sparse surface maps retain mesh IDs 0/2/5/9 |
+| Fully refitted blocked nulls | Test the actual prediction procedure, including tuning, and preserve the observed scientific result | Null scores match explicit complete refits; exact blocked fixtures give PVAL/PFWE=.25; prediction/fold/tuning tables restore byte exactly after nulls; maps and audits agree across one/two workers |
 
-Later additions may include elastic net and sparse encoding/decoding, but only
-after nested-CV behavior and high-dimensional numerical stability are covered
-by tests.
+Use `-mode classify -method svm`. Each class has a one-versus-rest binary
+problem with signs +1 for that class and -1 for every other class:
+
+```text
+minimize  0.5 * (sum(weight^2) + intercept^2)
+          + C * sum(max(0, 1 - sign * (X*weight + intercept))^2)
+```
+
+The intercept is **penalized**, equivalent to an appended constant feature of
+one. The loss is a sum over training samples, not a sample-count-normalized
+mean; no class weighting is applied. The default `-scale feature_zscore`
+fits predictor means/population SD inside the training split. All existing
+scaling modes remain available with their original training-only contracts.
+Raw class margins use deterministic argmax; exact ties select the first
+encoded class. Margins are not probabilities or calibrated confidence values.
+
+`THD_svm_alloc/fit/predict/free()` own reusable per-worker model storage.
+The solver uses deterministic cyclic dual coordinate descent with
+nonnegative dual variables, diagonal term `1/(2*C)`, and maintained primal
+weights/intercepts. No kernel/Gram matrix or per-fit allocation is needed.
+After each sweep it recomputes every projected dual gradient using the final
+weights. It accepts the model only when the largest absolute residual across
+samples/classes is at most `-svm_tol` (default 1e-6, allowed [1e-12,1e-2]).
+`-svm_max_iter` limits sweeps per class (default 10000); a failure invalidates
+the model and reports the fold, class and remaining residual. Increasing the
+limit, rescaling inputs or reducing C can address difficult fits.
+
+Identical training patterns have an exact scalar reduction. With
+`L = 1 + sum(pattern^2)`, the class margin is
+`(npositive - nnegative) / (n + 1/(2*C*L))`, and its minimum-norm augmented
+weight is `[pattern,1] * margin/L`. Both signs are present, so the solution
+lies within the quadratic hinge region. This handles flat regions without
+slow cancellation of large opposing dual variables, while checking the same
+optimality residual.
+
+`-svm_c C` supplies a fixed finite positive cost (default 1).
+`-svm_c auto` uses the candidate grid 0.01,0.1,1,10,100;
+`-svm_c_grid C1,C2,...` supplies distinct positive candidates and also enables
+tuning. A numeric `-svm_c` cannot accompany a grid. Larger C gives margin
+violations more weight relative to regularization; exact validation ties
+choose the **smallest C**. Numerical precision and convergence checks apply
+to every candidate rather than silently dropping failed fits.
+
+Grouped tuning reuses `THD_nested_foldplan`, `-inner_cv_column` (default outer
+CV grouping column) and `-inner_cv_k`. Each inner fold is restricted to the
+outer training rows. It refits preprocessing and SVM from scratch and pools
+held-out inner predictions. Selection minimizes `1-accuracy` or
+`1-balanced_accuracy`, matching the chosen primary `-metric`. Every outer
+and inner training set must contain all classes. The training-only model is
+then refitted using the selected C before predicting the outer test rows.
+
+The existing prediction audit retains one decision column per class, original
+sample metadata and spatial IDs. Fold audits append:
+
+```text
+C  InnerNFold  InnerLoss  SolverIterations  SolverResidual
+```
+
+Fixed fits have zero inner folds and NaN inner loss. Solver diagnostics are
+the largest sweep count and final residual over that outer fold's binary
+class models. Tuned runs always write `PREFIX.tuning.tsv` with unit, outer
+fold/stratum, inner fold count, candidate C, pooled loss and selection flag.
+All preprocessing, C selection and fits repeat for each synchronized blocked
+label permutation; the observed run is restored afterward. The existing
+PVAL/Z/Q/FWE maps and correction-family definitions are retained.
+
+Example additions to a classification command:
+
+```text
+-method svm -svm_c 1
+# Or grouped training-only cost selection:
+-method svm -svm_c auto
+```
+
+What fMRI users can now do: test whether held-out task conditions can be
+predicted from ROI patterns or volume/geodesic surface neighborhoods using
+a native linear SVM; inspect the class margins and fitted penalty for each
+fold; and obtain blocked permutation inference for the complete analysis.
+The same metadata and spatial definitions can be reused when running the
+other estimators. Calibrated probabilities, kernels, class weighting, SVM
+coefficient exports and saved-model application are outside this slice.
+`-save_coefficients` remains ridge-only, preserving item 18's contract.
+
+Validation: all six MVPA gates pass (`thd_mvpa:unit`, classification, ridge,
+coefficient, SVM and surface integration). Both CMake and Make continue to
+compile the existing `thd_mvpa` source; no new build dependency is introduced.
+Roadmap items 1–19 are complete. Items 20–32 are proposed expansions; item 20
+is next pending user direction. Further implementation follows the development
+cadence recorded at the top of this plan.
+
+Estimator proposals 28–32 cover elastic-net regression, regularized logistic
+classification, PLS, linear SVR and Huber regression; see Phase 6 for their
+mode-specific contracts and acceptance metrics. These remain proposals, not
+implemented capabilities. Kernels, real-time support, legacy SVM model
+compatibility and transductive modes remain outside current scope.
 
 ## Mode-Specific Behavior
 
@@ -920,7 +1154,8 @@ Searchlight workers own independent reusable ridge workspaces; ordered audits
 are deterministic across thread counts.
 
 Continuous permutation inference is implemented as described below.
-Descriptive full-data coefficient maps remain queued.
+Descriptive full-data coefficient maps are implemented with
+`-save_coefficients`, as described above.
 
 This distinction prevents encoding from being forced into a decoding-shaped
 output. Optional full-data refit coefficients may be written as one map per
@@ -1326,26 +1561,146 @@ Current Phase 2 progress:
 6. [x] Add diagonal and shrinkage LDA, training-only covariance/prior fits,
    explicit floors, high-dimensional solves, fold diagnostics, and full label
    nulls through the existing classification runner.
-7. [ ] Add native linear SVM if still scientifically useful.
+7. [x] Add native linear squared-hinge SVM, deterministic one-versus-rest
+   decisions, verified convergence, grouped nested C selection, fold/tuning
+   diagnostics, and fully refitted blocked label inference.
 
 ### Phase 4: encoding
 
 1. [x] Add voxelwise ridge encoding using the multi-output solver.
-2. [ ] Write per-regressor descriptive refit coefficient maps when requested.
+2. [x] Write requested descriptive full-data ridge coefficient maps, with
+   feature/response IDs, intercepts, explicit preprocessing and refit penalties,
+   and independent CV/inference outputs.
 3. [x] Add ROI/volume/surface searchlight pattern prediction.
 4. [x] Add encoding prediction and fold tables with response voxel/node IDs.
 5. [x] Add encoding-appropriate joint design-row inference for exchangeable
    samples; temporal/residual nulls require separate future contracts.
 
-### Phase 5: advanced features
+### Phase 5: proposed roadmap expansion (items 20–27)
 
-- multi-target summaries;
-- nuisance residualization;
-- fold-local feature selection and PCA;
-- elastic net;
-- model comparison;
-- interpretable activation/Haufe maps;
-- saved-model application to genuinely new datasets.
+The user approved adding the following proposals on 2026-10-15. Implementation
+has not started. Each slice must preserve existing CV/inference behavior,
+record its validation evidence, and conclude with what fMRI users can now do
+and how it helps their analyses. Prompt the user before the next slice.
+
+| Item | Why are we doing this? | Completion metric | Intended benefit for fMRI users |
+|---|---|---|---|
+| 20. Classification and subject-summary audits | Reveal condition confusions and subject differences hidden by pooled performance | Exported confusion matrices reproduce ACC/BACC; per-class recall matches known answers; subject summaries match independent per-subject runs; unequal sample counts have an explicit weighting contract | Inspect which conditions are confused and how prediction varies across subjects/strata |
+| 21. Explicit train/test partitions | Expose existing fixed-partition support for a prespecified independent test set | Only designated training rows affect preprocessing, tuning and fitting; training-only rows retain no held-out predictions; incompatible partition/tuning designs fail clearly | Evaluate a model on an explicitly reserved test set without inventing CV groups |
+| 22. Fold-local nuisance adjustment | Assess prediction after accounting for specified motion, age, site or other covariates | Known confound-only fixtures lose predictable nuisance signal while independent genuine signal remains; held-out perturbations cannot change fitted adjustments; each supported inference path matches its stated null | Ask a clearly defined predictive question after specified covariate adjustment |
+| 23. Fold-local feature selection | Retain informative features within larger patterns using a validated selection procedure | Selection uses training rows exclusively; selected voxel/node IDs are audited; feature-count tuning remains nested; permutations rerun selection | Reduce irrelevant features while retaining an inspectable mapping to the original neural domain |
+| 24. Fold-local PCA | Provide controlled dimensionality reduction for correlated, high-dimensional patterns | Known projection/reconstruction checks pass; components and component-count selection use training data only; every permutation refits the projection | Model lower-dimensional pattern structure with explicit component diagnostics |
+| 25. Haufe/activation-pattern outputs | Describe signal represented by a decoder using an explicit transformation beyond raw predictive weights | Synthetic correlated-feature examples recover expected patterns; scaling, covariance estimation and response conventions are specified; descriptive outputs stay separate from coefficient significance and held-out scores | Inspect descriptive neural signal patterns under a documented interpretation contract |
+| 26. Paired model comparisons | Compare estimators or encoding designs using identical held-out observations | Paired score differences match independent calculations; sample/fold alignment is checked; any inferential extension has a separately specified null and null-calibration tests | Compare predictive performance on the same evaluation data |
+| 27. Saved-model application | Apply a frozen fitted model to genuinely new data | Saved/reloaded predictions agree; preprocessing and feature order are preserved; incompatible feature domains, labels, dimensions and model versions fail clearly; applying the model never refits it | Reuse a validated model on new samples with a reproducible feature/preprocessing contract |
+
+#### Starting point and boundaries
+
+- Item 20 builds on existing internal confusion matrices/per-class recall and
+  fold stratum metadata. These library capabilities are not yet dedicated CLI
+  exports. Pooled sample scores, subject-level summaries and population
+  inference must remain distinct; item 20 adds reporting, not a group test.
+- Item 21 exposes `THD_foldplan_fixed()`, already implemented and unit tested
+  in `thd_crossval.[ch]`. It must preserve the existing distinction between
+  training-only rows and scored held-out rows.
+- Item 22 must first define which predictors and/or responses are adjusted,
+  which covariates are available at application time, and what scientific
+  quantity is being predicted. Whole-dataset residualization is not a
+  substitute for fitting the adjustment inside every applicable training
+  split. Existing label/row permutations must not be assumed valid for a new
+  nuisance-adjusted null without justification and validation.
+- Items 23 and 24 are separate slices. Define their order relative to scaling
+  and nuisance adjustment, training-only selection/projection, nested tuning,
+  permutation refits and feature/component audit schemas before coding.
+- Item 25 extends interpretation outputs; it must not relabel raw weights as
+  activation patterns or imply coefficient/activation significance. Specify
+  the applicable estimators and descriptive full-data versus fold-local
+  covariance contract explicitly.
+- Item 26 starts with aligned descriptive comparisons. Sharing folds and
+  permutation slots alone does not establish a valid equal-performance null;
+  inference requires a separately defined scientific contrast.
+- Item 27 requires a versioned model/feature/preprocessing contract. Define
+  supported estimators and spatial analyses before implementing persistence;
+  a coefficient map alone is not a complete saved model.
+
+#### Deferred scope requiring a separate proposal
+
+Multi-target summary/family definitions, population inference across subjects,
+class weighting, compact beta-series input, temporal/residual nulls and
+estimators beyond proposals 28–32 remain deferred. Adding those proposals
+does not authorize implementation or imply support for general probability
+calibration across all classifiers. Existing within-subject folds and pooled
+prediction maps do not provide a dedicated population-inference workflow.
+
+### Phase 6: proposed estimator expansion (items 28–32)
+
+The user approved adding these model proposals on 2026-10-15. Item 20 remains
+next; this phase does not reorder or start implementation. Huber regression
+has its own item so its scientific scope and validation can be approved
+separately from linear SVR. All implementations remain native and use the
+existing AFNI sample, spatial, grouped CV and inference infrastructure.
+
+| Item / mode | Why are we doing this? | Completion metric | Intended benefit for fMRI users |
+|---|---|---|---|
+| 28. Elastic-net regression / decode, encode | Combine shrinkage with sparse predictor selection for many correlated neural or stimulus features | Known sparse/correlated fixtures and solver optimality checks pass; penalty strength and L1/L2 mixing ratio are selected inside grouped inner CV; per-response CV-R2/MAE and selected original feature IDs are audited | Identify a sparse predictive subset of voxels or design variables while retaining held-out validation |
+| 29. Regularized logistic regression / classify | Model binary/multiclass outcomes directly and provide class probabilities alongside decisions | Known-answer binary/multinomial fits, stable probability normalization and nested penalty selection pass; held-out log loss, Brier score, ACC/BACC and calibration assessment are available; any fitted calibration uses training data only | Evaluate class probabilities and probability-sensitive performance for categorical fMRI prediction |
+| 30. PLS regression / decode, encode | Model predictor/response relationships through a small supervised latent space, including correlated multiple responses | Known latent-factor/projection and prediction fixtures pass; component fitting and count selection use training rows only; component-count tuning is nested; single/multiple-response scores and component diagnostics are audited | Predict behavioral targets or neural response patterns through lower-dimensional shared structure |
+| 31. Linear SVR / decode first; encode subject to cost assessment | Compare epsilon-insensitive loss with squared-error regression, allowing errors within an explicit tolerance | Analytic solver/convergence checks and nested C/epsilon selection pass; any additional loss/penalty choices have explicit contracts; paired held-out MAE/RMSE matches independent calculations | Test a different error-tolerance model for continuous behavioral prediction, with possible voxelwise encoding after resource validation |
+| 32. Huber regression / decode, encode; later priority | Reduce domination of the fit by unusually large response residuals in appropriate applications | Known robust-fit fixtures and convergence checks pass; injected-outlier tests demonstrate expected resistance while clean-data prediction is checked; regularization and Huber threshold tuning remain nested | Assess continuous prediction with a documented robust residual loss |
+
+#### Model-specific scope and interpretation
+
+- Keep ridge as the reference baseline. New models must support the same
+  grouped generalization definitions, training-only preprocessing and audit
+  identities. Evaluate performance on identical held-out observations; no
+  model is assumed to improve prediction merely because it is more flexible.
+- Item 28 starts with independent per-response elastic-net fits, including
+  per-voxel encoding. Sparse coefficient selection describes predictive
+  selection, not independent voxel activation or coefficient significance.
+  A multitask penalty encouraging shared predictor selection across responses
+  is a separate extension requiring an explicit scientific assumption and
+  acceptance criteria; it is not silently substituted for independent fits.
+- Item 29 starts with L2-regularized binary and multinomial logistic models.
+  Define class coding, intercept treatment, penalty normalization and scoring
+  before coding. Probability output alone does not establish calibration.
+  Define multiclass Brier/log-loss conventions and any nested calibration
+  protocol explicitly. Elastic-net logistic penalties can be proposed later.
+- Item 30 uses supervised PLS regression, distinct from item 24's unsupervised
+  PCA. Specify the exact PLS variant, predictor/response centering and scaling,
+  deflation, component/rank limits and multi-response objective. Joint encoding
+  models introduce a shared response structure; their fit units and covariance
+  domain must be explicit. Test across voxelwise versus pattern use cases
+  rather than assuming these are interchangeable analyses.
+- Item 31 is a regression estimator, distinct from the existing classification
+  SVM. Specify its epsilon-insensitive objective, intercept treatment, penalty
+  normalization, target units, multi-response behavior and convergence rule.
+  First support decoding; assess the runtime/memory cost of separate fits over
+  many encoding voxels before committing to encoding support.
+- Item 32 requires a stated Huber loss/scale convention, intercept and penalty
+  treatment, convergence diagnostics and response-wise behavior. It addresses
+  residual outliers; it is not a replacement for nuisance adjustment or input
+  quality control. Limit initial scope to documented continuous-response cases.
+
+#### Shared acceptance gates
+
+1. Known-answer and independent numerical checks, high-dimensional/collinear
+   and constant-feature cases, and explicit failure on nonconvergence.
+2. Outer held-out perturbation tests and grouped nested hyperparameter tests
+   showing that preprocessing, selection and model fitting use training rows
+   only. Report candidate losses, selected settings and solver diagnostics.
+3. ROI, volume and sparse-surface prediction/audit validation for each supported
+   mode, with deterministic results across worker counts.
+4. Define the scientific null and score direction for each new model/metric.
+   Supported permutations must refit preprocessing, hyperparameter selection
+   and models, then restore observed audits. Probability-sensitive metrics
+   require their own validated inference path before being advertised there.
+5. Keep predictive scores, descriptive coefficients and activation-pattern
+   interpretations distinct. New estimators do not automatically inherit
+   item 18's coefficient-export contract or item 27's model-file support;
+   explicitly implement and validate compatibility before exposing it.
+6. Preserve existing estimator outputs and complete the relevant regression
+   tests. Report measured benefits, limitations and what fMRI users can now do,
+   then prompt before advancing to the next item or expanding scope.
 
 ## Initial Command Surface
 

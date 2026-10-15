@@ -35,6 +35,22 @@
 #define THD_LDA_FORM_DUAL                2
 
 typedef struct THD_lda_model THD_lda_model;
+typedef struct THD_svm_model THD_svm_model;
+
+/* Native one-vs-rest linear squared-hinge SVM. Each binary problem minimizes
+   .5*(||weight||^2+intercept^2) + C*sum(max(0,1-y*decision)^2).
+   Intercept is penalized (constant feature = 1); no class weighting.
+   Cyclic dual coordinate descent starts from zero and verifies max absolute
+   projected dual gradient <= tolerance, or fails without a usable model.
+   Tolerance is in [1e-12,1e-2]. Identical-pattern fits use an exact scalar reduction. No allocations during fit/predict. Raw argmax
+   decisions are not probabilities; exact ties select the lowest class ID. */
+extern THD_svm_model *THD_svm_alloc(int max_sample,int max_feature,int nclass,
+   char *err,int nerr);
+extern int THD_svm_fit(THD_svm_model *m,const float *x,const int *classes,
+   int n,int p,double cost,double tolerance,int max_iterations,char *err,int nerr);
+extern int THD_svm_predict(const THD_svm_model *m,const float *x,int n,int p,
+   int *prediction,double *decision,char *err,int nerr);
+extern void THD_svm_free(THD_svm_model *m);
 
 /* Pooled within-class covariance uses n-nclass degrees of freedom (must be
    positive). Diagonal mode floors each variance at variance_floor*reference.
@@ -91,6 +107,11 @@ extern int THD_ridge_fit(THD_ridge_workspace *w, const float *x, const float *y,
                          char *err, int nerr);
 extern int THD_ridge_predict(const THD_ridge_workspace *w, const float *x,
                              int n, float *prediction, char *err, int nerr);
+/* Export slopes [feature][response] and unpenalized intercept [response]
+   in the exact predictor space supplied to fit: y = intercept + X*coef.
+   Caller provides p*q and q doubles. No preprocessing inversion is implied. */
+extern int THD_ridge_coefficients(const THD_ridge_workspace *w,
+   double *coef, double *intercept, char *err, int nerr);
 extern void THD_ridge_free(THD_ridge_workspace *w);
 
 typedef struct {
@@ -166,6 +187,13 @@ typedef struct {
    THD_centroid_model *centroid ;
    THD_mvpa_ridge_workspace *ridge_cv ; /* NULL unless ridge configured */
    THD_lda_model *lda ; /* NULL unless LDA configured */
+   THD_svm_model *svm; /* NULL unless native linear SVM configured */
+   double svm_cost,svm_tolerance;
+   int svm_max_iter,svm_metric,svm_ngrid;
+   const THD_nested_foldplan *svm_nested; /* borrowed */
+   double *svm_grid,*svm_selected,*svm_loss; /* [candidate], [fold], [fold][candidate] */
+   double *fold_svm_residual; /* maximum final KKT residual over classes */
+   int *fold_svm_iterations,*svm_inner_train,*svm_inner_test;
    double lda_shrinkage, lda_variance_floor;
    int lda_empirical_prior;
    double *fold_covariance_scale, *fold_variance_floor; /* LDA [fold] */
@@ -206,9 +234,15 @@ extern int THD_mvpa_classification_set_ridge(THD_mvpa_workspace *w,
    const double *grid, int nlambda, char *err, int nerr);
 extern int THD_mvpa_classification_set_lda(THD_mvpa_workspace *w, int mode,
    double alpha, double variance_floor, int empirical_prior, char *err, int nerr);
-/* Default workspaces run centroid; configured workspaces run ridge or LDA.
-   distance selects the centroid metric and is unused by ridge/LDA (pass zero).
-   Results use the existing classification workspace fields for either model.
+/* Optional grouped nested C selection minimizes 1-ACC/BACC over pooled inner
+   held-out rows. Ties select smallest C. Every inner training set needs all
+   classes. Preprocessing/tuning/fits repeat under every label permutation. */
+extern int THD_mvpa_classification_set_svm(THD_mvpa_workspace *w,double cost,
+   double tolerance,int max_iterations,int metric,
+   const THD_nested_foldplan *nested,const double *grid,int ngrid,char *err,int nerr);
+/* Default workspaces run centroid; configured workspaces run ridge, LDA or SVM.
+   distance selects the centroid metric and is unused by ridge/LDA/SVM (pass zero).
+   Results use the existing classification workspace fields for all estimators.
    Permutations require bijections, +1 signs and an identity in slot zero;
    preprocessing, tuning and fitting repeat, and observed results are restored. */
 extern int THD_mvpa_run_classification_cv(const THD_foldplan *plan,
