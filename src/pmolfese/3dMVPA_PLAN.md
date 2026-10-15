@@ -29,11 +29,30 @@ or completion state change.
 11. **`thd_rsa.[ch]` RDM Construction Extraction (Complete)** -- the coherent
    RSA science library now owns condition centering, subject RDM construction,
    triangle conversion, mean RDMs, and reusable second-order RDM workspaces.
-12. **Ridge Decoding and Encoding (Next)** -- resume MVPA with primal/dual
-   multi-output ridge and continuous held-out prediction using the existing
-   fold runner.
-13. **Nested Tuning and Expanded Estimators (Queued)** -- add grouped lambda
-   selection, LDA, and other validated estimators after the ridge path is stable.
+12. **Ridge Decoding and Encoding (Complete)** -- primal/dual multi-output
+   ridge, training-only preprocessing/intercepts, continuous prediction audits,
+   and ROI/volume/surface decoding plus voxel/pattern encoding are implemented.
+13. **Nested Grouped Lambda Selection (Complete)** -- grouped inner folds are
+   restricted to each outer training set; preprocessing is refitted inside
+   every split, with candidate losses and selected penalties in audit tables.
+14. **Continuous Permutation Inference (Complete)** -- explicit blocked target
+   or design-row nulls refit preprocessing, tuning, and models, with empirical
+   P/Z/Q/FWE outputs for decoding and voxel/pattern encoding.
+15. **Ridge Classification (Complete)** -- 0/1 class-coded ridge responses,
+   deterministic multiclass argmax decisions, grouped lambda selection,
+   prediction/fold/tuning audits, and fully refitted label permutations share
+   the existing classification runner and solver.
+16. **Diagonal LDA (Complete)** -- fold-local class means and pooled diagonal
+   variance, explicit class priors, and relative variance floors share the
+   classification audits and fully refitted blocked nulls.
+17. **Shrinkage LDA (Complete)** -- configurable spherical covariance shrinkage
+   uses primal/sample-space solves for correlated high-dimensional patterns,
+   with training-only fit diagnostics and known-answer stability tests.
+18. **Descriptive Coefficient Maps (Next)** -- expose requested full-data ridge
+   coefficients separately from held-out scores, with feature/response IDs and
+   explicit scaling and interpretation contracts.
+19. **Native Linear SVM (Queued)** -- assess and add a validated native linear
+   margin-based classifier after the current estimators and coefficient outputs.
 
 ## Implementation Status
 
@@ -41,7 +60,7 @@ This checked-in copy is the living implementation record for the `somemvpa`
 branch. Update it with each completed slice so that design decisions and code do
 not drift apart.
 
-Status as of 2026-10-13:
+Status as of 2026-10-14:
 
 | Slice | Status | Implementation |
 |---|---|---|
@@ -60,7 +79,11 @@ Status as of 2026-10-13:
 | Blocked permutation inference | Complete | `-nperm`, `-seed`, and explicit `-permute_within` blocks drive identity-inclusive label nulls, empirical above-chance/P/Z/Q maps, and synchronized max-statistic FWE |
 | Shared surface domains | Complete | `THD_surface_domain_match()` compares dense and sparse node rows exactly; `THD_copy_surface_node_domain()` preserves sparse output node IDs without replacing result labels/statistics; both programs use the shared helpers |
 | RSA RDM construction extraction | Complete | `thd_rsa.[ch]` owns dataset-independent condition centering/RDMs, exact triangle conversion, descriptive mean RDMs, and reusable second-order workspaces; direct known-answer, full oracle, and 22-subject real-data replay tests preserve numerical behavior exactly |
-| Ridge decoding and encoding | Next | Add regularized continuous prediction without changing sample, fold, spatial, or inference contracts |
+| Ridge decoding and encoding | Complete | `THD_ridge_workspace` and `THD_mvpa_ridge_workspace` provide primal/dual multi-output ridge, unpenalized intercepts, fold-local preprocessing, held-out training-mean baselines, and per-response/fold metrics; CLI decode/encode works for ROI, volume, and sparse-surface domains |
+| Nested grouped lambda selection | Complete | `THD_nested_foldplan` in `thd_crossval.[ch]` constructs compact inner grouped plans; `thd_mvpa.[ch]` reuses tuning buffers, normalizes inner errors per response, refits selected models, and reports all candidate losses plus selected penalties |
+| Continuous permutation inference | Complete | Joint blocked target/design-row nulls rerun preprocessing, nested tuning, and ridge fits; identity-inclusive empirical P/Z, spatial BH Q and synchronized max-statistic FWE work for ROI, volume, and sparse surfaces, with undefined-score safeguards and inference audits |
+| Ridge classification | Complete | The shared classification runner uses 0/1 class indicators, multi-output ridge with unpenalized intercepts, and deterministic argmax decisions; fixed/grouped nested penalties, class coverage validation, observed audits and fully refitted blocked label inference work for ROI, volume and sparse surfaces |
+| Diagonal and shrinkage LDA | Complete | `thd_mvpa.[ch]` owns allocation-free repeated LDA fits with pooled training covariance, equal/empirical priors, explicit variance floors, and primal/Woodbury shrinkage solves; shared ROI/volume/surface classification audits and synchronized label inference preserve original sample/node IDs |
 
 ## Purpose
 
@@ -520,6 +543,12 @@ Hyperparameter selection must use nested grouped CV. Inner folds are generated
 only from the current outer training set. No preprocessing or tuning decision
 may inspect the outer test data.
 
+Implemented by `THD_nested_foldplan_grouped()`: each outer fold owns an inner
+leave-group-out or balanced grouped K-fold plan with compact indexes into that
+outer fold's training list. Other outer strata and held-out samples are never
+included. These plans are shared by worker workspaces and reused across spatial
+units. `-show_folds` displays both nesting levels with original sample indexes.
+
 ## Leakage-Safe Preprocessing
 
 Every learned transformation follows the same contract:
@@ -614,14 +643,14 @@ not allocate model or prediction buffers.
 
 ### First general solver: ridge
 
-Ridge regression should be the first shared fitted estimator because one
-implementation supports all three modes:
+Ridge regression is implemented in `thd_mvpa.[ch]` for continuous decoding,
+encoding, and class-coded classification:
 
 - classification through one-hot targets and argmax prediction;
 - scalar or multivariate continuous decoding;
 - multi-output encoding.
 
-Implement both numerical forms:
+Both numerical forms are implemented:
 
 ```text
 primal: (X'X + lambda I)^-1 X'Y       when predictors <= samples
@@ -632,14 +661,148 @@ The dual formulation is essential for neuroimaging decoding, where voxels
 often greatly outnumber samples. Encoding commonly has a small external design
 and many voxel responses, allowing one factorization to predict every voxel.
 
+`THD_ridge_alloc()` reserves the smaller Gram-matrix factor and multi-output
+coefficient/scratch storage. `THD_ridge_fit()` chooses primal or dual form for
+the active dimensions, centers predictors and responses on training rows,
+and shares one double-precision Cholesky factor across all response columns.
+The objective is `sum((Y - intercept - X B)^2) + lambda * sum(B^2)`; the
+intercept is not penalized. Lambda must be finite and strictly positive.
+The CLI defaults to fixed `-lambda 1`. `-lambda auto` enables nested grouped
+selection over `0.01,0.1,1,10,100`; `-lambda_grid L1,L2,...` supplies a distinct
+positive candidate set and also enables tuning. A numeric lambda and a grid
+cannot be combined. `-inner_cv_column` defaults to the outer `-cv_column`;
+`-inner_cv_k K` optionally balances whole groups instead of leaving each group
+out. Each outer training set must contain at least two inner groups, or at
+least K for grouped K-fold. Thus ordinary two-run leave-run-out CV cannot tune
+on Run without another explicitly chosen inner grouping unit.
+
+Selection minimizes the mean of response-wise `inner SSE / inner baseline SSE`,
+where both sums pool inner held-out rows and the baseline uses each inner
+training response mean. Responses with zero baseline SSE are excluded. This
+gives each informative response equal weight and keeps response units from
+dominating selection. A single penalty is chosen per outer fold/spatial unit
+and shared across outputs. Exact loss ties choose the largest penalty. If all
+responses are uninformative, the same deterministic choice is recorded with
+zero valid responses and NaN losses. The selected model and preprocessing are
+then refitted on all outer training rows.
+
+`PREFIX.tuning.tsv` records every outer-fold candidate loss, informative
+response count, inner-fold count, and selection indicator. Fold-score audits
+append `Lambda`, `InnerNFold`, `InnerNValid`, and selected `InnerLoss`. Fixed
+lambda runs report their penalty with zero inner folds and NaN inner loss.
+Analytic loss/selection tests, outer held-out perturbations, unequal inner-group
+means/scales, sparse surface response IDs, and worker-count comparisons guard
+these contracts. All tuning lives in the existing `thd_crossval` and `thd_mvpa`
+modules; no new library module is introduced.
+
+`THD_mvpa_ridge_workspace` reuses compact train/test matrices, a preprocessor,
+the ridge solver, predictions, baselines, and scorer scratch across spatial
+units. Untested fixed-split rows retain NaN predictions. Each response receives
+pooled held-out and per-fold Pearson, Spearman, cross-validated R2, MAE, and
+RMSE scores. No target statistics are estimated from held-out responses.
+
 ### Additional classifiers
 
-After centroid and ridge:
+Ridge classification is implemented with `-mode classify -method ridge`.
+Centroid remains the classification default. `-distance` is centroid-only and
+is rejected for ridge classification. Ridge uses the same positive fixed
+`-lambda` or grouped nested `-lambda auto`/`-lambda_grid` options as continuous
+ridge, without introducing another library module.
 
-1. diagonal LDA;
-2. shrinkage LDA;
-3. native linear L2 SVM with one-vs-rest multiclass composition;
-4. multinomial ridge logistic regression if calibrated scores are needed.
+Each class is represented by its own 0/1 response column. Slopes are penalized,
+the training-fitted intercept is not, and the largest held-out response score
+determines the class. Exact ties choose the lowest encoded class ID (class
+order is preserved in the audit header). DecisionClass columns are raw
+regression scores, not probabilities; values are not clipped or calibrated.
+Fits are unweighted, so constant patterns predict training class frequencies.
+Balanced accuracy remains the default reported statistic; reporting BACC does
+not imply class-weighted fitting.
+
+Nested selection minimizes mean class-wise SSE/training-mean-baseline SSE on
+inner held-out rows, not accuracy or BACC. This reuses the established
+multi-response squared-loss objective and largest-penalty tie rule. Every outer
+and inner training set must contain every class; invalid splits or null label
+arrangements fail explicitly rather than dropping classes or permutations.
+All preprocessing, class-coded responses, tuning and models are refitted under
+each synchronized label null, with observed predictions and tuning restored
+afterward. Existing empirical above-chance/P/Z/Q/FWE correction is unchanged.
+
+`THD_mvpa_classification_set_ridge()` configures an existing
+`THD_mvpa_workspace`; `THD_mvpa_run_classification_cv()` and its permutation
+counterpart share confusion matrices, recall, pooled/fold metrics, and original
+sample ordering across centroid and ridge. Existing centroid entry points stay
+available. Ridge fold audits append Lambda/InnerNFold/InnerNValid/InnerLoss;
+automatic `PREFIX.tuning.tsv` records all candidates for nested runs. Centroid
+table layouts and default behavior remain unchanged.
+
+Known-answer tests cover three-class decisions and losses, outer-test label
+isolation, wide rank-deficient solves, training class frequencies, constant
+pattern ties, missing inner classes, and malformed permutations. CLI tests
+cover fixed/nested ROI fits, volume and sparse-surface nulls, restored observed
+audits, exact surface probabilities, and thread-count reproducibility.
+
+### Diagonal and shrinkage LDA
+
+Both are implemented in the existing `thd_mvpa.[ch]` module and exposed as
+`-mode classify -method lda_diag|lda_shrinkage`. Centroid remains the default.
+The shared runner refits preprocessing and all LDA statistics inside each
+outer training set, including every label permutation. At least one residual
+degree of freedom is required: every outer training set must have more rows
+than classes, and all classes must be present. Invalid fits fail explicitly.
+
+Let R contain training rows minus their class means. The pooled covariance is
+`S = R'R / (ntrain - nclass)`. Equal priors are the default; `-class_prior
+empirical` uses training class proportions. Decisions are centered linear
+discriminants `((x-global_mean)' inverse(Sreg) (class_mean-global_mean)) -
+0.5*((class_mean-global_mean)' inverse(Sreg) (class_mean-global_mean)) +
+log(prior)`, not probabilities. Centering subtracts only a common class score
+relative to the usual uncentered discriminant. Exact ties choose the lowest
+encoded class ID. Balanced accuracy is still the default reported metric.
+
+`-variance_floor F` defaults to `1e-6` and accepts `[1e-12,1]`. The variance
+reference T is the mean diagonal of the pooled within-class covariance. When
+that is exactly zero, use mean overall training variance (denominator ntrain-1),
+then 1 for wholly constant data. This preserves noiseless class separation
+without an undefined inverse. Diagonal LDA uses `max(S[j,j], F*T)` per feature.
+It does not form a full covariance or allocate quadratic feature storage.
+
+Shrinkage LDA uses `(1-A)*S + max(A,F)*T*I`, where `-shrinkage A` defaults to
+0.1 and accepts `(0,1]`. This is fixed, configurable shrinkage toward a spherical
+target, not automatic shrinkage estimation or CV-selected shrinkage. A=1 is
+purely spherical. The F lower bound protects the diagonal regularizer even
+when A is extremely small. Feature scaling affects the spherical target, so
+the chosen preprocessing is part of the model specification. Equal priors
+and globally constant features produce deterministic ties; empirical priors
+give the training-majority class for wholly constant patterns.
+
+Fits normalize by sqrt(T) for numerical stability and use double precision.
+The shrinkage model factors a feature-space matrix when features <= training
+rows, or a sample-space residual Gram matrix and Woodbury solve otherwise.
+Factor storage is quadratic in min(ntrain,nfeature), not always nfeature.
+Repeated spatial/null fits allocate no new model or prediction buffers.
+
+`THD_lda_alloc/fit/predict/free()` provide the dataset-independent estimator;
+`THD_mvpa_classification_set_lda()` configures the shared classification
+workspace. `-distance` is centroid-only, `-lambda`/inner-CV options are ridge-only,
+and `-shrinkage` is restricted to lda_shrinkage. Prediction audit headers name
+the method, prior, shrinkage and relative floor. LDA fold audits append
+`Shrinkage`, `CovarianceScale` (T), `VarianceFloor` (absolute F*T), and
+`CovarianceForm` (diagonal/primal/dual). Observed diagnostics are restored after
+the synchronized label nulls. Existing P/Z/Q/FWE spatial families are unchanged.
+
+Known-answer tests cover correlated 2x2 inverses, wide rank-deficient
+sample-space solves, spherical limits, three-class discriminants, prior effects,
+variance floors, zero residual variance, rejected zero residual degrees of
+freedom, diagonal feature-scaling invariance away from active floors, large/small
+measurement units, and held-out label/feature isolation.
+ROI/volume/sparse-surface CLI tests cover both estimators, explicit priors,
+restored prediction/fold audits, exact blocked surface p-values, and worker-count
+reproducibility. No new library module or external runtime dependency is added.
+
+After centroid, ridge, and LDA:
+
+1. native linear L2 SVM with one-vs-rest multiclass composition;
+2. multinomial ridge logistic regression if calibrated scores are needed.
 
 Keep the initial SVM linear. Kernels, real-time support, SVM-light model
 compatibility, and transductive modes are out of scope.
@@ -708,6 +871,14 @@ RMSE
 For multivariate targets, retain per-target scores and offer an explicitly
 defined aggregate rather than silently averaging incomparable scales.
 
+Implemented: `-target_column` or comma-separated `-target_columns` selects
+finite numeric columns, `-method ridge` is the continuous default, and
+`-metric cross_validated_r2` is the default score. Each target has separate
+SCORE/PEARSON/SPEARMAN/CVR2/MAE/RMSE/NVALID map bricks; NFEAT and NFOLD follow.
+`PREFIX.continuous.tsv` preserves all metrics. Optional `-save_predictions`
+and `-save_fold_scores` retain response identity and sample/fold provenance.
+There is no implicit average across decoding targets.
+
 `THD_mvpa_score_continuous()` returns Pearson correlation, tie-aware Spearman
 correlation, cross-validated R-squared, MAE, and RMSE. Its R-squared denominator
 uses caller-supplied predictions made without held-out outcomes, normally the
@@ -737,6 +908,20 @@ Encoding has two scientifically distinct spatial outputs:
 - `pattern` predicts the multivoxel response in each ROI/searchlight and writes
   one score per spatial analysis unit.
 
+Both paths are implemented with `-design_columns` and `-score voxel|pattern`
+(default voxel). Voxel mode uses positive mask voxels/nodes as singleton units;
+pattern mode uses ROIs or volume/geodesic surface searchlights and averages
+each metric equally over responses where it is defined. NVALID reports the
+number of responses with a defined primary metric, and NResponse is retained
+in the continuous table. Undefined metrics stay NaN in text and become zero
+in maps for AFNI compatibility; consult NVALID for the primary score. Encoding
+prediction/fold audits preserve each individual voxel or mesh-node response.
+Searchlight workers own independent reusable ridge workspaces; ordered audits
+are deterministic across thread counts.
+
+Continuous permutation inference is implemented as described below.
+Descriptive full-data coefficient maps remain queued.
+
 This distinction prevents encoding from being forced into a decoding-shaped
 output. Optional full-data refit coefficients may be written as one map per
 design column, clearly labeled as descriptive refits rather than held-out
@@ -744,7 +929,7 @@ performance.
 
 ## Permutation Inference
 
-The classification slice implements:
+Classification, decoding, and encoding implement:
 
 ```text
 -nperm N
@@ -756,9 +941,16 @@ The classification slice implements:
 and may be a subject, run, fold, or user-supplied composite exchangeability
 unit. `none` requests an unrestricted null deliberately; inference never
 silently assumes that all rows are exchangeable. The identity is included,
-small groups are enumerated exactly, and every materialized relabeling is
+small groups are enumerated exactly, and classification relabelings are
 checked for complete class coverage in every outer training fold before any
-spatial analysis begins.
+spatial analysis begins. Continuous exact enumeration uses row-index
+permutations; equal-valued rows are not collapsed.
+
+Continuous decoding jointly shuffles all numeric target columns as whole
+rows; encoding jointly shuffles all design columns as whole rows. Neural rows,
+folds, group IDs, and other sample metadata stay fixed. Attribute covariance is
+preserved. Rows must be exchangeable within the selected blocks: this is not a
+residual/nuisance-adjusted or autocorrelation-preserving time-series null.
 
 Folds are built once. For every permutation:
 
@@ -787,6 +979,33 @@ over the complete ROI/searchlight family, and PFWE/ZFWE use the synchronized
 maximum score at every relabeling. ZSCR and ZFWE receive AFNI FIZT stat codes.
 Without `-nperm`, output remains the original compact SCORE/NFEAT/NFOLD bucket.
 
+Continuous output retains its seven observed metric/count bricks per target,
+then adds these eight inference bricks per target, followed by NFEAT/NFOLD:
+
+```text
+NULL_MEAN ABOVE_NULL PVAL ZSCR QVAL PFWE ZFWE NNULL_VALID
+```
+
+`PREFIX.inference.tsv` records scores, null means, inference, finite-null counts,
+and total identity-inclusive NPERM. One spatial correction family is used per
+decoding target, or one for the selected encoding voxel/pattern statistic.
+Targets are not jointly corrected. Encoding pattern scores use the existing
+equal mean across responses with defined metrics in each relabeling.
+Observed prediction/fold/tuning audits are restored after the null runs.
+
+Pearson, Spearman, and CVR2 use upper tails in original metric units; MAE/RMSE
+use lower tails. ABOVE_NULL is observed-minus-null-mean for higher-is-better
+metrics and null-mean-minus-observed for errors. Positive always means better
+than the empirical null. Correlations are not Fisher-transformed or forced to
+have a zero-centered null. Max-statistic correction uses the same direction.
+
+Undefined observed metrics receive P/Q/PFWE=1 and Z/ZFWE=0. For a defined
+observation, undefined null metrics count as exceedances and conservatively
+enter the synchronized family maximum; probabilities always use all NPERM
+slots. NULL_MEAN uses finite scores, counted in NNULL_VALID. BH includes the
+complete spatial family, including undefined observations at p=1. Undefined
+scores remain NaN in text and zero in maps; consult NVALID/NNULL_VALID.
+
 The user must be able to define exchangeability through subject, run, fold, or
 an explicit block column. Invalid permutations should fail rather than silently
 crossing nonexchangeable boundaries.
@@ -795,7 +1014,7 @@ Score-specific null handling:
 
 - classification: report accuracy and accuracy-minus-chance; infer against
   label permutations rather than a symmetric theoretical distribution;
-- correlation: aggregate Fisher-z values and center the null at zero;
+- correlation: retain the metric's original units and use its empirical null;
 - R2: use its permutation distribution rather than assuming symmetry around
   zero;
 - paired model comparisons: drive both models with identical folds and
@@ -1050,8 +1269,10 @@ history, and output prefix differed in the `.HEAD` file.
 3. [x] Add prediction metrics.
 4. [x] Add nearest-centroid and correlation classifiers.
 5. [x] Add reusable workspaces and the end-to-end fold runner.
-6. [ ] Add primal and dual multi-output ridge.
-7. [ ] Test all algorithms with small matrices having known solutions.
+6. [x] Add primal and dual multi-output ridge.
+7. [x] Test current algorithms with small matrices having known solutions,
+   primal/dual parity, rank-deficient predictors, training-only intercepts and
+   baselines, and held-out response perturbations.
 
 ### Phase 2: first `3dMVPA` vertical slice
 
@@ -1094,17 +1315,27 @@ Current Phase 2 progress:
 ### Phase 3: inference and fitted estimators
 
 1. [x] Add blocked label permutations and PVAL/Z/Q/FWE outputs.
-2. [ ] Add ridge classification and continuous decoding.
-3. Add nested grouped lambda selection.
-4. Add diagonal and shrinkage LDA.
-5. Add native linear SVM if still scientifically useful.
+2. [x] Add continuous ridge decoding, including multiple numeric targets,
+   per-target maps, and row/fold audit tables.
+3. [x] Add nested grouped lambda selection and per-candidate/per-fold audits.
+4. [x] Add continuous permutation inference with model/tuning refits, exact
+   blocked known-answer checks, lower-tail errors, undefined-score safeguards,
+   observed-audit restoration, and volume/surface thread reproducibility.
+5. [x] Add ridge classification with fixed/nested penalties and full label
+   inference through the shared classification runner.
+6. [x] Add diagonal and shrinkage LDA, training-only covariance/prior fits,
+   explicit floors, high-dimensional solves, fold diagnostics, and full label
+   nulls through the existing classification runner.
+7. [ ] Add native linear SVM if still scientifically useful.
 
 ### Phase 4: encoding
 
-1. Add voxelwise multi-output ridge encoding.
-2. Write per-regressor descriptive refit coefficient maps when requested.
-3. Add ROI/searchlight pattern prediction.
-4. Add encoding-appropriate prediction tables and inference.
+1. [x] Add voxelwise ridge encoding using the multi-output solver.
+2. [ ] Write per-regressor descriptive refit coefficient maps when requested.
+3. [x] Add ROI/volume/surface searchlight pattern prediction.
+4. [x] Add encoding prediction and fold tables with response voxel/node IDs.
+5. [x] Add encoding-appropriate joint design-row inference for exchangeable
+   samples; temporal/residual nulls require separate future contracts.
 
 ### Phase 5: advanced features
 
@@ -1162,9 +1393,9 @@ Continuous decoding:
     -dataTable @samples.tsv                 \
     -target_columns Rating,Arousal          \
     -cv_column Run                          \
-    -atlas atlas+tlrc                       \
+    -mask atlas+tlrc                        \
     -method ridge                           \
-    -lambda auto                            \
+    -lambda 1                               \
     -metric pearson                         \
     -prefix decoded_behavior
 ```
@@ -1180,7 +1411,7 @@ Voxelwise encoding:
     -mask brain_mask+tlrc                   \
     -score voxel                            \
     -method ridge                           \
-    -lambda auto                            \
+    -lambda 1                               \
     -metric cross_validated_r2              \
     -prefix encoding_model
 ```
