@@ -30,6 +30,19 @@ typedef struct {
                                 training samples                              */
 } THD_foldplan ;
 
+typedef struct {
+   const THD_foldplan *outer; /* borrowed */
+   THD_foldplan **inner;      /* local indexes into outer->train[fold] */
+} THD_nested_foldplan;
+
+/* k=0 leaves each group out; k>=2 balances whole groups. Every inner plan
+   contains only its outer training rows, with compact local sample indexes. */
+extern THD_nested_foldplan *THD_nested_foldplan_grouped(
+   const THD_foldplan *outer, const int *group_id, int k, char *err, int nerr);
+extern void THD_nested_foldplan_free(THD_nested_foldplan *plan);
+extern void THD_nested_foldplan_print(const THD_nested_foldplan *plan,
+                                     const THD_sampleset *ss, FILE *fp);
+
 /*! Leave one level of group_column out.  With within_column, make independent
     folds inside every stratum (for example Run within Subj); other strata are
     excluded from each fold.  Without it, all samples share one stratum. */

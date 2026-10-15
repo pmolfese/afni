@@ -267,6 +267,90 @@ bad:
    return p ;
 }
 
+void THD_nested_foldplan_free(THD_nested_foldplan *p)
+{
+   int f;
+   if(!p)return;
+   if(p->inner)for(f=0;f<p->outer->nfold;f++)THD_foldplan_free(p->inner[f]);
+   free(p->inner);free(p);
+}
+
+THD_nested_foldplan *THD_nested_foldplan_grouped(
+ const THD_foldplan *outer,const int *groups,int k,char *err,int nerr)
+{
+   THD_nested_foldplan *nested;int f;
+   if(!THD_foldplan_validate(outer,err,nerr))return NULL;
+   if(!groups || k<0 || k==1){cv_error(err,nerr,"inner grouped CV requires group IDs and K=0 or K>=2");return NULL;}
+   nested=calloc(1,sizeof(*nested));
+   if(!nested){cv_error(err,nerr,"out of memory allocating nested folds");return NULL;}
+   nested->outer=outer;nested->inner=calloc((size_t)outer->nfold,sizeof(*nested->inner));
+   if(!nested->inner)goto memory;
+   for(f=0;f<outer->nfold;f++){
+      int n=outer->ntrain[f],ng=0,i,j,b,nf,*load;
+      cv_group *cg=calloc((size_t)n,sizeof(*cg));THD_foldplan *p;char *stratum[1];
+      if(!cg)goto memory;
+      for(i=0;i<n;i++){
+         int g=groups[outer->train[f][i]];
+         if(g<0){free(cg);cv_error(err,nerr,"outer fold %s: invalid inner group at sample %d",outer->name[f],outer->train[f][i]+1);goto bad;}
+         for(j=0;j<ng;j++)if(cg[j].group==g)break;
+         if(j==ng){cg[ng].group=g;cg[ng].first=i;ng++;}
+         cg[j].size++;
+      }
+      nf=k?k:ng;
+      if(ng<2 || nf>ng){
+         free(cg);cv_error(err,nerr,"outer fold %s has %d inner groups; need at least %d",outer->name[f],ng,k?k:2);goto bad;
+      }
+      load=calloc((size_t)nf,sizeof(int));if(!load){free(cg);goto memory;}
+      if(k)qsort(cg,(size_t)ng,sizeof(*cg),cv_group_cmp);
+      for(j=0;j<ng;j++){
+         int best=k?0:j;
+         if(k)for(b=1;b<nf;b++)if(load[b]<load[best])best=b;
+         cg[j].bin=best;load[best]+=cg[j].size;
+      }
+      stratum[0]=outer->stratum_label[outer->fold_stratum[f]];
+      p=cv_alloc(k?THD_CV_GROUPED_KFOLD:THD_CV_LEAVE_GROUP_OUT,n,nf,1,
+                 "inner_group",NULL,stratum,err,nerr);
+      nested->inner[f]=p;
+      if(!p){free(cg);free(load);goto bad;}
+      for(b=0;b<nf;b++){
+         char name[64];int tr=0,te=0;
+         snprintf(name,sizeof(name),"inner%d",b+1);p->name[b]=strdup(name);
+         p->ntest[b]=load[b];p->ntrain[b]=n-load[b];
+         p->train[b]=malloc(sizeof(int)*(size_t)p->ntrain[b]);
+         p->test[b]=malloc(sizeof(int)*(size_t)p->ntest[b]);
+         if(!p->name[b] || !p->train[b] || !p->test[b]){free(cg);free(load);goto memory;}
+         for(i=0;i<n;i++){
+            for(j=0;j<ng;j++)if(cg[j].group==groups[outer->train[f][i]])break;
+            if(cg[j].bin==b){p->test[b][te++]=i;p->sample_test_fold[i]=b;}
+            else p->train[b][tr++]=i;
+         }
+      }
+      free(cg);free(load);
+      if(!THD_foldplan_validate(p,err,nerr))goto bad;
+   }
+   return nested;
+memory:
+   cv_error(err,nerr,"out of memory building nested grouped folds");
+bad:
+   THD_nested_foldplan_free(nested);return NULL;
+}
+
+void THD_nested_foldplan_print(const THD_nested_foldplan *p,const THD_sampleset *ss,FILE *fp)
+{
+   int f,g,set,i;
+   if(!p || !fp)return;
+   fprintf(fp,"# Inner folds contain only their outer training rows\nOuterFold\tInnerFold\tStratum\tSet\tRow\tSample\n");
+   for(f=0;f<p->outer->nfold;f++)for(g=0;g<p->inner[f]->nfold;g++)for(set=0;set<2;set++){
+      const THD_foldplan *in=p->inner[f];
+      int n=set?in->ntest[g]:in->ntrain[g];int *idx=set?in->test[g]:in->train[g];
+      for(i=0;i<n;i++){
+         int s=p->outer->train[f][idx[i]];
+         fprintf(fp,"%s\t%s\t%s\t%s\t%d\t%s\n",p->outer->name[f],in->name[g],
+                 in->stratum_label[0],set?"test":"train",s+1,ss?ss->sample_label[s]:"-");
+      }
+   }
+}
+
 THD_foldplan * THD_foldplan_fixed( const THD_sampleset *ss,
                                     const char *partition_column,
                                     const char *train_value,

@@ -618,9 +618,512 @@ int THD_preprocess_fold( const THD_foldplan *plan, int fold, int method,
    return 1 ;
 }
 
+struct THD_lda_model {
+   int mode,max_sample,max_feature,nclass,p,fitted,form;
+   int *count;
+   double reference,sd;
+   double *center,*mean,*variance,*weight,*intercept;
+   double *residual,*factor,*rhs;
+};
+
+void THD_lda_free(THD_lda_model *m)
+{
+   if(!m)return;
+   free(m->count);free(m->center);free(m->mean);free(m->variance);
+   free(m->weight);free(m->intercept);free(m->residual);free(m->factor);free(m->rhs);free(m);
+}
+
+THD_lda_model *THD_lda_alloc(int mode,int n,int p,int nc,char *err,int nerr)
+{
+   THD_lda_model *m;int d=n<p?n:p;
+   if((mode!=THD_LDA_DIAGONAL && mode!=THD_LDA_SHRINKAGE) || n<1 || p<1 || nc<2 ||
+      (size_t)p>SIZE_MAX/sizeof(double)/(size_t)nc ||
+      (mode==THD_LDA_SHRINKAGE && ((size_t)p>SIZE_MAX/sizeof(double)/(size_t)n ||
+                                 (size_t)d>SIZE_MAX/sizeof(double)/(size_t)d))){
+      pp_error(err,nerr,"invalid LDA mode or allocation dimensions");return NULL;
+   }
+   m=calloc(1,sizeof(*m));if(!m){pp_error(err,nerr,"cannot allocate LDA model");return NULL;}
+   m->mode=mode;m->max_sample=n;m->max_feature=p;m->nclass=nc;
+   m->count=malloc(sizeof(int)*(size_t)nc);m->center=malloc(sizeof(double)*(size_t)p);
+   m->mean=malloc(sizeof(double)*(size_t)nc*p);m->variance=malloc(sizeof(double)*(size_t)p);
+   m->weight=malloc(sizeof(double)*(size_t)nc*p);m->intercept=malloc(sizeof(double)*(size_t)nc);
+   if(mode==THD_LDA_SHRINKAGE){
+      m->residual=malloc(sizeof(double)*(size_t)n*p);
+      m->factor=malloc(sizeof(double)*(size_t)d*d);m->rhs=malloc(sizeof(double)*(size_t)d*nc);
+   }
+   if(!m->count || !m->center || !m->mean || !m->variance || !m->weight || !m->intercept ||
+      (mode==THD_LDA_SHRINKAGE && (!m->residual || !m->factor || !m->rhs))){
+      THD_lda_free(m);pp_error(err,nerr,"cannot allocate LDA buffers");return NULL;
+   }
+   return m;
+}
+
+static int lda_solve(double *a,double *b,int d,int q,char *err,int nerr)
+{
+   int i,j,k,o;
+   for(i=0;i<d;i++)for(j=0;j<=i;j++){
+      double v=a[(size_t)i*d+j];
+      for(k=0;k<j;k++)v-=a[(size_t)i*d+k]*a[(size_t)j*d+k];
+      if(i==j){
+         if(!isfinite(v) || v<=0)return pp_error(err,nerr,"LDA factorization failed; increase shrinkage or variance floor");
+         a[(size_t)i*d+j]=sqrt(v);
+      }else a[(size_t)i*d+j]=v/a[(size_t)j*d+j];
+   }
+   for(i=0;i<d;i++)for(o=0;o<q;o++){
+      double v=b[(size_t)i*q+o];
+      for(k=0;k<i;k++)v-=a[(size_t)i*d+k]*b[(size_t)k*q+o];
+      b[(size_t)i*q+o]=v/a[(size_t)i*d+i];
+   }
+   for(i=d-1;i>=0;i--)for(o=0;o<q;o++){
+      double v=b[(size_t)i*q+o];
+      for(k=i+1;k<d;k++)v-=a[(size_t)k*d+i]*b[(size_t)k*q+o];
+      b[(size_t)i*q+o]=v/a[(size_t)i*d+i];
+   }
+   return 1;
+}
+
+int THD_lda_fit(THD_lda_model *m,const float *x,const int *classes,int n,int p,
+ double alpha,double floor,int empirical,char *err,int nerr)
+{
+   int i,j,k,c,d,dual,nc;double reference=0,shrink,diag;
+   if(m)m->fitted=0;
+   if(!m || !x || !classes || n<=m->nclass || n>m->max_sample || p<1 || p>m->max_feature ||
+      !isfinite(floor) || floor<1e-12 || floor>1 ||
+      (m->mode==THD_LDA_SHRINKAGE && (!isfinite(alpha) || alpha<=0 || alpha>1)))
+      return pp_error(err,nerr,"LDA needs more training rows than classes, matching dimensions, a variance floor in [1e-12,1], and shrinkage in (0,1]");
+   nc=m->nclass;
+   memset(m->count,0,sizeof(int)*(size_t)nc);memset(m->center,0,sizeof(double)*(size_t)p);
+   memset(m->mean,0,sizeof(double)*(size_t)nc*p);memset(m->variance,0,sizeof(double)*(size_t)p);
+   for(i=0;i<n;i++){
+      c=classes[i];if(c<0 || c>=nc)return pp_error(err,nerr,"LDA row %d has invalid class",i+1);
+      m->count[c]++;
+      for(j=0;j<p;j++){
+         double v=x[(size_t)i*p+j];if(!isfinite(v))return pp_error(err,nerr,"LDA predictor is not finite");
+         m->center[j]+=v;m->mean[(size_t)c*p+j]+=v;
+      }
+   }
+   for(j=0;j<p;j++)m->center[j]/=n;
+   for(c=0;c<nc;c++){
+      if(!m->count[c])return pp_error(err,nerr,"LDA training rows have no class %d",c+1);
+      for(j=0;j<p;j++)m->mean[(size_t)c*p+j]/=m->count[c];
+   }
+   for(i=0;i<n;i++)for(j=0;j<p;j++){
+      double v=x[(size_t)i*p+j]-m->mean[(size_t)classes[i]*p+j];
+      m->variance[j]+=v*v;
+      if(m->residual)m->residual[(size_t)i*p+j]=v;
+   }
+   for(j=0;j<p;j++){m->variance[j]/=n-nc;reference+=m->variance[j];}
+   reference/=p;
+   if(reference==0){
+      for(i=0;i<n;i++)for(j=0;j<p;j++){
+         double v=x[(size_t)i*p+j]-m->center[j];reference+=v*v/((double)(n-1)*p);
+      }
+      if(reference==0)reference=1;
+   }
+   if(!isfinite(reference) || reference<=0)return pp_error(err,nerr,"LDA covariance scale is not finite and positive");
+   /* Work in units of sqrt(reference), keeping the covariance factor scaled. */
+   m->reference=reference;m->sd=sqrt(reference);m->form=THD_LDA_FORM_DIAGONAL;
+   for(c=0;c<nc;c++)for(j=0;j<p;j++)m->mean[(size_t)c*p+j]=(m->mean[(size_t)c*p+j]-m->center[j])/m->sd;
+   if(m->mode==THD_LDA_DIAGONAL || alpha==1){
+      for(c=0;c<nc;c++)for(j=0;j<p;j++){
+         double v=m->mode==THD_LDA_DIAGONAL?fmax(m->variance[j]/reference,floor):1;
+         m->weight[(size_t)c*p+j]=m->mean[(size_t)c*p+j]/v;
+      }
+   }else{
+      shrink=(1-alpha)/(n-nc);diag=fmax(alpha,floor);dual=p>n;d=dual?n:p;
+      /* Woodbury uses d*I + shrink*R*R' when a feature-space factor is larger. */
+      m->form=dual?THD_LDA_FORM_DUAL:THD_LDA_FORM_PRIMAL;
+      for(i=0;i<n;i++)for(j=0;j<p;j++)m->residual[(size_t)i*p+j]/=m->sd;
+      for(i=0;i<d;i++)for(j=0;j<=i;j++){
+         double v=0;
+         for(k=0;k<(dual?p:n);k++)v+=dual?
+            m->residual[(size_t)i*p+k]*m->residual[(size_t)j*p+k]:
+            m->residual[(size_t)k*p+i]*m->residual[(size_t)k*p+j];
+         m->factor[(size_t)i*d+j]=shrink*v+(i==j?diag:0);
+      }
+      for(i=0;i<d;i++)for(c=0;c<nc;c++){
+         double v=0;
+         if(dual)for(j=0;j<p;j++)v+=m->residual[(size_t)i*p+j]*m->mean[(size_t)c*p+j];
+         else v=m->mean[(size_t)c*p+i];
+         m->rhs[(size_t)i*nc+c]=v;
+      }
+      if(!lda_solve(m->factor,m->rhs,d,nc,err,nerr))return 0;
+      for(c=0;c<nc;c++)for(j=0;j<p;j++){
+         double v;
+         if(dual){
+            double s=0;for(i=0;i<n;i++)s+=m->residual[(size_t)i*p+j]*m->rhs[(size_t)i*nc+c];
+            v=(m->mean[(size_t)c*p+j]-shrink*s)/diag;
+         }else v=m->rhs[(size_t)j*nc+c];
+         m->weight[(size_t)c*p+j]=v;
+      }
+   }
+   for(c=0;c<nc;c++){
+      double v=0;
+      for(j=0;j<p;j++)v+=m->mean[(size_t)c*p+j]*m->weight[(size_t)c*p+j];
+      m->intercept[c]=-.5*v+log(empirical?(double)m->count[c]/n:1.0/nc);
+      if(!isfinite(m->intercept[c]))return pp_error(err,nerr,"LDA discriminant is not finite");
+   }
+   m->p=p;m->fitted=1;return 1;
+}
+
+int THD_lda_predict(const THD_lda_model *m,const float *x,int n,int p,int *prediction,
+ double *decision,char *err,int nerr)
+{
+   int i,j,c;
+   if(!m || !m->fitted || !x || !prediction || n<1 || p!=m->p)
+      return pp_error(err,nerr,"LDA prediction needs a fitted model and matching rows");
+   for(i=0;i<n;i++){
+      int best=0;double bestscore=-HUGE_VAL;
+      for(c=0;c<m->nclass;c++){
+         double v=m->intercept[c];
+         for(j=0;j<p;j++){
+            double z=x[(size_t)i*p+j];if(!isfinite(z))return pp_error(err,nerr,"LDA prediction input is not finite");
+            v+=(z-m->center[j])/m->sd*m->weight[(size_t)c*p+j];
+         }
+         if(!isfinite(v))return pp_error(err,nerr,"LDA decision is not finite");
+         if(decision)decision[(size_t)i*m->nclass+c]=v;
+         if(v>bestscore){bestscore=v;best=c;}
+      }
+      prediction[i]=best;
+   }
+   return 1;
+}
+
+struct THD_ridge_workspace {
+   int maxn,maxp,maxq,n,p,q,fitted;
+   double *factor,*rhs,*coef,*xm,*ym;
+};
+
+void THD_ridge_free(THD_ridge_workspace *w)
+{
+   if(!w) return;
+   free(w->factor); free(w->rhs); free(w->coef); free(w->xm); free(w->ym); free(w);
+}
+
+THD_ridge_workspace *THD_ridge_alloc(int n,int p,int q,char *err,int nerr)
+{
+   THD_ridge_workspace *w; int d;
+   if(n<1 || p<1 || q<1){pp_error(err,nerr,"ridge dimensions must be positive");return NULL;}
+   d=n<p?n:p;
+   if((size_t)d>SIZE_MAX/sizeof(double)/(size_t)d ||
+      (size_t)p>SIZE_MAX/sizeof(double)/(size_t)q){
+      pp_error(err,nerr,"ridge dimensions are too large");return NULL;
+   }
+   w=calloc(1,sizeof(*w));
+   if(!w){pp_error(err,nerr,"out of memory allocating ridge");return NULL;}
+   w->maxn=n;w->maxp=p;w->maxq=q;
+   w->factor=malloc(sizeof(double)*(size_t)d*d);
+   w->rhs=malloc(sizeof(double)*(size_t)d*q);
+   w->coef=malloc(sizeof(double)*(size_t)p*q);
+   w->xm=malloc(sizeof(double)*(size_t)p);w->ym=malloc(sizeof(double)*(size_t)q);
+   if(!w->factor || !w->rhs || !w->coef || !w->xm || !w->ym){
+      THD_ridge_free(w);pp_error(err,nerr,"out of memory allocating ridge");return NULL;
+   }
+   return w;
+}
+
+int THD_ridge_fit(THD_ridge_workspace *w,const float *x,const float *y,
+                  int n,int p,int q,double lambda,int form,char *err,int nerr)
+{
+   int i,j,k,t,o,d,dual; double *a,*b;
+   if(w) w->fitted=0;
+   if(!w || !x || !y || n<1 || n>w->maxn || p<1 || p>w->maxp ||
+      q<1 || q>w->maxq || !isfinite(lambda) || lambda<=0 || form<0 || form>2)
+      return pp_error(err,nerr,"invalid ridge dimensions, form, or positive lambda");
+   dual=form==THD_RIDGE_DUAL || (form==THD_RIDGE_AUTO && p>n);
+   d=dual?n:p;
+   if(d>(w->maxn<w->maxp?w->maxn:w->maxp))
+      return pp_error(err,nerr,"forced ridge form exceeds the allocated factor capacity");
+   a=w->factor;b=w->rhs;
+   for(j=0;j<p;j++){
+      double s=0;for(i=0;i<n;i++){
+         double v=x[(size_t)i*p+j];if(!isfinite(v)) return pp_error(err,nerr,"ridge predictor is not finite");s+=v;
+      }w->xm[j]=s/n;
+   }
+   for(o=0;o<q;o++){
+      double s=0;for(i=0;i<n;i++){
+         double v=y[(size_t)i*q+o];if(!isfinite(v)) return pp_error(err,nerr,"ridge response is not finite");s+=v;
+      }w->ym[o]=s/n;
+   }
+   for(i=0;i<d;i++) for(j=0;j<=i;j++){
+      double s=0;
+      for(t=0;t<(dual?p:n);t++){
+         double u=dual?x[(size_t)i*p+t]-w->xm[t]:x[(size_t)t*p+i]-w->xm[i];
+         double v=dual?x[(size_t)j*p+t]-w->xm[t]:x[(size_t)t*p+j]-w->xm[j];
+         s+=u*v;
+      }
+      a[(size_t)i*d+j]=s+(i==j?lambda:0);
+   }
+   /* Cholesky factorization and triangular solves share one factor for all responses. */
+   for(i=0;i<d;i++) for(j=0;j<=i;j++){
+      double s=a[(size_t)i*d+j];
+      for(k=0;k<j;k++) s-=a[(size_t)i*d+k]*a[(size_t)j*d+k];
+      if(i==j){
+         if(!isfinite(s) || s<=0) return pp_error(err,nerr,"ridge factorization failed; increase lambda or rescale predictors");
+         a[(size_t)i*d+j]=sqrt(s);
+      }else a[(size_t)i*d+j]=s/a[(size_t)j*d+j];
+   }
+   for(i=0;i<d;i++) for(o=0;o<q;o++){
+      double s=0;
+      if(dual) s=y[(size_t)i*q+o]-w->ym[o];
+      else for(t=0;t<n;t++) s+=(x[(size_t)t*p+i]-w->xm[i])*(y[(size_t)t*q+o]-w->ym[o]);
+      for(k=0;k<i;k++) s-=a[(size_t)i*d+k]*b[(size_t)k*q+o];
+      b[(size_t)i*q+o]=s/a[(size_t)i*d+i];
+   }
+   for(i=d-1;i>=0;i--) for(o=0;o<q;o++){
+      double s=b[(size_t)i*q+o];
+      for(k=i+1;k<d;k++) s-=a[(size_t)k*d+i]*b[(size_t)k*q+o];
+      b[(size_t)i*q+o]=s/a[(size_t)i*d+i];
+   }
+   for(j=0;j<p;j++) for(o=0;o<q;o++){
+      double s=0;
+      if(dual) for(i=0;i<n;i++) s+=(x[(size_t)i*p+j]-w->xm[j])*b[(size_t)i*q+o];
+      else s=b[(size_t)j*q+o];
+      if(!isfinite(s)) return pp_error(err,nerr,"ridge coefficient is not finite");
+      w->coef[(size_t)j*q+o]=s;
+   }
+   w->n=n;w->p=p;w->q=q;w->fitted=1;return 1;
+}
+
+int THD_ridge_predict(const THD_ridge_workspace *w,const float *x,int n,
+                      float *out,char *err,int nerr)
+{
+   int i,j,o;
+   if(!w || !w->fitted || !x || !out || n<1) return pp_error(err,nerr,"ridge prediction needs a fitted model and rows");
+   for(i=0;i<n;i++) for(o=0;o<w->q;o++){
+      double s=w->ym[o];
+      for(j=0;j<w->p;j++){
+         double v=x[(size_t)i*w->p+j];
+         if(!isfinite(v)) return pp_error(err,nerr,"ridge prediction input is not finite");
+         s+=(v-w->xm[j])*w->coef[(size_t)j*w->q+o];
+      }
+      if(!isfinite(s) || fabs(s)>FLT_MAX) return pp_error(err,nerr,"ridge prediction exceeds float range");
+      out[(size_t)i*w->q+o]=(float)s;
+   }return 1;
+}
+
+void THD_mvpa_ridge_workspace_free(THD_mvpa_ridge_workspace *w)
+{
+   if(!w)return;
+   THD_preprocess_free(w->prep);THD_ridge_free(w->ridge);
+   free(w->train_x);free(w->test_x);free(w->train_y);free(w->test_y);
+   free(w->prediction);free(w->baseline);free(w->truth_scratch);free(w->pred_scratch);
+   free(w->base_scratch);free(w->rank_scratch);free(w->index_scratch);
+   free(w->score);free(w->fold_score);free(w->selected_lambda);free(w->inner_nvalid);
+   free(w->lambda_grid);free(w->inner_loss);free(w->inner_train);free(w->inner_test);
+   free(w->inner_sse);free(w->inner_baseline);free(w);
+}
+
+THD_mvpa_ridge_workspace *THD_mvpa_ridge_workspace_alloc(
+ const THD_foldplan *plan,int p,int q,int preprocess,char *err,int nerr)
+{
+   THD_mvpa_ridge_workspace *w;int n;
+   if(!THD_foldplan_validate(plan,err,nerr))return NULL;
+   if(p<1 || q<1 || !THD_preprocess_name(preprocess)){
+      pp_error(err,nerr,"invalid ridge CV dimensions or preprocessing");return NULL;
+   }
+   n=plan->nsample;
+   if((size_t)n>SIZE_MAX/sizeof(double)/(size_t)(p>q?p:q) ||
+      (size_t)plan->nfold>SIZE_MAX/sizeof(THD_mvpa_continuous_score)/(size_t)q){
+      pp_error(err,nerr,"ridge CV dimensions too large");return NULL;
+   }
+   w=calloc(1,sizeof(*w));
+   if(!w){pp_error(err,nerr,"out of memory allocating ridge CV");return NULL;}
+   w->plan=plan;w->max_feature=p;w->max_output=q;w->preprocess=preprocess;
+   w->prep=pp_alloc(p,preprocess==THD_PREP_RUN_CENTER?n:1,err,nerr);
+   w->ridge=THD_ridge_alloc(n,p,q,err,nerr);
+   w->train_x=malloc(sizeof(float)*(size_t)n*p);w->test_x=malloc(sizeof(float)*(size_t)n*p);
+   w->train_y=malloc(sizeof(float)*(size_t)n*q);w->test_y=malloc(sizeof(float)*(size_t)n*q);
+   w->prediction=malloc(sizeof(float)*(size_t)n*q);w->baseline=malloc(sizeof(float)*(size_t)n*q);
+   w->truth_scratch=malloc(sizeof(float)*(size_t)n);w->pred_scratch=malloc(sizeof(float)*(size_t)n);
+   w->base_scratch=malloc(sizeof(float)*(size_t)n);w->rank_scratch=malloc(sizeof(double)*(size_t)n*2);
+   w->index_scratch=malloc(sizeof(int)*(size_t)n*2);
+   w->score=malloc(sizeof(*w->score)*(size_t)q);
+   w->fold_score=malloc(sizeof(*w->fold_score)*(size_t)plan->nfold*q);
+   w->selected_lambda=malloc(sizeof(double)*(size_t)plan->nfold);
+   w->inner_nvalid=calloc((size_t)plan->nfold,sizeof(int));
+   if(!w->prep || !w->ridge || !w->train_x || !w->test_x || !w->train_y || !w->test_y ||
+      !w->prediction || !w->baseline || !w->truth_scratch || !w->pred_scratch ||
+      !w->base_scratch || !w->rank_scratch || !w->index_scratch || !w->score || !w->fold_score ||
+      !w->selected_lambda || !w->inner_nvalid){
+      THD_mvpa_ridge_workspace_free(w);pp_error(err,nerr,"out of memory allocating ridge CV");return NULL;
+   }return w;
+}
+
+int THD_mvpa_ridge_set_tuning(THD_mvpa_ridge_workspace *w,
+ const THD_nested_foldplan *nested,const double *grid,int nl,char *err,int nerr)
+{
+   int i,j;
+   if(!w || w->nested || !nested || nested->outer!=w->plan || !nested->inner || !grid || nl<2)
+      return pp_error(err,nerr,"ridge tuning needs a matching nested plan and at least two penalties; configure it once");
+   for(i=0;i<nl;i++){
+      if(!isfinite(grid[i]) || grid[i]<=0)return pp_error(err,nerr,"lambda grid values must be finite and positive");
+      for(j=0;j<i;j++)if(grid[i]==grid[j])return pp_error(err,nerr,"lambda grid contains duplicate penalties");
+   }
+   for(i=0;i<w->plan->nfold;i++){
+      const THD_foldplan *in=nested->inner[i];
+      if(!THD_foldplan_validate(in,err,nerr))return 0;
+      if(in->nsample!=w->plan->ntrain[i] || in->nfold<2 || in->kind==THD_CV_FIXED)
+         return pp_error(err,nerr,"inner plan needs at least two grouped folds over exactly the outer training samples");
+   }
+   if((size_t)nl>SIZE_MAX/sizeof(double)/(size_t)w->max_output ||
+      (size_t)nl>SIZE_MAX/sizeof(double)/(size_t)w->plan->nfold)
+      return pp_error(err,nerr,"lambda grid is too large");
+   w->lambda_grid=malloc(sizeof(double)*(size_t)nl);
+   w->inner_loss=malloc(sizeof(double)*(size_t)w->plan->nfold*nl);
+   w->inner_train=malloc(sizeof(int)*(size_t)w->plan->nsample);
+   w->inner_test=malloc(sizeof(int)*(size_t)w->plan->nsample);
+   w->inner_sse=malloc(sizeof(double)*(size_t)nl*w->max_output);
+   w->inner_baseline=malloc(sizeof(double)*(size_t)w->max_output);
+   if(!w->lambda_grid || !w->inner_loss || !w->inner_train || !w->inner_test ||
+      !w->inner_sse || !w->inner_baseline){
+      free(w->lambda_grid);w->lambda_grid=NULL;free(w->inner_loss);w->inner_loss=NULL;
+      free(w->inner_train);w->inner_train=NULL;free(w->inner_test);w->inner_test=NULL;
+      free(w->inner_sse);w->inner_sse=NULL;free(w->inner_baseline);w->inner_baseline=NULL;
+      return pp_error(err,nerr,"out of memory allocating ridge tuning buffers");
+   }
+   memcpy(w->lambda_grid,grid,sizeof(double)*(size_t)nl);
+   w->nlambda=nl;w->nested=nested;return 1;
+}
+
+static int ridge_tune_fold(THD_mvpa_ridge_workspace *w,int outer,
+ const float *x,int p,const float *y,int q,const int *group,char *err,int nerr)
+{
+   const THD_foldplan *in=w->nested->inner[outer];
+   int f,i,o,l,best=0,nvalid=0,n=w->plan->nsample;double bestloss=HUGE_VAL;
+   memset(w->inner_sse,0,sizeof(double)*(size_t)w->nlambda*q);
+   memset(w->inner_baseline,0,sizeof(double)*(size_t)q);
+   for(f=0;f<in->nfold;f++){
+      int nt=in->ntrain[f],ne=in->ntest[f];
+      for(i=0;i<nt;i++)w->inner_train[i]=w->plan->train[outer][in->train[f][i]];
+      for(i=0;i<ne;i++)w->inner_test[i]=w->plan->train[outer][in->test[f][i]];
+      if(!pp_refit(w->prep,w->preprocess,x,n,p,w->inner_train,nt,group,0,err,nerr) ||
+         !pp_apply(w->prep,x,n,p,w->inner_train,nt,group,w->train_x,0,err,nerr) ||
+         !pp_apply(w->prep,x,n,p,w->inner_test,ne,group,w->test_x,0,err,nerr))return 0;
+      for(i=0;i<nt;i++)for(o=0;o<q;o++)w->train_y[(size_t)i*q+o]=y[(size_t)w->inner_train[i]*q+o];
+      for(l=0;l<w->nlambda;l++){
+         if(!THD_ridge_fit(w->ridge,w->train_x,w->train_y,nt,p,q,w->lambda_grid[l],THD_RIDGE_AUTO,err,nerr) ||
+            !THD_ridge_predict(w->ridge,w->test_x,ne,w->test_y,err,nerr))return 0;
+         for(i=0;i<ne;i++)for(o=0;o<q;o++){
+            double truth=y[(size_t)w->inner_test[i]*q+o];
+            double e=truth-w->test_y[(size_t)i*q+o];
+            w->inner_sse[(size_t)l*q+o]+=e*e;
+            if(l==0){double b=truth-w->ridge->ym[o];w->inner_baseline[o]+=b*b;}
+         }
+      }
+   }
+   for(o=0;o<q;o++)if(w->inner_baseline[o]>0)nvalid++;
+   for(l=0;l<w->nlambda;l++){
+      double loss=0;
+      for(o=0;o<q;o++)if(w->inner_baseline[o]>0)loss+=w->inner_sse[(size_t)l*q+o]/w->inner_baseline[o];
+      loss=nvalid?loss/nvalid:NAN;
+      w->inner_loss[(size_t)outer*w->nlambda+l]=loss;
+      if((nvalid && loss<bestloss) || ((!nvalid || loss==bestloss) && w->lambda_grid[l]>w->lambda_grid[best])){
+         best=l;bestloss=loss;
+      }
+   }
+   w->selected_lambda[outer]=w->lambda_grid[best];w->inner_nvalid[outer]=nvalid;
+   return 1;
+}
+
+int THD_mvpa_run_ridge_cv(THD_mvpa_ridge_workspace *w,const float *x,int p,
+ const float *y,int q,const int *group,double lambda,char *err,int nerr)
+{
+   int f,i,o,n,total;const THD_foldplan *plan;
+   if(!w || !x || !y || p<1 || p>w->max_feature || q<1 || q>w->max_output)
+      return pp_error(err,nerr,"ridge CV inputs exceed workspace capacity");
+   plan=w->plan;n=plan->nsample;
+   for(i=0;i<n;i++)for(o=0;o<p;o++)
+      if(!isfinite(x[(size_t)i*p+o]))return pp_error(err,nerr,"ridge CV predictor is not finite");
+   for(i=0;i<n;i++)for(o=0;o<q;o++){
+      if(!isfinite(y[(size_t)i*q+o]))return pp_error(err,nerr,"ridge CV response is not finite");
+      w->prediction[(size_t)i*q+o]=w->baseline[(size_t)i*q+o]=NAN;
+   }
+   for(f=0;f<plan->nfold;f++){
+      int nt=plan->ntrain[f],ne=plan->ntest[f];
+      w->selected_lambda[f]=lambda;w->inner_nvalid[f]=0;
+      if(w->nested && !ridge_tune_fold(w,f,x,p,y,q,group,err,nerr))return 0;
+      if(!pp_refit(w->prep,w->preprocess,x,n,p,plan->train[f],nt,group,0,err,nerr) ||
+         !pp_apply(w->prep,x,n,p,plan->train[f],nt,group,w->train_x,0,err,nerr) ||
+         !pp_apply(w->prep,x,n,p,plan->test[f],ne,group,w->test_x,0,err,nerr))return 0;
+      for(i=0;i<nt;i++)for(o=0;o<q;o++)w->train_y[(size_t)i*q+o]=y[(size_t)plan->train[f][i]*q+o];
+      if(!THD_ridge_fit(w->ridge,w->train_x,w->train_y,nt,p,q,w->selected_lambda[f],THD_RIDGE_AUTO,err,nerr) ||
+         !THD_ridge_predict(w->ridge,w->test_x,ne,w->test_y,err,nerr))return 0;
+      for(o=0;o<q;o++){
+         for(i=0;i<ne;i++){
+            int s=plan->test[f][i];
+            w->prediction[(size_t)s*q+o]=w->test_y[(size_t)i*q+o];
+            w->baseline[(size_t)s*q+o]=(float)w->ridge->ym[o];
+            w->truth_scratch[i]=y[(size_t)s*q+o];w->pred_scratch[i]=w->prediction[(size_t)s*q+o];
+            w->base_scratch[i]=w->baseline[(size_t)s*q+o];
+         }
+         if(!THD_mvpa_score_continuous(w->truth_scratch,w->pred_scratch,w->base_scratch,ne,
+            w->rank_scratch,w->index_scratch,w->fold_score+(size_t)f*q+o,err,nerr))return 0;
+      }
+   }
+   for(o=0;o<q;o++){
+      total=0;for(i=0;i<n;i++)if(plan->sample_test_fold[i]>=0){
+         w->truth_scratch[total]=y[(size_t)i*q+o];w->pred_scratch[total]=w->prediction[(size_t)i*q+o];
+         w->base_scratch[total++]=w->baseline[(size_t)i*q+o];
+      }
+      if(!THD_mvpa_score_continuous(w->truth_scratch,w->pred_scratch,w->base_scratch,total,
+         w->rank_scratch,w->index_scratch,w->score+o,err,nerr))return 0;
+   }return 1;
+}
+
+int THD_mvpa_run_ridge_permutations(THD_mvpa_ridge_workspace *w,
+ const float *x,int p,const float *y,int q,const int *group,double lambda,
+ const PERM_set *pset,int shuffle_predictors,int metric,int aggregate,
+ float *permuted,float *null_score,char *err,int nerr)
+{
+   int ip,i,o,n,nout,width;const float *attr;char why[512];
+   if(!w || !x || !y || p<1 || p>w->max_feature || q<1 || q>w->max_output ||
+      !pset || pset->nobs!=w->plan->nsample || pset->nperm<1 ||
+      !pset->perm || !pset->sign || !permuted || !null_score ||
+      metric<THD_METRIC_PEARSON || metric>THD_METRIC_RMSE)
+      return pp_error(err,nerr,"ridge permutations need matching folds, relabelings, continuous metric, and scratch");
+   n=pset->nobs;nout=aggregate?1:q;width=shuffle_predictors?p:q;attr=shuffle_predictors?x:y;
+   for(ip=0;ip<pset->nperm;ip++){
+      const int *perm=pset->perm+(size_t)ip*n;
+      memset(w->index_scratch,0,sizeof(int)*(size_t)n);
+      for(i=0;i<n;i++){
+         int src=perm[i];
+         if(src<0 || src>=n || w->index_scratch[src] || pset->sign[(size_t)ip*n+i]!=1 || (ip==0 && src!=i))
+            return pp_error(err,nerr,"invalid continuous row relabeling %d at sample %d; slot zero must be identity",ip+1,i+1);
+         w->index_scratch[src]=1;
+         memcpy(permuted+(size_t)i*width,attr+(size_t)src*width,sizeof(float)*(size_t)width);
+      }
+      if(!THD_mvpa_run_ridge_cv(w,shuffle_predictors?permuted:x,p,
+            shuffle_predictors?y:permuted,q,group,lambda,why,sizeof(why)))
+         return pp_error(err,nerr,"continuous row relabeling %d: %s",ip+1,why);
+      for(o=0;o<nout;o++){
+         double sum=0;int j,nvalid=0;
+         for(j=aggregate?0:o;j<(aggregate?q:o+1);j++){
+            const THD_mvpa_continuous_score *s=w->score+j;double v;
+            switch(metric){
+               case THD_METRIC_PEARSON:v=s->pearson;break;
+               case THD_METRIC_SPEARMAN:v=s->spearman;break;
+               case THD_METRIC_CROSS_VALIDATED_R2:v=s->cv_r2;break;
+               case THD_METRIC_MAE:v=s->mae;break;
+               default:v=s->rmse;break;
+            }
+            if(isfinite(v)){sum+=v;nvalid++;}
+         }
+         if(nvalid && (!isfinite(sum/nvalid) || fabs(sum/nvalid)>FLT_MAX))
+            return pp_error(err,nerr,"continuous permutation score exceeds float range");
+         null_score[(size_t)ip*nout+o]=nvalid?(float)(sum/nvalid):NAN;
+      }
+   }
+   if(!THD_mvpa_run_ridge_cv(w,x,p,y,q,group,lambda,why,sizeof(why)))
+      return pp_error(err,nerr,"restoring observed continuous analysis: %s",why);
+   return 1;
+}
+
 void THD_mvpa_workspace_free( THD_mvpa_workspace *w )
 {
    if( w==NULL ) return ;
+   THD_mvpa_ridge_workspace_free(w->ridge_cv);free(w->class_response);
+   THD_lda_free(w->lda);free(w->fold_covariance_scale);free(w->fold_variance_floor);free(w->fold_covariance_form);
    free(w->train_x) ; free(w->test_x) ;
    free(w->train_class) ; free(w->test_class) ; free(w->test_prediction) ;
    free(w->test_decision) ; free(w->train_count) ;
@@ -712,7 +1215,45 @@ THD_mvpa_workspace * THD_mvpa_workspace_alloc( const THD_foldplan *plan,
    return w ;
 }
 
-int THD_mvpa_run_centroid_cv( const THD_foldplan *plan,
+int THD_mvpa_classification_set_ridge(THD_mvpa_workspace *w,double lambda,
+ const THD_nested_foldplan *nested,const double *grid,int nlambda,char *err,int nerr)
+{
+   THD_mvpa_ridge_workspace *ridge;float *response;
+   if(!w || w->ridge_cv || w->lda || !isfinite(lambda) || lambda<=0 ||
+      (!nested && (grid || nlambda)))
+      return pp_error(err,nerr,"ridge classifier needs an unconfigured workspace and positive lambda");
+   ridge=THD_mvpa_ridge_workspace_alloc(w->plan,w->nfeature_alloc,w->nclass,w->preprocess,err,nerr);
+   if(!ridge)return 0;
+   if(nested && !THD_mvpa_ridge_set_tuning(ridge,nested,grid,nlambda,err,nerr)){
+      THD_mvpa_ridge_workspace_free(ridge);return 0;
+   }
+   response=malloc(sizeof(float)*(size_t)w->nsample*w->nclass);
+   if(!response){THD_mvpa_ridge_workspace_free(ridge);return pp_error(err,nerr,"cannot allocate class responses");}
+   w->ridge_cv=ridge;w->class_response=response;w->ridge_lambda=lambda;return 1;
+}
+
+int THD_mvpa_classification_set_lda(THD_mvpa_workspace *w,int mode,double alpha,
+ double floor,int empirical,char *err,int nerr)
+{
+   THD_lda_model *lda;double *scale,*vf;int *form,f;
+   if(!w || w->ridge_cv || w->lda || !isfinite(floor) || floor<1e-12 || floor>1 ||
+      (mode==THD_LDA_SHRINKAGE && (!isfinite(alpha) || alpha<=0 || alpha>1)))
+      return pp_error(err,nerr,"LDA needs an unconfigured workspace, a valid variance floor and shrinkage");
+   for(f=0;f<w->nfold;f++)if(w->plan->ntrain[f]<=w->nclass)
+      return pp_error(err,nerr,"fold %s: LDA needs more training rows than classes to estimate pooled variance",w->plan->name[f]);
+   lda=THD_lda_alloc(mode,w->max_train,w->nfeature_alloc,w->nclass,err,nerr);
+   if(!lda)return 0;
+   scale=malloc(sizeof(double)*(size_t)w->nfold);vf=malloc(sizeof(double)*(size_t)w->nfold);
+   form=malloc(sizeof(int)*(size_t)w->nfold);
+   if(!scale || !vf || !form){
+      THD_lda_free(lda);free(scale);free(vf);free(form);return pp_error(err,nerr,"cannot allocate LDA fold diagnostics");
+   }
+   w->lda=lda;w->lda_shrinkage=mode==THD_LDA_DIAGONAL?0:alpha;
+   w->lda_variance_floor=floor;w->lda_empirical_prior=empirical;
+   w->fold_covariance_scale=scale;w->fold_variance_floor=vf;w->fold_covariance_form=form;return 1;
+}
+
+int THD_mvpa_run_classification_cv( const THD_foldplan *plan,
                                int distance, const float *x,
                                int nfeature, const int *class_id,
                                const int *group_id, THD_mvpa_workspace *w,
@@ -723,7 +1264,7 @@ int THD_mvpa_run_centroid_cv( const THD_foldplan *plan,
    if( w==NULL || plan==NULL || plan!=w->plan || x==NULL || class_id==NULL ||
        nfeature<1 || nfeature>w->nfeature_alloc )
      return pp_error(err,nerr,"CV inputs do not match the allocated MVPA workspace") ;
-   if( THD_centroid_distance_name(distance)==NULL )
+   if( !w->ridge_cv && !w->lda && THD_centroid_distance_name(distance)==NULL )
      return pp_error(err,nerr,"invalid centroid distance %d",distance) ;
    if( w->preprocess==THD_PREP_RUN_CENTER && group_id!=w->group_id )
      return pp_error(err,nerr,"run_center group IDs do not match the allocated workspace") ;
@@ -742,6 +1283,25 @@ int THD_mvpa_run_centroid_cv( const THD_foldplan *plan,
        return pp_error(err,nerr,"fold %s has no class %d in its training set",plan->name[ff],ii+1) ;
    }
 
+   if(w->ridge_cv){
+     const THD_nested_foldplan *nested=w->ridge_cv->nested;
+     if(nested)for(ff=0;ff<w->nfold;ff++){
+       const THD_foldplan *inner=nested->inner[ff];int f;
+       for(f=0;f<inner->nfold;f++){
+         memset(w->train_count,0,sizeof(int)*(size_t)w->nclass);
+         for(ii=0;ii<inner->ntrain[f];ii++)
+           w->train_count[class_id[plan->train[ff][inner->train[f][ii]]]]++;
+         for(ii=0;ii<w->nclass;ii++)if(!w->train_count[ii])
+           return pp_error(err,nerr,"outer fold %s, inner fold %s has no class %d in training",plan->name[ff],inner->name[f],ii+1);
+       }
+     }
+     for(ii=0;ii<w->nsample;ii++)for(jj=0;jj<w->nclass;jj++)
+       w->class_response[(size_t)ii*w->nclass+jj]=(class_id[ii]==jj)?1.0f:0.0f;
+     if(!THD_mvpa_run_ridge_cv(w->ridge_cv,x,nfeature,w->class_response,w->nclass,
+                              group_id,w->ridge_lambda,why,sizeof(why)))
+       return pp_error(err,nerr,"ridge classification: %s",why);
+   }
+
    for( ii=0 ; ii<w->nsample ; ii++ ){
      w->prediction[ii]=-1 ;
      for( jj=0 ; jj<w->nclass ; jj++ )
@@ -751,6 +1311,7 @@ int THD_mvpa_run_centroid_cv( const THD_foldplan *plan,
    w->ntest=0 ;
    for( ff=0 ; ff<w->nfold ; ff++ ){
      int ntrain=plan->ntrain[ff],ntest=plan->ntest[ff] ;
+     if(!w->ridge_cv){
      if( !pp_refit(w->prep,w->preprocess,x,w->nsample,nfeature,
                    plan->train[ff],ntrain,group_id,0,why,sizeof(why)) )
        return pp_error(err,nerr,"fold %s preprocessing fit: %s",plan->name[ff],why) ;
@@ -761,12 +1322,32 @@ int THD_mvpa_run_centroid_cv( const THD_foldplan *plan,
        return pp_error(err,nerr,"fold %s preprocessing apply: %s",plan->name[ff],why) ;
      for( ii=0 ; ii<ntrain ; ii++ ) w->train_class[ii]=class_id[plan->train[ff][ii]] ;
      for( ii=0 ; ii<ntest ; ii++ ) w->test_class[ii]=class_id[plan->test[ff][ii]] ;
+     if(w->lda){
+       if(!THD_lda_fit(w->lda,w->train_x,w->train_class,ntrain,nfeature,w->lda_shrinkage,
+                      w->lda_variance_floor,w->lda_empirical_prior,why,sizeof(why)) ||
+          !THD_lda_predict(w->lda,w->test_x,ntest,nfeature,w->test_prediction,w->test_decision,why,sizeof(why)))
+         return pp_error(err,nerr,"fold %s LDA: %s",plan->name[ff],why);
+       w->fold_covariance_scale[ff]=w->lda->reference;
+       w->fold_variance_floor[ff]=w->lda->reference*w->lda_variance_floor;
+       w->fold_covariance_form[ff]=w->lda->form;
+     }else{
      if( !centroid_refit(w->centroid,distance,w->train_x,w->train_class,
                          ntrain,nfeature,why,sizeof(why)) )
        return pp_error(err,nerr,"fold %s classifier fit: %s",plan->name[ff],why) ;
      if( !THD_centroid_predict(w->centroid,w->test_x,ntest,nfeature,
                                w->test_prediction,w->test_decision,why,sizeof(why)) )
        return pp_error(err,nerr,"fold %s prediction: %s",plan->name[ff],why) ;
+     }
+     }else for(ii=0;ii<ntest;ii++){
+       int row=plan->test[ff][ii],best=0;
+       const float *scores=w->ridge_cv->prediction+(size_t)row*w->nclass;
+       w->test_class[ii]=class_id[row];
+       for(jj=0;jj<w->nclass;jj++){
+         w->test_decision[(size_t)ii*w->nclass+jj]=scores[jj];
+         if(scores[jj]>scores[best])best=jj;
+       }
+       w->test_prediction[ii]=best;
+     }
      if( !THD_mvpa_score_classification(w->test_class,w->test_prediction,
                                         ntest,w->nclass,w->fold_confusion,
                                         w->fold_recall,&fold_score,why,sizeof(why)) )
@@ -786,7 +1367,7 @@ int THD_mvpa_run_centroid_cv( const THD_foldplan *plan,
    return 1 ;
 }
 
-int THD_mvpa_run_centroid_permutations(
+int THD_mvpa_run_classification_permutations(
                                const THD_foldplan *plan,
                                int distance, const float *x,
                                int nfeature, const int *class_id,
@@ -799,7 +1380,7 @@ int THD_mvpa_run_centroid_permutations(
    int ip,ii ; char why[512] ;
    if( err!=NULL && nerr>0 ) err[0]='\0' ;
    if( plan==NULL || class_id==NULL || pset==NULL || permuted_class==NULL ||
-       null_score==NULL || w==NULL || pset->nobs!=plan->nsample ||
+       null_score==NULL || w==NULL || plan!=w->plan || pset->nobs!=plan->nsample ||
        pset->nperm<1 || pset->perm==NULL || pset->sign==NULL )
      return pp_error(err,nerr,"permutation CV needs matching folds, relabelings, scratch, and workspace") ;
    if( metric!=THD_METRIC_ACCURACY && metric!=THD_METRIC_BALANCED_ACCURACY )
@@ -808,13 +1389,15 @@ int THD_mvpa_run_centroid_permutations(
    for( ip=0 ; ip<pset->nperm ; ip++ ){
      const int *perm=pset->perm+(size_t)ip*pset->nobs ;
      const signed char *sign=pset->sign+(size_t)ip*pset->nobs ;
+     memset(w->prediction,0,sizeof(int)*(size_t)pset->nobs);
      for( ii=0 ; ii<pset->nobs ; ii++ ){
        int src=perm[ii] ;
-       if( src<0 || src>=pset->nobs || sign[ii]!=1 )
+       if( src<0 || src>=pset->nobs || sign[ii]!=1 || w->prediction[src] || (ip==0 && src!=ii))
          return pp_error(err,nerr,"invalid label relabeling %d at sample %d",ip+1,ii+1) ;
+       w->prediction[src]=1;
        permuted_class[ii]=class_id[src] ;
      }
-     if( !THD_mvpa_run_centroid_cv(plan,distance,x,nfeature,permuted_class,
+     if( !THD_mvpa_run_classification_cv(plan,distance,x,nfeature,permuted_class,
                                     group_id,w,why,sizeof(why)) )
        return pp_error(err,nerr,"label relabeling %d: %s",ip+1,why) ;
      null_score[ip]=(float)(metric==THD_METRIC_ACCURACY ? w->score.accuracy
@@ -823,8 +1406,24 @@ int THD_mvpa_run_centroid_permutations(
        return pp_error(err,nerr,"label relabeling %d produced a non-finite score",ip+1) ;
    }
 
-   if( !THD_mvpa_run_centroid_cv(plan,distance,x,nfeature,class_id,group_id,
+   if( !THD_mvpa_run_classification_cv(plan,distance,x,nfeature,class_id,group_id,
                                   w,why,sizeof(why)) )
      return pp_error(err,nerr,"restoring observed labels after permutation: %s",why) ;
    return 1 ;
+}
+
+int THD_mvpa_run_centroid_cv(const THD_foldplan *plan,int distance,const float *x,
+ int p,const int *classes,const int *groups,THD_mvpa_workspace *w,char *err,int nerr)
+{
+   if(w && (w->ridge_cv || w->lda))return pp_error(err,nerr,"centroid runner needs a centroid-configured workspace");
+   return THD_mvpa_run_classification_cv(plan,distance,x,p,classes,groups,w,err,nerr);
+}
+
+int THD_mvpa_run_centroid_permutations(const THD_foldplan *plan,int distance,
+ const float *x,int p,const int *classes,const int *groups,int metric,
+ const PERM_set *pset,int *permuted,float *scores,THD_mvpa_workspace *w,char *err,int nerr)
+{
+   if(w && (w->ridge_cv || w->lda))return pp_error(err,nerr,"centroid runner needs a centroid-configured workspace");
+   return THD_mvpa_run_classification_permutations(plan,distance,x,p,classes,groups,
+      metric,pset,permuted,scores,w,err,nerr);
 }

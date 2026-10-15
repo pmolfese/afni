@@ -28,6 +28,31 @@
 #define THD_CENTROID_CORRELATION         1
 #define THD_CENTROID_COSINE              2
 
+#define THD_LDA_DIAGONAL                 0
+#define THD_LDA_SHRINKAGE                1
+#define THD_LDA_FORM_DIAGONAL            0
+#define THD_LDA_FORM_PRIMAL              1
+#define THD_LDA_FORM_DUAL                2
+
+typedef struct THD_lda_model THD_lda_model;
+
+/* Pooled within-class covariance uses n-nclass degrees of freedom (must be
+   positive). Diagonal mode floors each variance at variance_floor*reference.
+   Shrinkage mode uses (1-alpha)*S + max(alpha,variance_floor)*reference*I,
+   with 0<alpha<=1. Reference is mean pooled variance; if zero, use overall
+   training variance, then 1 for wholly constant data. variance_floor must be
+   in [1e-12,1]. Priors are equal unless empirical_prior is nonzero. Models
+   refit without allocating; shrinkage factors min(n,p) via primal/Woodbury
+   solves. Decisions are centered linear discriminants, not probabilities. */
+extern THD_lda_model *THD_lda_alloc(int mode, int max_sample, int max_feature,
+   int nclass, char *err, int nerr);
+extern int THD_lda_fit(THD_lda_model *m, const float *x, const int *classes,
+   int n, int p, double alpha, double variance_floor, int empirical_prior,
+   char *err, int nerr);
+extern int THD_lda_predict(const THD_lda_model *m, const float *x, int n, int p,
+   int *prediction, double *decision, char *err, int nerr);
+extern void THD_lda_free(THD_lda_model *m);
+
 typedef struct {
    int method , nfeature , nfit , ngroup , nconstant ;
    int nfeature_alloc , ngroup_alloc ;
@@ -49,6 +74,76 @@ typedef struct {
    double pearson , spearman , cv_r2 , mae , rmse ;
 } THD_mvpa_continuous_score ;
 
+#define THD_RIDGE_AUTO   0
+#define THD_RIDGE_PRIMAL 1
+#define THD_RIDGE_DUAL   2
+
+typedef struct THD_ridge_workspace THD_ridge_workspace ;
+
+/* Compact row-major matrices; positive lambda penalizes slopes only. Fit
+   learns predictor/response means from training rows. AUTO factors the smaller
+   of X'X and XX'. Factor capacity is min(max_sample,max_feature); a forced
+   form must fit that capacity. Repeated fits/predictions allocate no buffers. */
+extern THD_ridge_workspace *THD_ridge_alloc(int max_sample, int max_feature,
+                                           int max_output, char *err, int nerr);
+extern int THD_ridge_fit(THD_ridge_workspace *w, const float *x, const float *y,
+                         int n, int p, int q, double lambda, int form,
+                         char *err, int nerr);
+extern int THD_ridge_predict(const THD_ridge_workspace *w, const float *x,
+                             int n, float *prediction, char *err, int nerr);
+extern void THD_ridge_free(THD_ridge_workspace *w);
+
+typedef struct {
+   const THD_foldplan *plan;
+   int max_feature, max_output, preprocess;
+   THD_preprocessor *prep;
+   THD_ridge_workspace *ridge;
+   float *train_x, *test_x, *train_y, *test_y;
+   float *prediction, *baseline; /* [sample][active output]; NAN if untested */
+   float *truth_scratch, *pred_scratch, *base_scratch;
+   double *rank_scratch;
+   int *index_scratch;
+   THD_mvpa_continuous_score *score;      /* [output], pooled tested rows */
+   THD_mvpa_continuous_score *fold_score; /* [fold][active output] */
+   const THD_nested_foldplan *nested; /* optional borrowed tuning plan */
+   int nlambda;
+   double *lambda_grid, *selected_lambda; /* grid owned; selection [fold] */
+   double *inner_loss; /* [outer fold][lambda], mean SSE/baseline SSE */
+   int *inner_nvalid; /* [outer fold], responses with nonzero baseline SSE */
+   int *inner_train, *inner_test; /* global sample index scratch */
+   double *inner_sse, *inner_baseline; /* [lambda][max_output], [max_output] */
+} THD_mvpa_ridge_workspace;
+
+/* The validated borrowed plan must outlive the workspace. Active p/q may be
+   smaller than allocation capacities. Results use the active q stride.
+   group_id is required for run_center; held-out-only groups are rejected.
+   Prediction/baseline buffers retain original sample order. */
+extern THD_mvpa_ridge_workspace *THD_mvpa_ridge_workspace_alloc(
+   const THD_foldplan *plan, int max_feature, int max_output, int preprocess,
+   char *err, int nerr);
+extern int THD_mvpa_run_ridge_cv(THD_mvpa_ridge_workspace *w,
+   const float *x, int p, const float *y, int q, const int *group_id,
+   double lambda, char *err, int nerr);
+/* Enable nested tuning once per workspace. The nested plan must use w->plan.
+   Select one lambda per outer fold by mean response-wise SSE/baseline SSE
+   over pooled inner held-out rows. Exact ties, or all-constant responses,
+   select the largest lambda. The run's fixed lambda argument is then unused. */
+extern int THD_mvpa_ridge_set_tuning(THD_mvpa_ridge_workspace *w,
+   const THD_nested_foldplan *nested, const double *lambda_grid, int nlambda,
+   char *err, int nerr);
+/* Shuffle complete response rows (decode) or predictor rows (encode), keeping
+   folds fixed and refitting preprocessing, tuning, and models for each slot.
+   permuted needs nsample*(shuffle_predictors?p:q) floats. null_score is
+   [permutation][aggregate?1:q] in original metric units; undefined scores are
+   NAN. Aggregate is the mean over defined response scores, as in encoding.
+   Slot zero must be identity. Observed predictions/tuning are restored. */
+extern int THD_mvpa_run_ridge_permutations(THD_mvpa_ridge_workspace *w,
+   const float *x, int p, const float *y, int q, const int *group_id,
+   double lambda, const PERM_set *pset, int shuffle_predictors,
+   int metric, int aggregate, float *permuted, float *null_score,
+   char *err, int nerr);
+extern void THD_mvpa_ridge_workspace_free(THD_mvpa_ridge_workspace *w);
+
 typedef struct {
    int distance , nclass , nfeature , nfit , nfeature_alloc ;
    int *class_count ;       /* [nclass]                                  */
@@ -69,6 +164,14 @@ typedef struct {
 
    THD_preprocessor *prep ;
    THD_centroid_model *centroid ;
+   THD_mvpa_ridge_workspace *ridge_cv ; /* NULL unless ridge configured */
+   THD_lda_model *lda ; /* NULL unless LDA configured */
+   double lda_shrinkage, lda_variance_floor;
+   int lda_empirical_prior;
+   double *fold_covariance_scale, *fold_variance_floor; /* LDA [fold] */
+   int *fold_covariance_form; /* THD_LDA_FORM_* [fold] */
+   float *class_response ; /* [sample][class], 0/1 coding for ridge */
+   double ridge_lambda ;
    int *train_count ;
    int *fold_confusion ;
    double *fold_recall ;
@@ -91,6 +194,31 @@ extern THD_mvpa_workspace * THD_mvpa_workspace_alloc(
                                       int max_feature, int nclass,
                                       int preprocess, const int *group_id,
                                       char *err, int nerr ) ;
+
+/* Configure ridge classification once, before repeated CV/permutation runs.
+   Fits one 0/1 response per class, with unpenalized intercepts; argmax scores
+   are not probabilities. Exact ties choose the lowest class ID. Optional
+   nested tuning minimizes the existing mean class-wise SSE/baseline SSE,
+   with largest-lambda ties. Every inner training set must contain all classes.
+   The nested plan is borrowed and must outlive this workspace. */
+extern int THD_mvpa_classification_set_ridge(THD_mvpa_workspace *w,
+   double lambda, const THD_nested_foldplan *nested,
+   const double *grid, int nlambda, char *err, int nerr);
+extern int THD_mvpa_classification_set_lda(THD_mvpa_workspace *w, int mode,
+   double alpha, double variance_floor, int empirical_prior, char *err, int nerr);
+/* Default workspaces run centroid; configured workspaces run ridge or LDA.
+   distance selects the centroid metric and is unused by ridge/LDA (pass zero).
+   Results use the existing classification workspace fields for either model.
+   Permutations require bijections, +1 signs and an identity in slot zero;
+   preprocessing, tuning and fitting repeat, and observed results are restored. */
+extern int THD_mvpa_run_classification_cv(const THD_foldplan *plan,
+   int distance, const float *x, int nfeature, const int *class_id,
+   const int *group_id, THD_mvpa_workspace *w, char *err, int nerr);
+extern int THD_mvpa_run_classification_permutations(const THD_foldplan *plan,
+   int distance, const float *x, int nfeature, const int *class_id,
+   const int *group_id, int metric, const PERM_set *pset,
+   int *permuted_class, float *null_score, THD_mvpa_workspace *w,
+   char *err, int nerr);
 
 /*! Run fold-local preprocessing, centroid fitting, held-out prediction, and
     classification scoring.  Results are workspace-owned and remain valid
