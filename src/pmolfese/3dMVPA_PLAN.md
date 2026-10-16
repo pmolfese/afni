@@ -1917,3 +1917,125 @@ The intended outcome is a coherent AFNI pattern-analysis stack: `3dRSA` for
 representational geometry, `3dMVPA` for held-out prediction, and shared
 libraries for sample organization, spatial extraction, cross-validation,
 inference, and numerical modeling.
+
+## Toolbox Comparison and Remaining Gaps (2026-10-15)
+
+This is a capability and workflow assessment, not a numerical or speed
+benchmark. It compares the implemented CLI/library surface in this checkout
+against the primary documentation linked below. Documentation reviewed was
+labeled PyMVPA 2.6.5.dev1 and BrainIAK 0.12; these labels are not assertions
+about their newest releases or the versions installed locally. Proposed
+roadmap items are not counted as implemented capabilities. Names and links
+here are comparison references, not runtime dependencies or program branding.
+
+### Overall position
+
+`3dMVPA` is now a useful, focused native AFNI prediction program: centroid,
+ridge, diagonal/shrinkage LDA and linear SVM classification; ridge continuous
+decoding and voxel/pattern encoding; ROI, volume and geodesic surface analyses;
+grouped nested ridge/SVM tuning; blocked empirical spatial inference; held-out
+prediction/fold audits; and separate descriptive ridge coefficient exports.
+It is not yet a replacement for a general-purpose MVPA research framework.
+
+PyMVPA is the closer comparison for flexible classification/regression
+pipelines. Its examples include surface searchlights, nested CV, estimator
+adapters, kernels and sensitivity analyses. Our present estimator and pipeline
+catalog is narrower. [PyMVPA analysis examples](https://www.pymvpa.org/examples.html).
+
+BrainIAK is a broader computational-neuroimaging toolkit, not simply a rival
+classifier catalog: it includes functional alignment, connectivity analysis,
+event segmentation, reconstruction and Bayesian representational analyses.
+Missing those methods is a scope difference, not evidence that our implemented
+ridge or classifier is numerically inferior. [BrainIAK module index](https://brainiak.org/docs/py-modindex.html).
+
+### Where we currently fall short
+
+| Area | Current limitation in 3dMVPA | Comparison and planned response |
+|---|---|---|
+| Estimator breadth | No logistic/probability model, elastic net, PLS, SVR, Huber or nonlinear kernels yet | PyMVPA exposes additional learners and external estimator adapters, including sparse multinomial logistic regression. Existing proposals 28–32, 36–37 and 40 cover selected expansions, not blanket estimator compatibility. [Examples](https://www.pymvpa.org/examples.html), [sparse logistic model](https://www.pymvpa.org/generated/mvpa2.clfs.smlr.SMLR.html). |
+| Pipeline composition | No CLI fold-local feature selection, PCA/PCR or nuisance adjustment; arbitrary user-defined measures cannot simply be plugged into the command | PyMVPA composes mappers and meta-classifiers within CV, and documents training-only feature selection. Items 22–24 and 33 are higher-value gaps than adding many nearly equivalent classifiers. [Meta-classifiers](https://www.pymvpa.org/tutorial_meta_classifiers.html), [training-only selection](https://www.pymvpa.org/tutorial_sensitivity.html). |
+| Training/application workflow | CLI fixed independent partitions, frozen model reload/application and cross-condition transfer are still proposed | PyMVPA has reusable fitted learners/mappers and HDF5 object storage. Our coefficient exports are not complete reusable model files. Items 21, 27 and 38 need versioned feature/preprocessing contracts. [Object storage](https://www.pymvpa.org/generated/mvpa2.base.hdf5.html), [mapper composition](https://www.pymvpa.org/tutorial_meta_classifiers.html). |
+| Functional alignment | No fold-local SRM or hyperalignment stage inside 3dMVPA | PyMVPA documents ROI/searchlight hyperalignment; BrainIAK offers SRM variants. The separate 3dSRM work does not establish leakage-safe integration with this classifier pipeline. Any integration needs its own training/application and held-out-subject contract; do not silently add it to current scope. [Hyperalignment](https://www.pymvpa.org/examples/hyperalignment.html), [functional alignment](https://brainiak.org/docs/brainiak.funcalign.html). |
+| Specialized encoding/reconstruction | Ridge prediction of neural responses is not an inverted encoding model or circular stimulus reconstruction | BrainIAK documents 1D/2D basis-channel reconstruction. Items 34–37 improve predictive encoding but do not supply that distinct analysis; circular reconstruction would need a separate scientific proposal. [Inverted encoding models](https://brainiak.org/docs/brainiak.reconstruct.html). |
+| Distributed/custom searchlights | OpenMP spatial workers on one machine; no MPI engine or user-supplied searchlight callback | BrainIAK distributes data across MPI ranks and runs user-defined voxel/block functions. This is a real flexibility/scaling gap; adding it should depend on measured workload requirements, not an assumption that native C is faster. [Distributed searchlights](https://brainiak.org/docs/brainiak.searchlight.html). |
+| Reporting and interpretation | Confusion/recall are internal rather than dedicated exports; subject summaries, calibrated probabilities, Haufe patterns and inferential model comparisons remain incomplete | Items 20, 25–26 and 29 address these gaps. PyMVPA already demonstrates confusion/sensitivity outputs; raw coefficients are not activation maps. This is a usability/scientific-interpretation priority, not just a model-count issue. [Sensitivity and confusion outputs](https://www.pymvpa.org/tutorial_sensitivity.html). |
+| Temporal designs and advanced nulls | Current continuous nulls require exchangeable rows; no general temporal, nuisance-residual or population-inference workflow | Existing row blocking must not be advertised as an autocorrelation model. Items 22 and 39 require explicit null validation; subject summaries alone do not provide population inference. This is our limitation, not a claim that either comparison toolbox automatically solves every design. |
+| Validation and user ecosystem | Focused local known-answer/regression tests, but no comprehensive matched cross-toolbox benchmark or comparable body of application examples established here | Treat numerical agreement, null calibration, resource use and ease of use as separate validation goals. Documentation and reproducible real-data examples need to grow alongside features. Do not infer another project's maintenance status from documentation age. |
+
+BrainIAK's FCMA, event segmentation, Bayesian RSA and other specialized models
+are additional out-of-scope differences. Likewise, the existence of `3dRSA`
+does not imply equivalence with Bayesian RSA. We should not reproduce an entire
+toolkit inside one command. [BrainIAK module catalog](https://brainiak.org/docs/py-modindex.html).
+
+### Where we have a concrete advantage for AFNI users
+
+These are current integration strengths and workflow judgments, not claims of
+unique algorithms or demonstrated improvements in scientific accuracy:
+
+- **Direct AFNI regression-to-prediction workflow.** Manual sample tables and
+  X-matrix expansion converge on the same sample/fold validation path, including
+  selected coefficient sub-bricks. This can remove custom conversion/glue code
+  for users already working with AFNI regression outputs.
+- **A packaged end-to-end command for the supported analyses.** Extraction,
+  fold-local fitting/tuning, synchronized blocked permutations, BH/max-statistic
+  correction and AFNI statistical-map metadata are connected in one interface.
+  This is an advantage in setup consistency, not proof that other toolboxes
+  cannot implement the same analysis.
+- **Native volume and sparse-surface output contracts.** Preserved mesh node
+  IDs, domain validation and standard AFNI outputs make the existing surface
+  path directly usable in an AFNI/SUMA workflow. PyMVPA also supports surfaces;
+  surface analysis itself is not an exclusive capability. BrainIAK's documented
+  searchlight interface is volumetric; custom extensions are a different claim.
+  [PyMVPA surface examples](https://www.pymvpa.org/examples.html),
+  [BrainIAK searchlight interface](https://brainiak.org/docs/brainiak.searchlight.html).
+- **Consistent auditability across supported modes.** Sample identities,
+  original feature/node IDs, held-out predictions, selected penalties, fold
+  diagnostics and descriptive-refit labeling have explicit conventions and
+  regression tests, including worker-count agreement and restoration after nulls.
+  This is a strength of our contract, not evidence that other tools are
+  irreproducible or less statistically careful.
+- **No runtime Python scientific stack for these native analyses.** Users with
+  the AFNI build do not need to assemble Python estimator pipelines. AFNI still
+  has build/runtime dependencies, and external toolboxes remain valuable as
+  independent validation references.
+
+In particular, nested CV, training-only transformations, permutations and
+surface searchlights are not new advantages invented by this program. PyMVPA
+documents these capabilities. Our advantage is their constrained AFNI-native
+packaging for the analyses we support. [Nested/surface examples](https://www.pymvpa.org/examples.html),
+[permutation testing](https://www.pymvpa.org/examples/permutation_test.html),
+[training-only feature selection](https://www.pymvpa.org/tutorial_sensitivity.html).
+
+### What is not established, and how to test it
+
+Do not claim better prediction accuracy, stronger statistical validity, lower
+memory use or faster execution than either toolbox without matched benchmarks.
+Compiled C is not sufficient evidence: other toolboxes also use optimized
+numerical code and may offer different parallel/distributed strategies.
+
+For a reproducible comparison, record exact installed versions and:
+
+1. Match samples, voxel/node order, train/test folds, class encoding, scaling,
+   intercept/prior conventions, covariance denominators and penalty objectives.
+   Match squared-hinge versus hinge SVM loss and intercept regularization;
+   similarly named estimators need not fit identical models.
+2. Compare fixed-parameter decisions/predictions before comparing tuned models.
+   Then match inner folds, candidate grids, objective aggregation and tie rules.
+   Align CV-R2 baseline definitions rather than comparing score labels alone.
+3. Supply the same permutation index arrays and correction families. Compare
+   empirical counts and corrected probabilities, plus null-calibration fixtures;
+   a common seed does not ensure common permutations across implementations.
+4. Benchmark ROI, volume and sparse-surface workloads separately. Record setup
+   and I/O time, fitting/null time, peak resident memory, thread/process counts,
+   sample/feature sizes and null counts. A single-node comparison is not an
+   MPI scalability comparison.
+5. Include real AFNI-derived sample tables and reproducible synthetic nulls,
+   not only easy separable examples. Keep reference-toolbox names/dependencies
+   out of program code and runtime requirements. Nice Python runs and cap their
+   numerical-library/core use at five cores, as requested.
+
+The most valuable near-term gap closures remain item 20's reporting and item
+21's explicit independent partitions, followed by training-only transforms,
+generalized tuning/logistic classification, model application and the encoding
+extensions already proposed. This comparison does not reorder the active
+roadmap or authorize additional implementation.
