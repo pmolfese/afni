@@ -68,7 +68,8 @@ or completion state change.
    inside training splits, audit their original IDs, and tune feature counts
    within grouped inner CV.
 24. **Fold-Local PCA (Proposed)** -- fit and apply training-only projections,
-   with nested component-count selection and fully refitted permutation paths.
+   with nested component-count selection and fully refitted permutation paths;
+   expose principal-component regression by composing PCA with regression.
 25. **Haufe/Activation-Pattern Outputs (Proposed)** -- add descriptive signal
    patterns with explicit scaling and interpretation contracts alongside
    existing decoder coefficient outputs.
@@ -95,10 +96,38 @@ or completion state change.
 32. **Robust Huber Regression (Proposed; Later Priority)** -- add an optional
    robust loss for continuous decode/encode applications where large response
    residuals dominate squared-error fits, with nested regularization/loss tuning.
+33. **Generalized Inner-CV Tuning (Proposed)** -- share estimator-independent
+   grouped candidate evaluation, explicit selection objectives and audit schemas,
+   including ACC/BACC classifier tuning rather than ridge-only squared loss.
+34. **Response-Specific Ridge Penalties (Proposed)** -- optionally select one
+   lambda per response within each outer training set, retaining shared-lambda
+   behavior as the default and making the extra cost explicit.
+35. **Banded Ridge Encoding (Proposed)** -- assign separate penalties to named
+   predictor feature groups, with grouped nested selection and feature-space
+   contribution summaries under an explicit interpretation contract.
+36. **Reduced-Rank Regression (Proposed; Later Priority)** -- add a distinct
+   low-rank multi-response regression option with nested rank/penalty selection
+   and an explicit shared-response domain.
+37. **Kernel Ridge and Multiple-Kernel Ridge (Proposed; Later Priority)** --
+   stage explicit-kernel regression after linear baselines; validate training-only
+   kernel preprocessing, nested kernel/penalty selection and memory limits.
+38. **Cross-Condition Generalization (Proposed)** -- train on one specified
+   task, condition or session domain and test another, with explicit sample,
+   class/response and feature-domain matching.
+39. **Time-Series Encoding (Proposed)** -- add run-aware lagged predictors,
+   buffered temporal partitions and separately validated temporal nulls, without
+   treating serially dependent rows as freely exchangeable samples.
+40. **Elastic-Net Logistic Classification (Proposed; Later Priority)** --
+   extend item 29's L2 baseline with sparse L1/L2 classification penalties,
+   nested strength/mixing selection and audited convergence.
 
-Items 20–32 are proposed scope, not implemented capabilities. Adding them to
+Items 20–40 are proposed scope, not implemented capabilities. Adding them to
 this roadmap does not authorize implementation; obtain user direction before
 starting item 20 and before advancing to each subsequent item.
+Existing item numbers and item 20's next-step priority are preserved. Numbers
+identify proposals, not permission to skip dependencies: item 33 should provide
+shared tuning infrastructure for later estimators, and item 34 should precede
+the multi-penalty encoding work in item 35.
 
 Development cadence: complete one authorized roadmap item, explain why each
 part matters and its success metric, report what fMRI users can now do, then
@@ -1035,15 +1064,17 @@ coefficient exports and saved-model application are outside this slice.
 Validation: all six MVPA gates pass (`thd_mvpa:unit`, classification, ridge,
 coefficient, SVM and surface integration). Both CMake and Make continue to
 compile the existing `thd_mvpa` source; no new build dependency is introduced.
-Roadmap items 1–19 are complete. Items 20–32 are proposed expansions; item 20
+Roadmap items 1–19 are complete. Items 20–40 are proposed expansions; item 20
 is next pending user direction. Further implementation follows the development
 cadence recorded at the top of this plan.
 
 Estimator proposals 28–32 cover elastic-net regression, regularized logistic
 classification, PLS, linear SVR and Huber regression; see Phase 6 for their
-mode-specific contracts and acceptance metrics. These remain proposals, not
-implemented capabilities. Kernels, real-time support, legacy SVM model
-compatibility and transductive modes remain outside current scope.
+mode-specific contracts and acceptance metrics. Phase 7 adds proposals 33–40
+for generalized tuning, encoding extensions and generalization workflows.
+These remain proposals, not implemented capabilities. Kernel models are
+explicitly later-priority proposals, not current support. Real-time support,
+legacy SVM model compatibility and transductive modes remain outside scope.
 
 ## Mode-Specific Behavior
 
@@ -1589,7 +1620,7 @@ and how it helps their analyses. Prompt the user before the next slice.
 | 21. Explicit train/test partitions | Expose existing fixed-partition support for a prespecified independent test set | Only designated training rows affect preprocessing, tuning and fitting; training-only rows retain no held-out predictions; incompatible partition/tuning designs fail clearly | Evaluate a model on an explicitly reserved test set without inventing CV groups |
 | 22. Fold-local nuisance adjustment | Assess prediction after accounting for specified motion, age, site or other covariates | Known confound-only fixtures lose predictable nuisance signal while independent genuine signal remains; held-out perturbations cannot change fitted adjustments; each supported inference path matches its stated null | Ask a clearly defined predictive question after specified covariate adjustment |
 | 23. Fold-local feature selection | Retain informative features within larger patterns using a validated selection procedure | Selection uses training rows exclusively; selected voxel/node IDs are audited; feature-count tuning remains nested; permutations rerun selection | Reduce irrelevant features while retaining an inspectable mapping to the original neural domain |
-| 24. Fold-local PCA | Provide controlled dimensionality reduction for correlated, high-dimensional patterns | Known projection/reconstruction checks pass; components and component-count selection use training data only; every permutation refits the projection | Model lower-dimensional pattern structure with explicit component diagnostics |
+| 24. Fold-local PCA / principal-component regression | Provide controlled dimensionality reduction and compose it with regression for correlated, high-dimensional patterns | Known projection/reconstruction and composed-regression predictions pass; PCA and regression preprocessing use training data only; component-count/penalty selection is nested; every permutation refits the pipeline | Predict through an audited lower-dimensional representation without needing a separate PCA implementation per estimator |
 | 25. Haufe/activation-pattern outputs | Describe signal represented by a decoder using an explicit transformation beyond raw predictive weights | Synthetic correlated-feature examples recover expected patterns; scaling, covariance estimation and response conventions are specified; descriptive outputs stay separate from coefficient significance and held-out scores | Inspect descriptive neural signal patterns under a documented interpretation contract |
 | 26. Paired model comparisons | Compare estimators or encoding designs using identical held-out observations | Paired score differences match independent calculations; sample/fold alignment is checked; any inferential extension has a separately specified null and null-calibration tests | Compare predictive performance on the same evaluation data |
 | 27. Saved-model application | Apply a frozen fitted model to genuinely new data | Saved/reloaded predictions agree; preprocessing and feature order are preserved; incompatible feature domains, labels, dimensions and model versions fail clearly; applying the model never refits it | Reuse a validated model on new samples with a reproducible feature/preprocessing contract |
@@ -1626,8 +1657,11 @@ and how it helps their analyses. Prompt the user before the next slice.
 #### Deferred scope requiring a separate proposal
 
 Multi-target summary/family definitions, population inference across subjects,
-class weighting, compact beta-series input, temporal/residual nulls and
-estimators beyond proposals 28–32 remain deferred. Adding those proposals
+class weighting, compact beta-series input and residual-null methods not
+explicitly covered by item 22 remain deferred. Item 39 now proposes temporal
+encoding/null contracts; it does not make current row-shuffle inference valid
+for serially dependent samples. Estimators beyond proposals 28–40 remain
+deferred. Adding those proposals
 does not authorize implementation or imply support for general probability
 calibration across all classifiers. Existing within-subject folds and pooled
 prediction maps do not provide a dedicated population-inference workflow.
@@ -1664,7 +1698,8 @@ existing AFNI sample, spatial, grouped CV and inference infrastructure.
   Define class coding, intercept treatment, penalty normalization and scoring
   before coding. Probability output alone does not establish calibration.
   Define multiclass Brier/log-loss conventions and any nested calibration
-  protocol explicitly. Elastic-net logistic penalties can be proposed later.
+  protocol explicitly. Elastic-net logistic penalties are separately proposed
+  in item 40 and do not expand the initial L2 implementation.
 - Item 30 uses supervised PLS regression, distinct from item 24's unsupervised
   PCA. Specify the exact PLS variant, predictor/response centering and scaling,
   deflation, component/rank limits and multi-response objective. Joint encoding
@@ -1701,6 +1736,88 @@ existing AFNI sample, spatial, grouped CV and inference infrastructure.
 6. Preserve existing estimator outputs and complete the relevant regression
    tests. Report measured benefits, limitations and what fMRI users can now do,
    then prompt before advancing to the next item or expanding scope.
+7. Extend `thd_mvpa.[ch]` and `thd_crossval.[ch]` for coherent numerical and CV
+   support rather than adding a library per estimator. Reuse extraction,
+   workspaces, maps and audits. Keep independent-toolbox comparisons in the
+   validation workflow, not the distributed program; nice Python comparisons
+   and cap their numerical-library/core usage at five cores.
+
+### Phase 7: proposed tuning, encoding and generalization extensions (items 33–40)
+
+Added on 2026-10-15 after reconciling the model/capability discussion against
+the existing roadmap. Existing proposals 20–32 and completed items 18–19 are
+retained, not duplicated or restarted. Item 20 remains next pending user
+direction. These additions authorize planning only, not implementation.
+
+| Item / mode | Why are we doing this? | Completion metric | Intended benefit for fMRI users |
+|---|---|---|---|
+| 33. Generalized inner-CV tuning / all applicable modes | Avoid estimator-specific tuning machinery and make the selection objective explicit | Existing ridge/SVM defaults and audits remain unchanged; known candidate grids select the expected parameters for explicit ACC/BACC, continuous-error or probability-aware objectives; all selection uses grouped inner training/validation rows only | Choose a model using the performance criterion appropriate to the scientific question, with inspectable candidate results |
+| 34. Response-specific ridge penalties / decode, encode | Allow targets or voxel responses with different signal/noise characteristics to receive different regularization | Analytic multi-response fixtures select different known penalties; held-out response perturbations cannot change selection; selected penalties and per-response losses are audited; shared-lambda results remain unchanged; runtime/memory costs are measured | Avoid forcing every response in a joint fit to use the same regularization while keeping the existing simpler option |
+| 35. Banded ridge / encode first | Regularize named visual, semantic, acoustic or other feature spaces separately | Named group membership/order is validated; known block-penalty solutions and equivalent linear-kernel fits agree; grouped nested selection excludes outer tests; selected penalties and any descriptive contribution summaries are reproducible | Combine distinct stimulus feature spaces without requiring one penalty for all predictors |
+| 36. Reduced-rank regression / multi-response decode, encode | Constrain the fitted coefficient matrix to exploit a specified low-dimensional response relationship | Known rank-constrained solutions/predictions agree; rank limits, centering/scaling and any ridge penalty are explicit; rank/penalty selection is nested; joint response domains and held-out per-response scores are audited | Evaluate a low-rank alternative to independent response fits without conflating it with PCA or PLS |
+| 37. Kernel ridge / decode, encode; multiple-kernel extension later | Evaluate explicit nonlinear predictor relationships after establishing linear baselines | A linear kernel reproduces the matching ridge model; known nonlinear fixtures agree with an independent solver; train/test kernel centering and nested kernel parameters use training rows only; batch/memory limits and permutation refits are tested | Test a specified nonlinear relationship, or combine kernel-defined feature spaces, with the same held-out validation discipline |
+| 38. Cross-condition generalization / classify, decode, encode as defined | Separate prediction within a domain from transfer across tasks, conditions or sessions | Explicit domain partitions prohibit training access to test samples; feature IDs and class/response mappings are checked; known transfer fixtures and disjointness checks pass; incompatible target domains fail clearly | Ask whether information learned in one experimental context predicts another |
+| 39. Time-series encoding / encode first | Model delayed neural responses without crossing run boundaries or leaking neighboring time points | Lag alignment is verified on known impulse fixtures; delays never wrap across runs; buffered splits exclude the specified temporal neighborhood; lag/penalty selection remains nested; each supported temporal null has independent null-calibration tests | Fit continuous-stimulus encoding analyses with explicit hemodynamic timing and temporal-dependence assumptions |
+| 40. Elastic-net logistic classification / classify; later priority | Add sparse class prediction after establishing an L2 probability model | The L2 limit matches item 29; sparse/correlated fixtures, convergence/optimality and nested strength/mixing selection pass; selected original feature IDs and probability-sensitive held-out metrics are audited | Explore sparse categorical predictors without interpreting selected voxels as independent activation effects |
+
+#### Dependencies and scientific boundaries
+
+- Item 33 generalizes candidate evaluation and objective selection, not the
+  outer folds or inference family. Preserve current normalized squared-loss
+  ridge tuning and SVM defaults unless users explicitly select another
+  objective. Define aggregation, undefined-score handling and tie rules per
+  objective; no selection or fitted calibration may use outer-test outcomes.
+- Item 34 must distinguish per-response penalties within a multi-output fit
+  from existing voxel encoding, which already creates singleton response
+  units. Its main added value is independent penalties in shared multi-response
+  fits, including pattern encoding. Do not silently replace a pattern-level
+  tuning objective or alter target correction families.
+- Item 35 defines predictor feature groups, not sample/CV groups. Start with
+  explicit nonoverlapping named design-column groups; specify scaling, penalty
+  normalization and whether penalties are shared or response-specific.
+  Algebraically equivalent linear multiple-kernel computation may support
+  banded ridge without implying support for arbitrary nonlinear kernels.
+  Descriptive feature-space contribution summaries are not unique causal
+  effects when groups are correlated; inferential comparisons belong to item 26.
+- Item 36 is reduced-rank regression, not item 30's PLS algorithm or item 24's
+  PCA-plus-regression pipeline. Specify the fitted rank constraint and shared
+  response domain before implementation. Kernel models likewise do not inherit
+  voxel-space coefficient exports or saved-model support automatically.
+- Item 37 starts with a small explicit kernel catalog and measured CPU/memory
+  cost. Define the training kernel and new-sample cross-kernel contract, and
+  nest any bandwidth/degree selection. Multiple-kernel weights need their own
+  validated selection and interpretation contract. No nonlinear model is
+  presumed to improve generalization solely by being more flexible.
+- Item 38 builds on item 21's explicit partitions and item 27's frozen-model
+  application where appropriate; it does not require persistence for every
+  transfer analysis. Define permitted overlap of subjects, items and sessions,
+  and distinguish within-subject transfer from held-out-subject prediction.
+- Item 39 requires its own scientific sampling and null contracts. Specify
+  sample timing, censoring/missing rows, lag construction and temporal buffers;
+  fit learned transforms inside each training split. Neither unrestricted nor
+  within-run row shuffling automatically preserves temporal dependence.
+- Item 40 follows item 29 and generalized grouped tuning. Sparse feature
+  selection is predictive, not activation inference; probabilities still need
+  calibration assessment. It is distinct from item 28's continuous-response
+  elastic-net regression and its independent per-response penalty contract.
+
+#### Reconciled proposals and priorities
+
+- Existing items 22–27 already cover nuisance adjustment, feature selection,
+  PCA, activation-pattern maps, paired comparisons and saved-model application.
+  Principal-component regression extends item 24 rather than adding another
+  PCA proposal. Item 29 already includes probability scoring/calibration, and
+  item 30 already covers PLS; neither is duplicated here.
+- Coefficient maps and linear classification SVM are complete (items 18–19),
+  so recommendations to implement them are superseded by the current record.
+- After the authorized audit/partition work, generalized tuning and logistic
+  regression are high-priority classification extensions; response-specific
+  and banded ridge are high-priority encoding extensions. Elastic net and
+  fold-local transforms broaden continuous prediction. Reduced-rank and
+  nonlinear kernel models remain later priorities.
+- Random forests, boosting and neural networks are not proposed for the
+  initial native estimator catalog. Revisit only for a concrete use case with
+  justified validation, runtime and maintenance costs.
 
 ## Initial Command Surface
 
