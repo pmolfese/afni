@@ -134,6 +134,14 @@ if(TARGET 3dMVPA AND TARGET 3dUndump AND TARGET 3dbucket
         $<TARGET_FILE:3dMVPA> $<TARGET_FILE:3dUndump> $<TARGET_FILE:3dmaskdump>
     )
     set_tests_properties(3dMVPA:svm PROPERTIES LABELS "3dMVPA;numeric;integration")
+    add_test(
+      NAME 3dMVPA:classification-audits
+      COMMAND ${Python_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_audits.py
+        $<TARGET_FILE:3dMVPA> $<TARGET_FILE:3dUndump>
+    )
+    set_tests_properties(3dMVPA:classification-audits PROPERTIES
+                         LABELS "3dMVPA;numeric;integration")
   endif()
 endif()
 
@@ -192,6 +200,16 @@ if(ENABLE_TESTS)
   target_link_libraries(thd_mapinfer_unit PRIVATE m)
   add_test(NAME thd_mapinfer:unit COMMAND thd_mapinfer_unit)
   set_tests_properties(thd_mapinfer:unit PROPERTIES LABELS "3dRSA;1dTrdm;numeric;unit")
+
+  add_executable(
+    thd_permute_unit
+    ${CMAKE_SOURCE_DIR}/src/thd_permute.c
+    ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_permute.c
+  )
+  target_include_directories(thd_permute_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(thd_permute_unit PRIVATE AFNI::mri NIFTI::nifti2 NIFTI::nifticdf m)
+  add_test(NAME thd_permute:unit COMMAND thd_permute_unit)
+  set_tests_properties(thd_permute:unit PROPERTIES LABELS "3dRSA;3dMVPA;numeric;unit")
 
   add_executable(
     thd_patterns_unit

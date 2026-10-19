@@ -56,11 +56,11 @@ or completion state change.
    prediction/fold/tuning audits, and fully refitted blocked label inference.
 
 
-20. **Classification and Subject-Summary Audits (Proposed; Next, awaiting user direction)**
-   -- export confusion matrices, per-class recall, and explicit subject/stratum
-   summaries without conflating pooled prediction with population inference.
-21. **Explicit Train/Test Partition Options (Proposed)** -- expose the existing
-   fixed-partition library machinery for prespecified independent test sets.
+20. **Classification and Subject-Summary Audits (Complete)** -- opt-in confusion
+   matrices, per-class recall, pooled/fold/subject/stratum scores and equal-group
+   summaries expose weighting without implying population inference.
+21. **Explicit Train/Test Partition Options (Proposed; Next, awaiting user direction)**
+   -- expose the existing fixed-partition library machinery for prespecified independent test sets.
 22. **Fold-Local Nuisance Adjustment (Proposed)** -- define and implement
    training-only covariate adjustment, with an explicit scientific target and
    compatible inference contract.
@@ -121,10 +121,10 @@ or completion state change.
    extend item 29's L2 baseline with sparse L1/L2 classification penalties,
    nested strength/mixing selection and audited convergence.
 
-Items 20–40 are proposed scope, not implemented capabilities. Adding them to
+Items 21–40 are proposed scope, not implemented capabilities. Adding them to
 this roadmap does not authorize implementation; obtain user direction before
-starting item 20 and before advancing to each subsequent item.
-Existing item numbers and item 20's next-step priority are preserved. Numbers
+starting item 21 and before advancing to each subsequent item.
+Existing item numbers are preserved; item 21 is next. Numbers
 identify proposals, not permission to skip dependencies: item 33 should provide
 shared tuning infrastructure for later estimators, and item 34 should precede
 the multi-penalty encoding work in item 35.
@@ -140,7 +140,7 @@ This checked-in copy is the living implementation record for the `somemvpa`
 branch. Update it with each completed slice so that design decisions and code do
 not drift apart.
 
-Status as of 2026-10-15:
+Status as of 2026-10-18:
 
 | Slice | Status | Implementation |
 |---|---|---|
@@ -166,6 +166,7 @@ Status as of 2026-10-15:
 | Diagonal and shrinkage LDA | Complete | `thd_mvpa.[ch]` owns allocation-free repeated LDA fits with pooled training covariance, equal/empirical priors, explicit variance floors, and primal/Woodbury shrinkage solves; shared ROI/volume/surface classification audits and synchronized label inference preserve original sample/node IDs |
 | Descriptive coefficient maps | Complete | `-save_coefficients CPREFIX` adds an independent full-data ridge refit for decode, encode, and ridge classification; coefficient/intercept and preprocessing TSVs identify every predictor/response and map brick, with volume/sparse-surface output and explicit fixed refit penalties for tuned CV |
 | Native linear SVM | Complete | `THD_svm_model` and `-method svm` provide deterministic squared-hinge classification with a penalized intercept, fixed/grouped nested C selection, explicit convergence diagnostics, shared ROI/volume/surface audits and fully refitted blocked label nulls |
+| Classification and subject-summary audits | Complete | `-save_confusion` exports truth-row matrices and per-class recall; `-save_summary_scores` exports pooled/fold/subject/stratum ACC/BACC plus equal-subject/stratum means from original held-out predictions, with explicit missing-class and weighting contracts |
 
 ## Purpose
 
@@ -1064,7 +1065,7 @@ coefficient exports and saved-model application are outside this slice.
 Validation: all six MVPA gates pass (`thd_mvpa:unit`, classification, ridge,
 coefficient, SVM and surface integration). Both CMake and Make continue to
 compile the existing `thd_mvpa` source; no new build dependency is introduced.
-Roadmap items 1–19 are complete. Items 20–40 are proposed expansions; item 20
+Roadmap items 1–20 are complete. Items 21–40 are proposed expansions; item 21
 is next pending user direction. Further implementation follows the development
 cadence recorded at the top of this plan.
 
@@ -1607,10 +1608,11 @@ Current Phase 2 progress:
 5. [x] Add encoding-appropriate joint design-row inference for exchangeable
    samples; temporal/residual nulls require separate future contracts.
 
-### Phase 5: proposed roadmap expansion (items 20–27)
+### Phase 5: audit and workflow expansion (items 20–27)
 
-The user approved adding the following proposals on 2026-10-15. Implementation
-has not started. Each slice must preserve existing CV/inference behavior,
+The user approved adding the following proposals on 2026-10-15 and authorized
+item 20 implementation on 2026-10-18. Item 20 is complete; items 21–27 remain
+proposals. Each slice must preserve existing CV/inference behavior,
 record its validation evidence, and conclude with what fMRI users can now do
 and how it helps their analyses. Prompt the user before the next slice.
 
@@ -1625,12 +1627,115 @@ and how it helps their analyses. Prompt the user before the next slice.
 | 26. Paired model comparisons | Compare estimators or encoding designs using identical held-out observations | Paired score differences match independent calculations; sample/fold alignment is checked; any inferential extension has a separately specified null and null-calibration tests | Compare predictive performance on the same evaluation data |
 | 27. Saved-model application | Apply a frozen fitted model to genuinely new data | Saved/reloaded predictions agree; preprocessing and feature order are preserved; incompatible feature domains, labels, dimensions and model versions fail clearly; applying the model never refits it | Reuse a validated model on new samples with a reproducible feature/preprocessing contract |
 
+#### Completed item 20: classification reporting (2026-10-18)
+
+Users can add either or both options to any supported classification method
+(centroid, ridge, diagonal/shrinkage LDA or native linear SVM), for ROI,
+volumetric searchlight or sparse-surface searchlight analyses:
+
+```text
+-save_confusion results.confusion.tsv
+-save_summary_scores results.summaries.tsv
+```
+
+`-save_confusion` has one row per true class, spatial unit and summary group.
+The `Scope` is `Pooled`, `Fold`, `Subject` or `Stratum`; `Group` names that
+scope's level. `TrueClassID`/`TrueClass` identify the row; `CountClassN` columns
+identify predicted classes using the `# Class` dictionary. `NTrue` is the row
+sum and `Recall` is its diagonal count divided by `NTrue`. All globally known
+classes remain present: an absent test class has zero counts and `NA` recall.
+
+`-save_summary_scores` reports `NTest`, `NCorrect`, `NClassPresent`, `NGroups`,
+`ACC` and `BACC` for the same scopes, plus `EqualSubject` and `EqualStratum`
+rows. ACC pools samples equally; BACC averages recalls over the true classes
+present in that particular group. Equal-group rows average nonempty group
+ACC/BACC values with one vote per group, even when sample counts differ.
+Their `NTest` sums tested rows, `NGroups` counts included groups, and
+`NCorrect`/`NClassPresent` are `NA` because these rows are means of scores.
+An empty ordinary group has zero counts and `NA` scores and is excluded from
+equal-group averaging. BACC class coverage can differ across groups; the
+ordinary rows expose the coverage rather than assigning absent classes a
+zero recall.
+
+Both new audit tables append `CVFoldID` and `CVStratum` after their original
+columns. Fold rows use a stable, zero-based index in the resolved outer fold
+plan and the raw stratum label; stratum rows also identify their stratum.
+Other scopes use `NA` for these fields. The display `Group` remains human
+readable, but is not a unique key when labels contain `/`; use the spatial
+unit plus `CVFoldID` (and true class for confusion rows) for fold identities.
+
+Subject groups use the resolved `-subject_column` role (default `Subj`, or
+`All` when absent). Strata use the outer fold plan's `-within_column` levels
+(or `All` when absent); they are not interchangeable with subjects. All
+summaries subset the **original held-out predictions**, excluding untested
+rows. They do not refit each subgroup or change outer folds. In a genuinely
+within-subject CV design they agree with independent runs of those same
+subject folds; for pooled training they describe each subject's test
+predictions from the pooled models. Neither equal weighting nor a subject
+summary establishes a population test or subject independence.
+
+The tables are opt-in and retain the existing spatial-unit prefix, including
+original sparse mesh node IDs. Output remains deterministic across worker
+counts. The existing library classification scorer computes all grouped
+counts, recall and scores; reusable reporting scratch is used only inside the
+ordered output region. Null analyses restore the observed predictions before
+these exports. Existing maps, correction families and descriptive coefficient
+exports retain their contracts. Classification-only options reject continuous
+modes and collisions with other audits, ROI tables, tuning or coefficient TSVs.
+
+Validation: all seven MVPA CTest gates pass, including the new stdlib-only
+`3dMVPA:classification-audits` oracle. The oracle independently reconstructs
+all tables from prediction rows for all five classifiers; checks unequal
+subject sizes (pooled ACC 0.75 versus equal-subject ACC 5/7), missing test
+classes, independent within-subject runs, unstratified pooled models, blocked
+null restoration, opt-in invariance and filename/mode rejection. Volume and
+sparse-surface fixtures verify original spatial IDs and byte-identical tables
+with one versus two OpenMP workers. Item 21 remains proposed and requires
+separate user direction.
+
+#### Audit repairs (2026-10-18)
+
+The full classify/decode/encode audit identified two P1 defects, a P2 surface
+validation defect and a P3 reporting ambiguity; all four are repaired:
+
+- **X-matrix item bounds:** the reader rejects overlapping stimulus-column
+  ranges. `THD_xmat_items()` repeats range validation for direct library
+  callers before allocating or expanding, and reports failure with a zero
+  item count. The adapter stops with an explicit diagnostic. Malformed input
+  can no longer create more items than the `ncol`-sized allocation.
+- **Exact identity convention:** `THD_perm_set_build()` moves the enumerated
+  identity-equivalent arrangement to slot zero and substitutes the literal
+  identity with all positive signs. This retains the complete exact null,
+  including each distinct within-block class arrangement, while satisfying
+  MVPA's identity-slot requirement. Monte Carlo behavior is unchanged.
+- **Unique surface node IDs:** shared domain validation rejects repeated IDs
+  for ROI, voxel and searchlight inputs. Ordered domains need no extra
+  allocation; unordered domains are checked on a sorted temporary copy.
+  Valid input row order is preserved. Output-domain copying also validates
+  its source before modifying the destination.
+- **Unambiguous fold audits:** confusion and summary tables append the fold
+  index and separate stratum fields described above; earlier column positions
+  stay fixed. Slash-containing subject/run labels remain valid.
+
+Regression gates include malformed X-matrix rejection in all three modes,
+exact permutations with nonascending/repeated class labels for all five
+classifiers, exact set cardinality/uniqueness/bijection checks for label/sign
+and block schemes, duplicate surface rejection for all modes and spatial
+paths, valid unordered surface preservation, and slash-containing fold keys.
+Independent BrainIAK/searchlight, numerical-estimator, nested-selection,
+held-out perturbation and exhaustive p/FDR/FWE comparisons remain unchanged
+(48 synthetic cases). All 13 MVPA/shared-library CTest gates and all three
+3dRSA oracle/unit gates pass. The new unit/audit/surface regressions and ridge
+integration also pass with address/undefined-behavior sanitizers, including
+clean rejection of the original overflowing X-matrix. All four original audit
+reproductions are verified. These repairs do not start roadmap item 21.
+
 #### Starting point and boundaries
 
-- Item 20 builds on existing internal confusion matrices/per-class recall and
-  fold stratum metadata. These library capabilities are not yet dedicated CLI
-  exports. Pooled sample scores, subject-level summaries and population
-  inference must remain distinct; item 20 adds reporting, not a group test.
+- Item 20 exposes existing library confusion/recall scoring and fold stratum
+  metadata through dedicated CLI exports. Pooled sample scores, subject-level
+  summaries and population inference remain distinct; this adds reporting,
+  not a group test. See the completed contract above.
 - Item 21 exposes `THD_foldplan_fixed()`, already implemented and unit tested
   in `thd_crossval.[ch]`. It must preserve the existing distinction between
   training-only rows and scored held-out rows.
@@ -1668,7 +1773,7 @@ prediction maps do not provide a dedicated population-inference workflow.
 
 ### Phase 6: proposed estimator expansion (items 28–32)
 
-The user approved adding these model proposals on 2026-10-15. Item 20 remains
+The user approved adding these model proposals on 2026-10-15. Item 21 is now
 next; this phase does not reorder or start implementation. Huber regression
 has its own item so its scientific scope and validation can be approved
 separately from linear SVR. All implementations remain native and use the
@@ -1746,8 +1851,9 @@ existing AFNI sample, spatial, grouped CV and inference infrastructure.
 
 Added on 2026-10-15 after reconciling the model/capability discussion against
 the existing roadmap. Existing proposals 20–32 and completed items 18–19 are
-retained, not duplicated or restarted. Item 20 remains next pending user
-direction. These additions authorize planning only, not implementation.
+retained, not duplicated or restarted. Item 20 is now complete; item 21 is
+next pending user direction. These additions authorize planning only, not
+implementation.
 
 | Item / mode | Why are we doing this? | Completion metric | Intended benefit for fMRI users |
 |---|---|---|---|
@@ -1958,7 +2064,7 @@ ridge or classifier is numerically inferior. [BrainIAK module index](https://bra
 | Functional alignment | No fold-local SRM or hyperalignment stage inside 3dMVPA | PyMVPA documents ROI/searchlight hyperalignment; BrainIAK offers SRM variants. The separate 3dSRM work does not establish leakage-safe integration with this classifier pipeline. Any integration needs its own training/application and held-out-subject contract; do not silently add it to current scope. [Hyperalignment](https://www.pymvpa.org/examples/hyperalignment.html), [functional alignment](https://brainiak.org/docs/brainiak.funcalign.html). |
 | Specialized encoding/reconstruction | Ridge prediction of neural responses is not an inverted encoding model or circular stimulus reconstruction | BrainIAK documents 1D/2D basis-channel reconstruction. Items 34–37 improve predictive encoding but do not supply that distinct analysis; circular reconstruction would need a separate scientific proposal. [Inverted encoding models](https://brainiak.org/docs/brainiak.reconstruct.html). |
 | Distributed/custom searchlights | OpenMP spatial workers on one machine; no MPI engine or user-supplied searchlight callback | BrainIAK distributes data across MPI ranks and runs user-defined voxel/block functions. This is a real flexibility/scaling gap; adding it should depend on measured workload requirements, not an assumption that native C is faster. [Distributed searchlights](https://brainiak.org/docs/brainiak.searchlight.html). |
-| Reporting and interpretation | Confusion/recall are internal rather than dedicated exports; subject summaries, calibrated probabilities, Haufe patterns and inferential model comparisons remain incomplete | Items 20, 25–26 and 29 address these gaps. PyMVPA already demonstrates confusion/sensitivity outputs; raw coefficients are not activation maps. This is a usability/scientific-interpretation priority, not just a model-count issue. [Sensitivity and confusion outputs](https://www.pymvpa.org/tutorial_sensitivity.html). |
+| Reporting and interpretation | Item 20 now exports confusion/recall and descriptive subject/stratum summaries; calibrated probabilities, Haufe patterns and inferential model comparisons remain incomplete | Items 25–26 and 29 address the remaining gaps. PyMVPA already demonstrates confusion/sensitivity outputs; raw coefficients are not activation maps. This is a usability/scientific-interpretation priority, not just a model-count issue. [Sensitivity and confusion outputs](https://www.pymvpa.org/tutorial_sensitivity.html). |
 | Temporal designs and advanced nulls | Current continuous nulls require exchangeable rows; no general temporal, nuisance-residual or population-inference workflow | Existing row blocking must not be advertised as an autocorrelation model. Items 22 and 39 require explicit null validation; subject summaries alone do not provide population inference. This is our limitation, not a claim that either comparison toolbox automatically solves every design. |
 | Validation and user ecosystem | Focused local known-answer/regression tests, but no comprehensive matched cross-toolbox benchmark or comparable body of application examples established here | Treat numerical agreement, null calibration, resource use and ease of use as separate validation goals. Documentation and reproducible real-data examples need to grow alongside features. Do not infer another project's maintenance status from documentation age. |
 
@@ -2034,8 +2140,8 @@ For a reproducible comparison, record exact installed versions and:
    out of program code and runtime requirements. Nice Python runs and cap their
    numerical-library/core use at five cores, as requested.
 
-The most valuable near-term gap closures remain item 20's reporting and item
-21's explicit independent partitions, followed by training-only transforms,
+With item 20's reporting complete, the next gap closure is item 21's explicit
+independent partitions, followed by training-only transforms,
 generalized tuning/logistic classification, model application and the encoding
 extensions already proposed. This comparison does not reorder the active
 roadmap or authorize additional implementation.

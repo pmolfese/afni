@@ -221,6 +221,26 @@ static int surface_domain_test( void )
        dst->dblk->node_list!=NULL || dst->dblk->nnodes!=0 ){
      fprintf(stderr,"FAIL dense surface domain clears sparse destination: %s\n",err) ; fail=1 ;
    }
+   {
+     int unordered[4]={9,2,5,0} ;
+     memcpy(aa->dblk->node_list,unordered,sizeof(unordered)) ;
+     memcpy(bb->dblk->node_list,unordered,sizeof(unordered)) ;
+     if( !THD_surface_domain_match(aa,bb,err,sizeof(err)) ||
+         memcmp(aa->dblk->node_list,unordered,sizeof(unordered))!=0 ||
+         !THD_copy_surface_node_domain(dst,aa,err,sizeof(err)) ||
+         memcmp(dst->dblk->node_list,unordered,sizeof(unordered))!=0 ){
+       fprintf(stderr,"FAIL valid unsorted node rows must be preserved: %s\n",err) ; fail=1 ;
+     }
+     aa->dblk->node_list[3]=bb->dblk->node_list[3]=2 ;
+     if( THD_surface_domain_match(aa,bb,err,sizeof(err)) || strstr(err,"repeats node 2")==NULL ){
+       fprintf(stderr,"FAIL matching duplicate domains must be rejected: %s\n",err) ; fail=1 ;
+     }
+     if( THD_copy_surface_node_domain(dst,aa,err,sizeof(err)) ||
+         strstr(err,"repeats node 2")==NULL ||
+         memcmp(dst->dblk->node_list,unordered,sizeof(unordered))!=0 ){
+       fprintf(stderr,"FAIL duplicate copy must fail without modifying destination: %s\n",err) ; fail=1 ;
+     }
+   }
 
 done:
    if( dense!=NULL ) DSET_delete(dense) ;

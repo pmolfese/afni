@@ -161,11 +161,17 @@ static int thd_patterns_is_surface( const THD_3dim_dataset *dset )
           (DBLK_IS_NI_SURF_DSET(dset->dblk) || DBLK_IS_GIFTI(dset->dblk)) ;
 }
 
+static int thd_node_id_cmp( const void *aa, const void *bb )
+{
+   int a=*(const int *)aa,b=*(const int *)bb ;
+   return (a>b)-(a<b) ;
+}
+
 int THD_surface_domain_match( const THD_3dim_dataset *aa,
                               const THD_3dim_dataset *bb,
                               char *err, size_t errlen )
 {
-   int ii,na,nb,sa,sb ;
+   int ii,na,nb,sa,sb,ordered=1 ;
    if( err!=NULL && errlen>0 ) err[0]='\0' ;
    if( !thd_patterns_is_surface(aa) || !thd_patterns_is_surface(bb) ){
      thd_patterns_error(err,errlen,
@@ -201,6 +207,30 @@ int THD_surface_domain_match( const THD_3dim_dataset *aa,
                           ii+1,DSET_HEADNAME(aa),an,DSET_HEADNAME(bb),bn) ;
        return 0 ;
      }
+     if( ii>0 ){
+       int prev=sa?aa->dblk->node_list[ii-1]:ii-1 ;
+       if( an==prev ){
+         thd_patterns_error(err,errlen,"surface node-row metadata repeats node %d",an) ;
+         return 0 ;
+       }
+       if( an<prev ) ordered=0 ;
+     }
+   }
+   /* Compare rows in their original order, but check uniqueness on a copy.
+      Node IDs can be large and need not be sorted or contiguous. */
+   if( (sa || sb) && !ordered ){
+     int *nodes=(int *)malloc(sizeof(int)*(size_t)na) ;
+     if( nodes==NULL ){
+       thd_patterns_error(err,errlen,"out of memory validating surface node IDs") ;
+       return 0 ;
+     }
+     memcpy(nodes,sa?aa->dblk->node_list:bb->dblk->node_list,sizeof(int)*(size_t)na) ;
+     qsort(nodes,(size_t)na,sizeof(int),thd_node_id_cmp) ;
+     for( ii=1 ; ii<na ; ii++ ) if( nodes[ii]==nodes[ii-1] ){
+       thd_patterns_error(err,errlen,"surface node-row metadata repeats node %d",nodes[ii]) ;
+       free(nodes) ; return 0 ;
+     }
+     free(nodes) ;
    }
    return 1 ;
 }
@@ -216,6 +246,7 @@ int THD_copy_surface_node_domain( THD_3dim_dataset *dst,
      return 0 ;
    }
    if( !thd_patterns_is_surface(src) ) return 1 ;
+   if( !THD_surface_domain_match(src,src,err,errlen) ) return 0 ;
    if( !thd_patterns_is_surface(dst) ){
      thd_patterns_error(err,errlen,
                         "cannot copy a surface node domain into a non-surface dataset") ;

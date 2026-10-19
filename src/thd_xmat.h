@@ -92,7 +92,9 @@ extern unsigned char * THD_xmat_stims_wanted( const THD_xmat *xm , const char *l
 extern int * THD_xmat_condition_labels( const THD_xmat *xm , double frac , const unsigned char *wanted ) ;
 
 /*! The items of the wanted stimuli, in column order: one per stimulus
-    column.  *nitem receives the count.  Free with THD_xmat_items_free. */
+    column.  *nitem receives the count. Invalid/out-of-bounds or overlapping
+    stimulus ranges return NULL with count zero, as does allocation failure.
+    Free with THD_xmat_items_free. */
 extern THD_xmat_item * THD_xmat_items( const THD_xmat *xm , const unsigned char *wanted , int *nitem ) ;
 extern void THD_xmat_items_free( THD_xmat_item *it , int nitem ) ;
 

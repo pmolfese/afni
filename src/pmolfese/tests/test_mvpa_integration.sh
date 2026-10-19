@@ -160,6 +160,8 @@ OMP_NUM_THREADS=2 "$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
   -nperm 99 -permute_within Run -seed 42 \
   -save_predictions "$work/searchlight_parallel.predictions.tsv" \
   -save_fold_scores "$work/searchlight_parallel.folds.tsv" \
+  -save_confusion "$work/searchlight_parallel.confusion.tsv" \
+  -save_summary_scores "$work/searchlight_parallel.summary.tsv" \
   > "$work/searchlight.audit.txt" 2>&1
 
 grep -q "searchlight neighborhood 'SPHERE(1.1)'" "$work/searchlight.audit.txt"
@@ -184,7 +186,9 @@ OMP_NUM_THREADS=1 "$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
   -searchlight 'SPHERE(1.1)' -prefix "$work/searchlight_serial" -quiet \
   -nperm 99 -permute_within Run -seed 42 \
   -save_predictions "$work/searchlight_serial.predictions.tsv" \
-  -save_fold_scores "$work/searchlight_serial.folds.tsv"
+  -save_fold_scores "$work/searchlight_serial.folds.tsv" \
+  -save_confusion "$work/searchlight_serial.confusion.tsv" \
+  -save_summary_scores "$work/searchlight_serial.summary.tsv"
 "$maskdump" -noijk -mask "$work/dset_mask+orig" \
   -o "$work/searchlight_parallel.txt" "$work/searchlight_result+orig" \
   >/dev/null 2>&1
@@ -194,6 +198,14 @@ OMP_NUM_THREADS=1 "$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
 cmp "$work/searchlight_parallel.txt" "$work/searchlight_serial.txt"
 cmp "$work/searchlight_parallel.predictions.tsv" "$work/searchlight_serial.predictions.tsv"
 cmp "$work/searchlight_parallel.folds.tsv" "$work/searchlight_serial.folds.tsv"
+cmp "$work/searchlight_parallel.confusion.tsv" "$work/searchlight_serial.confusion.tsv"
+cmp "$work/searchlight_parallel.summary.tsv" "$work/searchlight_serial.summary.tsv"
+awk -F '\t' '
+  /^#/ || $1 == "UnitType" { next }
+  { if ($1 != "Voxel" || $2 != $4 || $5 != 0 || $6 != 0) exit 1; seen[$2]=1; n++ }
+  END { if (n != 40 || !seen[0] || !seen[1] || !seen[2] || !seen[3]) exit 1 }
+' "$work/searchlight_parallel.confusion.tsv"
+
 test "$(awk '!/^#/ && $1 != "UnitType" {n++} END {print n+0}' \
   "$work/searchlight_parallel.predictions.tsv")" = 16
 test "$(awk '!/^#/ && $1 != "UnitType" {n++} END {print n+0}' \
