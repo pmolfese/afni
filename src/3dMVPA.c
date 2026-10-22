@@ -37,7 +37,8 @@ static char *mvpa_options[]={
    "-subject_column","-run_column","-item_column","-fold_column","-sample_column",
    "-mask","-roi_sel","-searchlight","-surf","-method","-distance","-scale","-metric","-prefix",
    "-nperm","-seed","-permute_within","-block_column",
-   "-save_predictions","-save_fold_scores","-save_coefficients","-coef_lambda",
+   "-save_predictions","-save_fold_scores","-save_confusion","-save_summary_scores",
+   "-save_coefficients","-coef_lambda",
    "-show_table","-show_samples","-show_folds","-quiet","-help","-h",NULL
 } ;
 
@@ -278,6 +279,25 @@ static void usage_3dMVPA( void )
 "                         with stratum and train/test sample counts. These two\n"
 "                         audit tables are opt-in because searchlight tables\n"
 "                         can be very large.\n"
+"  -save_confusion FILE   Classification only: truth-row confusion counts and\n"
+"                         per-class recall for each spatial unit, pooled and\n"
+"                         by CV fold, subject, and CV stratum. CountClassN\n"
+"                         columns follow the # Class label dictionary.\n"
+"                         Subjects use the resolved subject role; strata use\n"
+"                         -within_column (All when absent).\n"
+"                         CVFoldID is a zero-based fold index; CVStratum is\n"
+"                         separate so labels containing '/' remain unambiguous.\n"
+"  -save_summary_scores FILE\n"
+"                         Classification only: ACC/BACC for the same groups,\n"
+"                         plus equal-subject and equal-stratum averages.\n"
+"                         Pooled ACC weights samples equally; pooled BACC\n"
+"                         weights present true classes equally. Equal-group\n"
+"                         rows average group scores, excluding empty groups.\n"
+"                         Missing true classes have NA recall and are omitted\n"
+"                         from that group's BACC. Summaries use original held-\n"
+"                         out predictions without refitting; they are descriptive\n"
+"                         and do not establish population inference. Both new\n"
+"                         audits are opt-in and can be large for searchlights.\n"
 "  -show_table            Print the canonical table after input conversion.\n"
 "  -show_samples          Print resolved datasets, bricks, and sample roles.\n"
 "  -show_folds            Print every training/test row in every fold.\n"
@@ -515,6 +535,109 @@ static void mvpa_write_spatial_prefix( FILE *fp, THD_3dim_dataset *mset,
 static const char * mvpa_level( char **label, int index )
 {
    return (index>=0 && label!=NULL && label[index]!=NULL) ? label[index] : "NA" ;
+}
+
+/* Reporting scratch is shared only in the ordered output region. Reuse the
+   library scorer on selected held-out rows; never fit a model for a summary. */
+typedef struct {
+   int *truth, *prediction, *confusion;
+   double *recall;
+} mvpa_class_audit;
+
+static void mvpa_write_fold_identity( FILE *fp, int fold, const char *stratum )
+{
+   if(fold>=0) fprintf(fp,"\t%d",fold);
+   else fputs("\tNA",fp);
+   fputc('\t',fp);mvpa_tsv_text(fp,stratum);
+}
+
+static void mvpa_write_class_summary( FILE *fp, const char *scope,
+                                      const char *group,
+                                      const THD_mvpa_class_score *score,
+                                      int ngroup, int average,
+                                      int fold, const char *stratum )
+{
+   fputc('\t',fp); mvpa_tsv_text(fp,scope);
+   fputc('\t',fp); mvpa_tsv_text(fp,group);
+   fprintf(fp,"\t%d",score->nsample);
+   if(average) fputs("\tNA\tNA",fp);
+   else fprintf(fp,"\t%d\t%d",score->ncorrect,score->nclass_present);
+   fprintf(fp,"\t%d",ngroup);
+   if(isfinite(score->accuracy)) fprintf(fp,"\t%.17g",score->accuracy);
+   else fputs("\tNA",fp);
+   if(isfinite(score->balanced_accuracy)) fprintf(fp,"\t%.17g",score->balanced_accuracy);
+   else fputs("\tNA",fp);
+   mvpa_write_fold_identity(fp,fold,stratum);
+   fputc('\n',fp);
+}
+
+static void mvpa_write_class_audits( FILE *conf, FILE *summary,
+                                     THD_3dim_dataset *mset,
+                                     const THD_roilist *rl, int rr,
+                                     int searchlight, int surface,
+                                     const THD_sampleset *ss,
+                                     const THD_foldplan *plan,
+                                     const int *class_id, char **class_label,
+                                     const THD_mvpa_workspace *w,
+                                     mvpa_class_audit *a )
+{
+   const char *scope[]={"Pooled","Fold","Subject","Stratum"};
+   int kind,gg,ii,cc,pp;
+   for(kind=0;kind<4;kind++){
+     int ng=kind==0?1:kind==1?plan->nfold:kind==2?ss->nsubject:plan->nstratum;
+     int nvalid=0,ntotal=0;
+     double sumacc=0,sumbacc=0;
+     for(gg=0;gg<ng;gg++){
+       int n=0;
+       const char *label=kind==0?"All":kind==1?plan->name[gg]:
+                         kind==2?ss->subject_label[gg]:plan->stratum_label[gg];
+       const char *stratum=kind==1?plan->stratum_label[plan->fold_stratum[gg]]:
+                           kind==3?plan->stratum_label[gg]:NULL;
+       int fold=kind==1?gg:-1;
+       THD_mvpa_class_score score={0}; char err[512];
+       score.nclass=w->nclass; score.accuracy=score.balanced_accuracy=NAN;
+       memset(a->confusion,0,sizeof(int)*(size_t)w->nclass*w->nclass);
+       for(cc=0;cc<w->nclass;cc++) a->recall[cc]=NAN;
+       for(ii=0;ii<ss->nsample;ii++){
+         int ff=plan->sample_test_fold[ii];
+         if(ff<0) continue;
+         if((kind==1 && ff!=gg) || (kind==2 && ss->subject[ii]!=gg) ||
+            (kind==3 && plan->fold_stratum[ff]!=gg)) continue;
+         a->truth[n]=class_id[ii]; a->prediction[n++]=w->prediction[ii];
+       }
+       if(n && !THD_mvpa_score_classification(a->truth,a->prediction,n,w->nclass,
+                        a->confusion,a->recall,&score,err,sizeof(err)))
+         ERROR_exit(PROGRAM_NAME ": classification audit: %s",err);
+       if(n){nvalid++;ntotal+=n;sumacc+=score.accuracy;sumbacc+=score.balanced_accuracy;}
+       if(summary){
+         mvpa_write_spatial_prefix(summary,mset,rl,rr,searchlight,surface);
+         mvpa_write_class_summary(summary,scope[kind],label,&score,n?1:0,0,fold,stratum);
+       }
+       if(conf) for(cc=0;cc<w->nclass;cc++){
+         int total=0;
+         for(pp=0;pp<w->nclass;pp++) total+=a->confusion[(size_t)cc*w->nclass+pp];
+         mvpa_write_spatial_prefix(conf,mset,rl,rr,searchlight,surface);
+         fputc('\t',conf);mvpa_tsv_text(conf,scope[kind]);
+         fputc('\t',conf);mvpa_tsv_text(conf,label);
+         fprintf(conf,"\t%d\t",cc);mvpa_tsv_text(conf,class_label[cc]);
+         fprintf(conf,"\t%d",total);
+         if(isfinite(a->recall[cc])) fprintf(conf,"\t%.17g",a->recall[cc]);
+         else fputs("\tNA",conf);
+         for(pp=0;pp<w->nclass;pp++) fprintf(conf,"\t%d",a->confusion[(size_t)cc*w->nclass+pp]);
+         mvpa_write_fold_identity(conf,fold,stratum);
+         fputc('\n',conf);
+       }
+     }
+     if(summary && kind>=2){
+       THD_mvpa_class_score mean={0};
+       mean.nsample=ntotal;
+       mean.accuracy=nvalid?sumacc/nvalid:NAN;
+       mean.balanced_accuracy=nvalid?sumbacc/nvalid:NAN;
+       mvpa_write_spatial_prefix(summary,mset,rl,rr,searchlight,surface);
+       mvpa_write_class_summary(summary,kind==2?"EqualSubject":"EqualStratum",
+                                "All",&mean,nvalid,1,-1,NULL);
+     }
+   }
 }
 
 static void mvpa_write_prediction_rows( FILE *fp, THD_3dim_dataset *mset,
@@ -1124,6 +1247,9 @@ int main( int argc, char **argv )
    char *grid_text=NULL,*inner_column=NULL;int inner_k=0,tune=0,numeric_lambda=0,nlambda=0;
    double *lambda_grid=NULL;
    char *save_predictions=NULL,*save_fold_scores=NULL ;
+   char *save_confusion=NULL,*save_summary_scores=NULL;
+   FILE *confusion_fp=NULL,*summary_fp=NULL;
+   mvpa_class_audit class_audit={0};
    char *permute_within=NULL ; long seed=1234567L ;
    char *distance_name="euclidean",*scale_name="feature_zscore" ;
    char *metric_name=NULL,err[1024],*table_name=NULL ;
@@ -1260,6 +1386,8 @@ int main( int argc, char **argv )
      }
      else if( IS("-save_predictions") ){ NEEDARG("a filename") ; save_predictions=argv[nopt++] ; }
      else if( IS("-save_fold_scores") ){ NEEDARG("a filename") ; save_fold_scores=argv[nopt++] ; }
+     else if( IS("-save_confusion") ){ NEEDARG("a filename") ; save_confusion=argv[nopt++] ; }
+     else if( IS("-save_summary_scores") ){ NEEDARG("a filename") ; save_summary_scores=argv[nopt++] ; }
      else if( IS("-show_table") ){ show_table=1 ; nopt++ ; }
      else if( IS("-show_samples") ){ show_samples=1 ; nopt++ ; }
      else if( IS("-show_folds") ){ show_folds=1 ; nopt++ ; }
@@ -1342,9 +1470,17 @@ int main( int argc, char **argv )
      ERROR_exit(PROGRAM_NAME ": -mask is required, except for a surface searchlight over every represented node") ;
    if( searchlight!=NULL && roi_sel!=NULL )
      ERROR_exit(PROGRAM_NAME ": -roi_sel cannot be combined with -searchlight") ;
-   if( save_predictions!=NULL && save_fold_scores!=NULL &&
-       strcmp(save_predictions,save_fold_scores)==0 )
-     ERROR_exit(PROGRAM_NAME ": -save_predictions and -save_fold_scores need different files") ;
+   if(continuous && (save_confusion || save_summary_scores))
+     ERROR_exit(PROGRAM_NAME ": -save_confusion and -save_summary_scores require -mode classify");
+   {
+     const char *files[]={save_predictions,save_fold_scores,save_confusion,save_summary_scores};
+     int a,b;
+     for(a=0;a<4;a++) if(files[a]){
+       if(!files[a][0]) ERROR_exit(PROGRAM_NAME ": audit tables need nonempty filenames");
+       for(b=0;b<a;b++) if(files[b] && !strcmp(files[a],files[b]))
+         ERROR_exit(PROGRAM_NAME ": prediction/fold/confusion/summary audits need different files");
+     }
+   }
    if(continuous?strcasecmp(method,"ridge")!=0:(!ridge_class && !svm_class && lda_mode<0 && strcasecmp(method,"centroid")!=0))
      ERROR_exit(PROGRAM_NAME ": mode %s requires -method %s",mode,continuous?"ridge":"centroid, ridge, svm, lda_diag, or lda_shrinkage") ;
    if( !THD_filename_ok(prefix) ) ERROR_exit(PROGRAM_NAME ": illegal -prefix '%s'",prefix) ;
@@ -1532,8 +1668,10 @@ int main( int argc, char **argv )
      for(c=0;c<2;c++){
        sprintf(cf,"%s%s",coef_prefix,suffix[c]);
        if((save_predictions && !strcmp(cf,save_predictions)) ||
-          (save_fold_scores && !strcmp(cf,save_fold_scores)))
-         ERROR_exit(PROGRAM_NAME ": coefficient and prediction/fold audit filenames must differ");
+          (save_fold_scores && !strcmp(cf,save_fold_scores)) ||
+          (save_confusion && !strcmp(cf,save_confusion)) ||
+          (save_summary_scores && !strcmp(cf,save_summary_scores)))
+         ERROR_exit(PROGRAM_NAME ": coefficient and classification audit filenames must differ");
        if(THD_deathcon() && THD_is_file(cf))ERROR_exit(PROGRAM_NAME ": coefficient audit '%s' already exists",cf);
      }
      free(cf);
@@ -1634,6 +1772,54 @@ int main( int argc, char **argv )
        ERROR_exit(PROGRAM_NAME ": -save_predictions cannot replace ROI table '%s'",table_name) ;
      if( save_fold_scores!=NULL && strcmp(save_fold_scores,table_name)==0 )
        ERROR_exit(PROGRAM_NAME ": -save_fold_scores cannot replace ROI table '%s'",table_name) ;
+     if((save_confusion && !strcmp(save_confusion,table_name)) ||
+        (save_summary_scores && !strcmp(save_summary_scores,table_name)))
+       ERROR_exit(PROGRAM_NAME ": classification audit cannot replace ROI table '%s'",table_name);
+   }
+   /* Check generated tuning names before opening any classification audits. */
+   if((ridge_class || svm_class) && nested){
+     class_tunefile=malloc(strlen(prefix)+20);
+     if(!class_tunefile) ERROR_exit(PROGRAM_NAME ": cannot name classification tuning audit");
+     sprintf(class_tunefile,"%s.tuning.tsv",prefix);
+     if((save_predictions && !strcmp(save_predictions,class_tunefile)) ||
+        (save_fold_scores && !strcmp(save_fold_scores,class_tunefile)) ||
+        (save_confusion && !strcmp(save_confusion,class_tunefile)) ||
+        (save_summary_scores && !strcmp(save_summary_scores,class_tunefile)))
+       ERROR_exit(PROGRAM_NAME ": tuning and classification audit filenames must differ");
+   }
+   if(save_confusion || save_summary_scores){
+     class_audit.truth=malloc(sizeof(int)*(size_t)ss->nsample);
+     class_audit.prediction=malloc(sizeof(int)*(size_t)ss->nsample);
+     class_audit.confusion=malloc(sizeof(int)*(size_t)nclass*nclass);
+     class_audit.recall=malloc(sizeof(double)*(size_t)nclass);
+     if(!class_audit.truth || !class_audit.prediction || !class_audit.confusion || !class_audit.recall)
+       ERROR_exit(PROGRAM_NAME ": cannot allocate classification audit scratch");
+     if(save_confusion){
+       confusion_fp=mvpa_open_audit(save_confusion,"classification confusion audit");
+       mvpa_write_audit_header(confusion_fp,"held-out classification confusion and recall",
+                              target_column,class_label,nclass,searchlight!=NULL,surf_file!=NULL);
+       fputs("# Descriptive only; original held-out predictions, no refits or population inference.\n"
+             "# Subject is the resolved subject role; Stratum is -within_column (All when absent).\n"
+             "# Untested rows are excluded; group BACC is mean recall over present true classes.\n",confusion_fp);
+       fputs("# Counts: true-class rows, predicted-class columns. Absent true classes: NTrue=0, Recall=NA.\n",confusion_fp);
+       fputs("# CVFoldID is zero-based for Fold rows (NA elsewhere); CVStratum is explicit for Fold/Stratum rows.\n",confusion_fp);
+       fputs("UnitType\tUnitID\tUnitLabel\tI\tJ\tK\tNFeat\tScope\tGroup\tTrueClassID\tTrueClass\tNTrue\tRecall",confusion_fp);
+       for(ii=0;ii<nclass;ii++) fprintf(confusion_fp,"\tCountClass%d",ii);
+       fputs("\tCVFoldID\tCVStratum\n",confusion_fp);
+     }
+     if(save_summary_scores){
+       summary_fp=mvpa_open_audit(save_summary_scores,"classification summary audit");
+       mvpa_write_audit_header(summary_fp,"held-out classification summaries",
+                              target_column,class_label,nclass,searchlight!=NULL,surf_file!=NULL);
+       fputs("# Descriptive only; original held-out predictions, no refits or population inference.\n"
+             "# Subject is the resolved subject role; Stratum is -within_column (All when absent).\n"
+             "# Pooled ACC=NCorrect/NTest; BACC=mean recall across true classes present in that group.\n"
+             "# EqualSubject/EqualStratum: arithmetic mean of nonempty group ACC/BACC, one vote per group.\n"
+             "# Equal-group NTest sums tested rows; NCorrect/NClassPresent are NA; NGroups counts nonempty groups.\n"
+             "# Untested rows are excluded. Empty groups have NTest=0 and ACC/BACC=NA.\n",summary_fp);
+       fputs("# CVFoldID is zero-based for Fold rows (NA elsewhere); CVStratum is explicit for Fold/Stratum rows.\n",summary_fp);
+       fputs("UnitType\tUnitID\tUnitLabel\tI\tJ\tK\tNFeat\tScope\tGroup\tNTest\tNCorrect\tNClassPresent\tNGroups\tACC\tBACC\tCVFoldID\tCVStratum\n",summary_fp);
+     }
    }
    if( save_predictions!=NULL ){
      prediction_fp=mvpa_open_audit(save_predictions,"prediction audit") ;
@@ -1663,12 +1849,6 @@ int main( int argc, char **argv )
      fputc('\n',fold_fp);
    }
    if((ridge_class || svm_class) && nested){
-     class_tunefile=malloc(strlen(prefix)+20);
-     if(!class_tunefile)ERROR_exit(PROGRAM_NAME ": cannot name classification tuning audit");
-     sprintf(class_tunefile,"%s.tuning.tsv",prefix);
-     if((save_predictions && !strcmp(save_predictions,class_tunefile)) ||
-        (save_fold_scores && !strcmp(save_fold_scores,class_tunefile)))
-       ERROR_exit(PROGRAM_NAME ": tuning audit and prediction/fold filenames must differ");
      class_tuning=mvpa_open_audit(class_tunefile,"classification tuning audit");
      if(svm_class){
        fprintf(class_tuning,"# method=svm; inner_group=%s; objective=1-%s; ties=smallest_C; intercept_penalized=1\n",inner_column,THD_mvpa_metric_name(metric));
@@ -1743,6 +1923,10 @@ int main( int argc, char **argv )
        if( ok && fold_fp!=NULL )
          mvpa_write_fold_rows(fold_fp,mset,rl,rr,searchlight!=NULL,
                               surf_file!=NULL,plan,workspace[tid]) ;
+       if(ok && (confusion_fp || summary_fp))
+         mvpa_write_class_audits(confusion_fp,summary_fp,mset,rl,rr,searchlight!=NULL,
+                                surf_file!=NULL,ss,plan,class_id,class_label,
+                                workspace[tid],&class_audit);
        if(ok && class_tuning && svm_class){
          int f,l;const THD_mvpa_workspace *sw=workspace[tid];
          for(f=0;f<plan->nfold;f++)for(l=0;l<svm_ngrid;l++){
@@ -1775,8 +1959,18 @@ int main( int argc, char **argv )
      fold_fp=NULL ;
    }
    if(class_tuning && (ferror(class_tuning) || fclose(class_tuning)))io_failed=1;
+   if(confusion_fp){
+     if(ferror(confusion_fp)) io_failed=1;
+     if(fclose(confusion_fp)) io_failed=1;
+   }
+   if(summary_fp){
+     if(ferror(summary_fp)) io_failed=1;
+     if(fclose(summary_fp)) io_failed=1;
+   }
+   free(class_audit.truth);free(class_audit.prediction);
+   free(class_audit.confusion);free(class_audit.recall);
    if( failed ) ERROR_exit(PROGRAM_NAME ": %s",runerr) ;
-   if( io_failed ) ERROR_exit(PROGRAM_NAME ": error writing prediction/fold audit table") ;
+   if( io_failed ) ERROR_exit(PROGRAM_NAME ": error writing classification audit table") ;
 
    if( perm_result!=NULL ){
      int ip,ww ;
@@ -1805,6 +1999,8 @@ int main( int argc, char **argv )
      if( table_name!=NULL ) INFO_message(PROGRAM_NAME ": wrote ROI table %s",table_name) ;
      if( save_predictions!=NULL ) INFO_message(PROGRAM_NAME ": wrote predictions %s",save_predictions) ;
      if( save_fold_scores!=NULL ) INFO_message(PROGRAM_NAME ": wrote fold scores %s",save_fold_scores) ;
+     if(save_confusion) INFO_message(PROGRAM_NAME ": wrote confusion/recall %s",save_confusion);
+     if(save_summary_scores) INFO_message(PROGRAM_NAME ": wrote classification summaries %s",save_summary_scores);
      if( perm_result!=NULL )
        INFO_message(PROGRAM_NAME ": inference family: %d spatial units x %d synchronized relabelings",
                     rl->nroi,perm_result->nperm) ;

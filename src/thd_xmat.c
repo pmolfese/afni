@@ -42,6 +42,22 @@ static int * xm_ints( NI_element *nel , const char *name , int *n )
    return v ;
 }
 
+/* A design column belongs to at most one stimulus. Also protect callers of
+   THD_xmat_items() that construct a THD_xmat without using the file reader. */
+static int xm_stim_ranges_valid( const THD_xmat *xm )
+{
+   int s,t ;
+   if( xm==NULL || xm->ncol<1 || xm->nstim<0 ||
+       (xm->nstim>0 && xm->stim==NULL) ) return 0 ;
+   for( s=0 ; s<xm->nstim ; s++ ){
+     int bot=xm->stim[s].bot,top=xm->stim[s].top ;
+     if( bot<0 || top<bot || top>=xm->ncol ) return 0 ;
+     for( t=0 ; t<s ; t++ )
+       if( bot<=xm->stim[t].top && xm->stim[t].bot<=top ) return 0 ;
+   }
+   return 1 ;
+}
+
 THD_xmat * THD_xmat_read( const char *fname , char *err , int nerr )
 {
    NI_element *nel ; THD_xmat *xm ; NI_str_array *sar ; int ii , c , r , nb , nt ;
@@ -146,6 +162,10 @@ THD_xmat * THD_xmat_read( const char *fname , char *err , int nerr )
        snprintf(an,sizeof(an),"BasisFormula_%06d",ii+1) ; a = NI_get_attribute_nocase(nel,an) ;
        xm->stim[ii].formula = (a != NULL) ? strdup(a) : NULL ;
      }
+     if( !xm_stim_ranges_valid(xm) ){
+       xm_err(err,nerr,"'%s': stimulus column ranges overlap",fname) ;
+       NI_delete_str_array(sar) ; free(bot) ; free(top) ; NI_free_element(nel) ; THD_xmat_free(xm) ; return NULL ;
+     }
    }
    if( sar != NULL ) NI_delete_str_array(sar) ;
    free(bot) ; free(top) ;
@@ -249,9 +269,11 @@ int * THD_xmat_condition_labels( const THD_xmat *xm , double frac , const unsign
 THD_xmat_item * THD_xmat_items( const THD_xmat *xm , const unsigned char *wanted , int *nitem )
 {
    THD_xmat_item *it ; int s , c , r , n=0 ;
+   if( nitem == NULL ) return NULL ;
    *nitem = 0 ;
-   if( xm == NULL ) return NULL ;
+   if( !xm_stim_ranges_valid(xm) ) return NULL ;
    it = (THD_xmat_item *)calloc((size_t)(xm->ncol>0?xm->ncol:1),sizeof(THD_xmat_item)) ;
+   if( it == NULL ) return NULL ;
    for( s=0 ; s < xm->nstim ; s++ ){
      if( wanted != NULL && !wanted[s] ) continue ;
      for( c=xm->stim[s].bot ; c <= xm->stim[s].top ; c++ ){
@@ -399,6 +421,8 @@ THD_datatable * THD_datatable_expand_xmat_items( THD_datatable *dt , const char 
        ERROR_exit("Subj %s: '%s' has no stimulus",dt->subj[r],xm->fname) ;
      }
      it[r] = THD_xmat_items(xm,want,&nit[r]) ;
+     if( it[r] == NULL )
+       ERROR_exit("Subj %s: cannot expand valid stimulus items from '%s'",dt->subj[r],xm->fname) ;
      ds = THD_open_dataset((char *)bn) ; CHECK_OPEN_ERROR(ds,bn) ;
      for( j=0 ; j < nit[r] ; j++ ){
        int b ;

@@ -684,18 +684,37 @@ ENTRY("THD_perm_set_build") ;
    }
 
    if( exact ){
-      /* Enumerate the group.  The identity is always one of the arrangements
-         visited (up to a swap of equivalent observations, which by definition
-         leaves the statistic alone), so the observed statistic is part of its
-         own null distribution without any special casing. */
+      int identity=-1,ii ;
+      /* Enumerate in sorted-key order, then move the identity-equivalent
+         arrangement to slot zero. Replacing its representative with the
+         literal identity preserves every distinct arrangement exactly once. */
       for( ip=0 ; ip < nperm ; ip++ ){
          perm_state_emit(st,pset,ip) ;
+         if( identity<0 ){
+            for( ii=0 ; ii<ps->nobs ; ii++ ){
+               int src=pset->perm[(size_t)ip*ps->nobs+ii] ;
+               if( pset->sign[(size_t)ip*ps->nobs+ii]!=1 ||
+                   (ps->eqclass ? ps->eqclass[src]!=ps->eqclass[ii] : src!=ii) ) break ;
+            }
+            if( ii==ps->nobs ) identity=ip ;
+         }
          if( ip+1 < nperm && !perm_state_next(st) ){
             ERROR_message("permutation set: enumeration ended after %d of %d",
                           ip+1,nperm) ;
             pset->nperm = ip+1 ; break ;
          }
       }
+      if( identity<0 ){
+         ERROR_message("permutation set: exact enumeration omitted the identity") ;
+         perm_state_free(st) ; THD_perm_set_free(pset) ; RETURN(NULL) ;
+      }
+      if( identity>0 ) for( ii=0 ; ii<ps->nobs ; ii++ ){
+         size_t pos=(size_t)identity*ps->nobs+ii ;
+         pset->perm[pos]=pset->perm[ii] ;
+         pset->sign[pos]=pset->sign[ii] ;
+      }
+      perm_state_identity(st) ;
+      perm_state_emit(st,pset,0) ;
    } else {
       srand48(ps->seed) ;
       /* Slot 0 is the identity on purpose: an empirical p-value must be able

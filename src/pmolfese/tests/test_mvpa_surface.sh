@@ -51,6 +51,8 @@ OMP_NUM_THREADS=2 "$mvpa" -mode classify -dataTableFile "$work/samples.tsv" \
   -prefix "$work/masked.niml.dset" \
   -save_predictions "$work/masked.predictions.tsv" \
   -save_fold_scores "$work/masked.folds.tsv" \
+  -save_confusion "$work/masked.confusion.tsv" \
+  -save_summary_scores "$work/masked.summary.tsv" \
   > "$work/masked.audit.txt" 2>&1
 
 grep -q 'geodesic surface searchlight, radius 100 mm' "$work/masked.audit.txt"
@@ -92,12 +94,28 @@ OMP_NUM_THREADS=1 "$mvpa" -mode classify -dataTableFile "$work/samples.tsv" \
   -searchlight 100 -prefix "$work/nomask.niml.dset" \
   -nperm 99 -permute_within Run -seed 42 \
   -save_predictions "$work/nomask.predictions.tsv" \
-  -save_fold_scores "$work/nomask.folds.tsv" -quiet
+  -save_fold_scores "$work/nomask.folds.tsv" \
+  -save_confusion "$work/nomask.confusion.tsv" \
+  -save_summary_scores "$work/nomask.summary.tsv" -quiet
 "$convertdset" -o_1Dp_stdout -input "$work/nomask.niml.dset" \
   -prepend_node_index_1D > "$work/nomask.1D"
 cmp "$work/masked.1D" "$work/nomask.1D"
 cmp "$work/masked.predictions.tsv" "$work/nomask.predictions.tsv"
 cmp "$work/masked.folds.tsv" "$work/nomask.folds.tsv"
+cmp "$work/masked.confusion.tsv" "$work/nomask.confusion.tsv"
+cmp "$work/masked.summary.tsv" "$work/nomask.summary.tsv"
+awk -F '\t' '
+  /^#/ || $1 == "UnitType" { next }
+  {
+    n++; seen[$2]=1
+    if ($1 != "Node" || $4 != "NA" || $5 != "NA" || $6 != "NA" || $7 != 4 || $13 != 1) exit 1
+    if ($8 == "Pooled" && $12 != 2) exit 1
+    if ($10 == 0 && ($14 != $12 || $15 != 0)) exit 1
+    if ($10 == 1 && ($14 != 0 || $15 != $12)) exit 1
+  }
+  END { if (n != 40 || !seen[0] || !seen[2] || !seen[5] || !seen[9]) exit 1 }
+' "$work/masked.confusion.tsv"
+
 
 cat > "$work/ridge_class.tsv" <<EOF
 Subj Run Sample Condition InputFile
@@ -328,6 +346,50 @@ if "$mvpa" -mode classify -dataTableFile "$work/outside.tsv" \
   exit 1
 fi
 grep -q 'node 99 outside mesh range 0..11' "$work/outside.txt"
+
+# All spatial paths must reject duplicate node IDs, even without a mesh.
+printf '0\n2\n2\n9\n' > "$work/duplicate_nodes.1D"
+"$convertdset" -o_niml -input "$work/values.1D" \
+  -node_index_1D "$work/duplicate_nodes.1D" -dset_labels 'a1 b1 a2 b2' \
+  -prefix "$work/duplicate_samples.niml.dset"
+"$convertdset" -o_niml -input "$work/mask.1D" \
+  -node_index_1D "$work/duplicate_nodes.1D" -dset_labels mask \
+  -prefix "$work/duplicate_mask.niml.dset"
+sed 's#samples.niml.dset#duplicate_samples.niml.dset#' \
+  "$work/continuous.tsv" > "$work/duplicate.tsv"
+for mode in classify decode encode; do
+  for spatial in roi searchlight; do
+    extra=(-mask "$work/duplicate_mask.niml.dset")
+    if test "$spatial" = searchlight; then
+      extra+=(-surf "$work/mesh.gii" -searchlight 100)
+    fi
+    case "$mode" in
+      classify) role=(-target_column Run) ;;
+      decode) role=(-target_column Rating) ;;
+      encode) role=(-design_columns Rating -score pattern) ;;
+    esac
+    # Run cannot be both target and held-out group: use Rating as CV groups
+    # for the classification rejection so every training fold has both runs.
+    cv=Run
+    if test "$mode" = classify; then cv=Rating; fi
+    if "$mvpa" -mode "$mode" -dataTableFile "$work/duplicate.tsv" \
+      "${role[@]}" -cv_column "$cv" \
+      "${extra[@]}" -prefix "$work/duplicate_${mode}_${spatial}.niml.dset" \
+      > "$work/duplicate_${mode}_${spatial}.txt" 2>&1; then
+      echo "FAIL $mode $spatial accepted repeated surface node IDs" >&2
+      exit 1
+    fi
+    grep -q 'repeats node 2' "$work/duplicate_${mode}_${spatial}.txt"
+  done
+done
+if "$mvpa" -mode encode -dataTableFile "$work/duplicate.tsv" \
+  -design_columns Rating -cv_column Run -score voxel \
+  -mask "$work/duplicate_mask.niml.dset" -prefix "$work/duplicate_voxel.niml.dset" \
+  > "$work/duplicate_voxel.txt" 2>&1; then
+  echo "FAIL voxel encoding accepted repeated surface node IDs" >&2
+  exit 1
+fi
+grep -q 'repeats node 2' "$work/duplicate_voxel.txt"
 
 if "$mvpa" -mode classify -dataTableFile "$work/samples.tsv" \
   -target_column Condition -cv_column Run -surf "$work/mesh.gii" \

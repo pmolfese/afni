@@ -97,6 +97,9 @@ typedef struct {
 
     Relabeling ip maps destination slot i to source observation
     perm[ip*nobs+i], with its value multiplied by sign[ip*nobs+i].
+    THD_perm_set_build() puts the literal identity with all +1 signs in slot
+    zero for both exact and Monte Carlo sets. Exact equivalence-class sets
+    still contain each distinct within-block label arrangement only once.
 *//*------------------------------------------------------------------------*/
 
 typedef struct {

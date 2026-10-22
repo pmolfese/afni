@@ -95,6 +95,10 @@ int main( int argc , char **argv )
    CHECK(!strcmp(it[3].key,"house") && !strcmp(it[3].coef_label,"house#0_Coef"),"a one-column stimulus is named by its label") ;
    CHECK(it[0].run==0 && it[1].run==1 && it[2].run==-1 && it[3].run==-1,"each item's run (-1 when it spans runs)") ;
    THD_xmat_items_free(it,n) ;
+   /* Direct library callers cannot bypass the range checks in the reader. */
+   xm->stim[1].bot=2 ; xm->stim[1].top=5 ;
+   it=THD_xmat_items(xm,NULL,&n) ;
+   CHECK(it==NULL && n==0,"overlapping manually constructed stimulus ranges are rejected") ;
    THD_xmat_free(xm) ;
 
    /* summaries as table columns */
@@ -122,6 +126,13 @@ int main( int argc , char **argv )
      fprintf(fp,"# <matrix\n#  ni_type = \"1*double\"\n#  ni_dimen = \"3\"\n#  GoodList = \"0..4\"\n#  NRowFull = \"6\"\n# >\n1\n1\n1\n# </matrix>\n") ;
      fclose(fp) ;
      CHECK(THD_xmat_read(bad,err,sizeof(err))==NULL && strstr(err,"GoodList")!=NULL,"a GoodList that does not match the rows") ;
+     fp=fopen(bad,"w") ;
+     fprintf(fp,"# <matrix\n# ni_type = \"2*double\"\n# ni_dimen = \"2\"\n"
+                "# StimLabels = \"A ; B\"\n# StimBots = \"0,0\"\n# StimTops = \"1,1\"\n"
+                "# >\n1 0\n0 1\n# </matrix>\n") ;
+     fclose(fp) ;
+     CHECK(THD_xmat_read(bad,err,sizeof(err))==NULL && strstr(err,"ranges overlap")!=NULL,
+           "overlapping file ranges fail before item expansion can overrun ncol storage") ;
      remove(bad) ; }
    remove(fn) ;
    (void)argc ; (void)argv ; (void)ii ;
