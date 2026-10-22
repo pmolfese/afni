@@ -1,5 +1,6 @@
 #include "mrilib.h"
 #include "thd_xmat.h"
+#include <errno.h>
 
 /*----------------------------------------------------------------------------
   Design matrices (X.xmat.1D).  See thd_xmat.h for the format and the API.
@@ -308,6 +309,60 @@ static THD_xmat * xm_row_xmat( THD_datatable *dt , int row , int icol )
    xm = THD_xmat_read(fn,err,sizeof(err)) ;
    if( xm == NULL ) ERROR_exit("Subj %s: %s",dt->subj[row],err) ;
    return xm ;
+}
+
+static int xm_manifest_index( const char *s , const char *name , int row , int limit )
+{
+   char *end ; long v ;
+   errno = 0 ; v = strtol(s,&end,10) ;
+   if( errno || end == s || *end || v < 0 || v >= limit )
+     ERROR_exit("trial manifest row %d: %s '%s' must be a zero-based integer in 0..%d",
+                row+1,name,s,limit-1) ;
+   return (int)v ;
+}
+
+THD_datatable * THD_datatable_trial_manifest( THD_datatable *dt )
+{
+   xm_tokens t = {0,0,NULL} ; int iv,ix,ic,r,c ;
+   THD_3dim_dataset *ds=NULL ; THD_xmat *xm=NULL ;
+   char *last_input=NULL,*last_xmat=NULL ;
+   if( dt == NULL ) return NULL ;
+   iv = THD_datatable_column(dt,"Volume") ;
+   ix = THD_datatable_column(dt,"Xmat") ;
+   ic = THD_datatable_column(dt,"XColumn") ;
+   if( dt->icol_input < 0 || iv < 0 )
+     ERROR_exit("trial manifest requires InputFile and Volume columns") ;
+   if( (ix < 0) != (ic < 0) )
+     ERROR_exit("trial manifest: optional Xmat and XColumn columns must occur together") ;
+   /* The canonical parser requires InputFile last. Keep provenance as metadata. */
+   for( c=0 ; c < dt->ncol ; c++ ) if( c != dt->icol_input ) xm_add(&t,dt->cname[c]) ;
+   xm_add(&t,"InputFile") ;
+   for( r=0 ; r < dt->nrow ; r++ ){
+     const char *fn = DT_CELL(dt,r,dt->icol_input) ; int b ; char *sel ;
+     if( !*fn || strchr(fn,'[') || !strcmp(fn,"-") || !strcasecmp(fn,"NA") )
+       ERROR_exit("trial manifest row %d: InputFile must name a whole beta bucket",r+1) ;
+     if( last_input == NULL || strcmp(last_input,fn) ){
+       if( ds != NULL ) DSET_delete(ds) ;
+       ds = THD_open_dataset((char *)fn) ; CHECK_OPEN_ERROR(ds,fn) ;
+       last_input = (char *)fn ;
+     }
+     b = xm_manifest_index(DT_CELL(dt,r,iv),"Volume",r,DSET_NVALS(ds)) ;
+     if( ix >= 0 ){
+       const char *xf = DT_CELL(dt,r,ix) ; char err[512] ;
+       if( last_xmat == NULL || strcmp(last_xmat,xf) ){
+         THD_xmat_free(xm) ; xm = THD_xmat_read(xf,err,sizeof(err)) ;
+         if( xm == NULL ) ERROR_exit("trial manifest row %d: %s",r+1,err) ;
+         last_xmat = (char *)xf ;
+       }
+       (void)xm_manifest_index(DT_CELL(dt,r,ic),"XColumn",r,xm->ncol) ;
+     }
+     for( c=0 ; c < dt->ncol ; c++ ) if( c != dt->icol_input ) xm_add(&t,DT_CELL(dt,r,c)) ;
+     sel = (char *)malloc(strlen(fn)+32) ; sprintf(sel,"%s[%d]",fn,b) ;
+     xm_add(&t,sel) ; free(sel) ;
+   }
+   if( ds != NULL ) DSET_delete(ds) ;
+   THD_xmat_free(xm) ;
+   return xm_table(&t,"trial manifest") ;
 }
 
 THD_datatable * THD_datatable_expand_xmat_items( THD_datatable *dt , const char *xmat_col ,

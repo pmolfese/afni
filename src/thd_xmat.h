@@ -98,6 +98,15 @@ extern void THD_xmat_items_free( THD_xmat_item *it , int nitem ) ;
 
 /*--- tables with an Xmat column (each row names its X.xmat.1D) -------------*/
 
+/*! Explicit trial manifest: one row per beta, InputFile is an unselected
+    bucket and Volume is its zero-based brick index. Optional Xmat/XColumn
+    must occur together; XColumn is the zero-based original design column.
+    Validates both indices and preserves every metadata column. Conditions,
+    runs and trial identities are supplied by the caller, never inferred.
+    Returns a new canonical table with InputFile selectors; errors are fatal.
+    The input table is not changed. */
+extern THD_datatable * THD_datatable_trial_manifest( THD_datatable *dt ) ;
+
 /*! One row per subject (Subj, Xmat, InputFile = the stats bucket of that
     regression, other columns) becomes one row per item: the subject's other
     columns, then item_col (the key), Condition, run_col when every item of

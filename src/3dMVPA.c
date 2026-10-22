@@ -28,7 +28,7 @@
 ------------------------------------------------------------------------------*/
 
 static char *mvpa_options[]={
-   "-mode","-dataTable","-dataTableFile","-xmat_stims",
+   "-mode","-dataTable","-dataTableFile","-trial_manifest","-xmat_stims",
    "-target_column","-target_columns","-design_columns","-lambda","-score",
    "-lambda_grid","-inner_cv_column","-inner_cv_k",
    "-shrinkage","-class_prior","-variance_floor",
@@ -63,6 +63,16 @@ static void usage_3dMVPA( void )
 "                         A subject-level table with Xmat and whole-bucket\n"
 "                         InputFile columns is expanded to the same sample\n"
 "                         representation before analysis.\n"
+"  -trial_manifest FILE   Alternative to -dataTable: one row per trial beta.\n"
+"                         InputFile names a whole LSS or LSA beta bucket;\n"
+"                         Volume is its zero-based sub-brick index. Supply\n"
+"                         trial, run and target metadata explicitly. Optional\n"
+"                         Xmat and XColumn must occur together; XColumn is\n"
+"                         the zero-based original design-matrix column. These\n"
+"                         indices are checked; metadata is retained unchanged.\n"
+"                         No beta-label matching or Xmat expansion is applied.\n"
+"                         Cannot accompany -dataTable, -dataTableFile, or\n"
+"                         -xmat_stims.\n"
 "\n"
 "  -target_column NAME    Categorical classification or numeric decoding target.\n"
 "  -target_columns A,B    Multiple numeric decoding targets.\n"
@@ -268,7 +278,7 @@ static void usage_3dMVPA( void )
 "                         with stratum and train/test sample counts. These two\n"
 "                         audit tables are opt-in because searchlight tables\n"
 "                         can be very large.\n"
-"  -show_table            Print the canonical table after optional Xmat expansion.\n"
+"  -show_table            Print the canonical table after input conversion.\n"
 "  -show_samples          Print resolved datasets, bricks, and sample roles.\n"
 "  -show_folds            Print every training/test row in every fold.\n"
 "  -quiet                 Suppress informational messages.\n"
@@ -282,6 +292,64 @@ static void usage_3dMVPA( void )
 "         -prefix face_scene\n"
 "\n"
 "Without -nperm, the ROI table and maps remain descriptive held-out results.\n"
+"\n"
+"Trial betas from 3dLSS or LSA:                               ~1~\n"
+"\n"
+"3dMVPA analyzes existing beta maps; it does not fit the BOLD time series.\n"
+"Choose either LSS estimates or jointly fitted LSA estimates upstream.\n"
+"For example, create one LSS bucket per run using a design containing exactly\n"
+"one -stim_times_IM stimulus with all trials in that run:\n"
+"\n"
+"  3dLSS -matrix X.r1.xmat.1D -input run1+tlrc -prefix LSS.r1\n"
+"  3dLSS -matrix X.r2.xmat.1D -input run2+tlrc -prefix LSS.r2\n"
+"\n"
+"The input must be the full-length preprocessed time series corresponding to\n"
+"that design; 3dLSS applies its GoodList censoring. It writes only the selected\n"
+"IM stimulus's estimates, in design-column order. Volume 0 therefore maps to\n"
+"that stimulus's first column, not necessarily design column 0.\n"
+"\n"
+"Create lss_trials.tsv (whitespace-separated; paths relative to the current\n"
+"working directory). This small example assumes two trials per run:\n"
+"\n"
+"  Subj Run Item Condition Volume InputFile\n"
+"  s01  1   t01  face      0      LSS.r1+tlrc\n"
+"  s01  1   t02  house     1      LSS.r1+tlrc\n"
+"  s01  2   t03  face      0      LSS.r2+tlrc\n"
+"  s01  2   t04  house     1      LSS.r2+tlrc\n"
+"\n"
+"  3dMVPA -mode classify -trial_manifest lss_trials.tsv     \\\n"
+"         -target_column Condition -cv_column Run           \\\n"
+"         -mask rois+tlrc -show_table -show_samples -show_folds \\\n"
+"         -prefix LSS_decode\n"
+"\n"
+"Condition comes from the original trial log: a single IM stimulus called\n"
+"'trials' does not encode face/house labels. Supply continuous targets or\n"
+"encoding predictors as additional manifest columns when needed.\n"
+"\n"
+"For design provenance, add BOTH Xmat and XColumn columns, for example:\n"
+"\n"
+"  Subj Run Item Condition Volume Xmat          XColumn InputFile\n"
+"  s01  1   t01  face      0      X.r1.xmat.1D  2       LSS.r1+tlrc\n"
+"  s01  1   t02  house     1      X.r1.xmat.1D  3       LSS.r1+tlrc\n"
+"\n"
+"Here columns 2 and 3 must actually be the corresponding trial regressors.\n"
+"Range checks cannot establish that the chosen beta and regressor correspond.\n"
+"Run and Condition remain explicit; neither is inferred from XColumn.\n"
+"\n"
+"For an LSA comparison, make lsa_trials.tsv with the same trial metadata but\n"
+"InputFile naming the Deconvolve/REMLfit bucket and Volume selecting each\n"
+"trial's actual _Coef brick (not a t-statistic, and not the design-column\n"
+"index). Run the same command with that manifest and -prefix LSA_decode.\n"
+"The existing -dataTable path with Xmat remains available for automatic\n"
+"_Coef-label expansion of conventional regression buckets. LSS buckets use\n"
+"different labels and should use the explicit manifest or sample table.\n"
+"\n"
+"Keep the trials, targets, folds and analysis settings matched when comparing\n"
+"LSS and LSA. LSS can mix neighboring trials' responses; fold-local MVPA\n"
+"preprocessing cannot remove upstream dependence. The example holds out whole\n"
+"runs estimated separately. For multiple subjects, add -within_column Subj\n"
+"for within-subject run CV. Estimator choice is an upstream modeling choice;\n"
+"do not select it using the same held-out scores used for final evaluation.\n"
 "\n") ;
 }
 
@@ -1044,6 +1112,7 @@ int main( int argc, char **argv )
    char *mode=NULL,*target_column=NULL,*cv_column=NULL,*within_column=NULL ;
    char *subject_column=NULL,*run_column=NULL,*item_column=NULL ;
    char *fold_column=NULL,*sample_column=NULL,*xmat_stims=NULL ;
+   int trial_manifest=0 ;
    char *maskname=NULL,*roi_sel=NULL,*searchlight=NULL,*surf_file=NULL ;
    char *prefix="MVPA",*method=NULL,*design_columns=NULL,*score_mode=NULL ;
    char *coef_prefix=NULL;double coef_lambda=0;int coef_lambda_given=0;
@@ -1195,6 +1264,11 @@ int main( int argc, char **argv )
      else if( IS("-show_samples") ){ show_samples=1 ; nopt++ ; }
      else if( IS("-show_folds") ){ show_folds=1 ; nopt++ ; }
      else if( IS("-quiet") ){ quiet=1 ; nopt++ ; }
+     else if( IS("-trial_manifest") ){
+       NEEDARG("a trial manifest filename") ;
+       if( tab!=NULL ) ERROR_exit(PROGRAM_NAME ": choose one of -trial_manifest and -dataTable/-dataTableFile") ;
+       tab=THD_read_datatable_file(argv[nopt++]) ; trial_manifest=1 ;
+     }
      else if( IS("-dataTableFile") ){
        NEEDARG("a table file") ;
        if( tab!=NULL ) ERROR_exit(PROGRAM_NAME ": the data table was given twice") ;
@@ -1285,7 +1359,12 @@ int main( int argc, char **argv )
    if(continuous && metric<THD_METRIC_PEARSON)
      ERROR_exit(PROGRAM_NAME ": continuous metric must be pearson, spearman, cross_validated_r2, MAE, or RMSE");
 
-   if( THD_datatable_column(tab,"Xmat")>=0 ){
+   if( trial_manifest ){
+     if( xmat_stims!=NULL ) ERROR_exit(PROGRAM_NAME ": -xmat_stims cannot accompany -trial_manifest") ;
+     expanded=THD_datatable_trial_manifest(tab) ;
+     THD_free_datatable(tab) ; tab=expanded ; expanded=NULL ;
+     if( tab==NULL ) ERROR_exit(PROGRAM_NAME ": trial manifest conversion failed") ;
+   } else if( THD_datatable_column(tab,"Xmat")>=0 ){
      const char *icol=item_column?item_column:"Item" ;
      const char *rcol=run_column?run_column:"Run" ; int have_run=0 ;
      expanded=THD_datatable_expand_xmat_items(tab,"Xmat",icol,rcol,xmat_stims,&have_run) ;
