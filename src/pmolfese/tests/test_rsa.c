@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 static int closef( float aa, float bb )
 {
@@ -124,9 +125,44 @@ done:
    THD_rsa_rdm_workspace_free(ws) ; return fail ;
 }
 
+static int masked_rdm_test( void )
+{
+   char in[]="/tmp/afni_masked_rdm_in_XXXXXX",out[]="/tmp/afni_masked_rdm_out_XXXXXX" ;
+   int fd1=mkstemp(in),fd2=mkstemp(out),fail=0 ; FILE *fp ;
+   THD_simmat *sm=NULL,*back=NULL ; THD_rdm_ws *ws=NULL ;
+   float neural[6]={0.0f,1.0f,9.0f,1.0f,9.0f,9.0f},r ; int perm[4]={1,2,3,0} ;
+   if( fd1<0 || fd2<0 ){ fprintf(stderr,"FAIL masked RDM temp files\n") ; return 1 ; }
+   close(fd1) ; close(fd2) ;
+   fp=fopen(in,"w") ;
+   fprintf(fp,"0 0 1 .\n0 0 1 .\n1 1 0 .\n. . . 0\n") ; fclose(fp) ;
+   sm=THD_simmat_read_1D(in,4) ;
+   if( sm==NULL || !THD_simmat_has_missing(sm) || THD_simmat_nvalid(sm)!=3 ){
+     fprintf(stderr,"FAIL reading dot-masked RDM\n") ; fail=1 ; goto done ;
+   }
+   ws=THD_rdm_ws_new(4,1) ; r=THD_simmat_corr_triangle(neural,sm,NULL,CMP_PEARSON,ws) ;
+   if( !closef(r,1.0f) ){
+     fprintf(stderr,"FAIL masked RDM finite-pair correlation: %.9g\n",r) ; fail=1 ;
+   }
+   r=THD_simmat_corr_triangle(neural,sm,perm,CMP_PEARSON,ws) ;
+   if( !closef(r,-0.5f) ){
+     fprintf(stderr,"FAIL masked RDM row/column relabeling: %.9g\n",r) ; fail=1 ;
+   }
+   if( !THD_simmat_write_1D(out,sm) ){
+     fprintf(stderr,"FAIL writing dot-masked RDM\n") ; fail=1 ; goto done ;
+   }
+   back=THD_simmat_read_1D(out,4) ;
+   if( back==NULL || THD_simmat_nvalid(back)!=3 || !isnan(back->mat[3]) ||
+       !isnan(back->mat[12]) ){
+     fprintf(stderr,"FAIL dot-masked RDM round trip\n") ; fail=1 ;
+   }
+done:
+   THD_simmat_free(sm) ; THD_simmat_free(back) ; THD_rdm_ws_free(ws) ;
+   unlink(in) ; unlink(out) ; return fail ;
+}
+
 int main( void )
 {
-   int fail=condition_rdm_test()+second_order_test() ;
+   int fail=condition_rdm_test()+second_order_test()+masked_rdm_test() ;
    if( fail ) return 1 ;
    puts("PASS thd_rsa condition, subject, mean, and second-order RDM construction") ;
    return 0 ;

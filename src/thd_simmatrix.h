@@ -178,12 +178,18 @@ extern int THD_noise_whalf( int nvox, int nresid, float *R, float *Whalf,
                             float *shrink, int *erank ) ;
 
 /*! Read a square matrix from a 1D file; errors out unless it is nexpect square
-    (pass 0 to accept any size). */
+    (pass 0 to accept any size).  A literal '.' may replace a symmetric pair
+    of off-diagonal entries to mark that dyad as outside the model's estimand. */
 extern THD_simmat * THD_simmat_read_1D( char *fname, int nexpect ) ;
 
-/*! Write as a 1D file, via mri_write_1D so that THD_simmat_read_1D can read
-    it back unchanged. */
+/*! Write as a 1D file.  Complete matrices use mri_write_1D; masked entries are
+    written as '.', so that THD_simmat_read_1D can read them back unchanged. */
 extern int THD_simmat_write_1D( char *fname, THD_simmat *sm ) ;
+
+/*! Number of finite strict-upper-triangle dyads, and whether any are masked.
+    The diagonal is deliberately ignored by both queries. */
+extern int THD_simmat_nvalid     ( THD_simmat *sm ) ;
+extern int THD_simmat_has_missing( THD_simmat *sm ) ;
 
 /*-- triangles: the strict upper triangle is what actually gets analyzed,
      since the matrices are symmetric and the diagonal is meaningless --*/
@@ -279,6 +285,13 @@ extern size_t THD_mantel_cache_bytes( THD_mantel_cache *cache ) ;
 
 extern THD_rdm_ws * THD_rdm_ws_new ( int n , int ncol ) ;
 extern void         THD_rdm_ws_free( THD_rdm_ws *ws ) ;
+
+/*! Correlate a complete neural triangle with the finite entries of model.
+    If perm is non-NULL, relabel the model rows and columns together; the mask
+    moves with those labels.  This is the scalar fixed-model primitive for a
+    hand-authored partial RDM. */
+extern float THD_simmat_corr_triangle( float *neural_tri, THD_simmat *model,
+                                       int *perm, int cmp, THD_rdm_ws *ws ) ;
 
 /*! Fit a standardized least-squares model directly to compact triangle
     vectors.  y and each x[c] have m entries; under CMP_SPEARMAN they are ranked

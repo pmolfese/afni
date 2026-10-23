@@ -703,30 +703,90 @@ int THD_noise_whalf( int nvox , int nresid , float *R , float *Whalf ,
 /*  1D input and output                                                       */
 /*============================================================================*/
 
+/*! A deliberately small extension of AFNI's ordinary 1D reader: only invoke
+    it when the file contains a standalone '.' token.  That keeps all existing
+    mri_read_1D syntax for complete matrices, while giving partial model RDMs a
+    readable, alignment-preserving missing-cell notation. */
+static float * simmat_read_dot_file( char *fname, int *nrow, int *ncol )
+{
+   FILE *fp ; char line[65536] ; float *v=NULL ; int nr=0,nc=-1,nv=0,cap=0,hasdot=0 ;
+
+   *nrow=*ncol=0 ; fp=fopen(fname,"r") ; if( fp==NULL ) return NULL ;
+   while( fgets(line,sizeof(line),fp)!=NULL ){
+     char *hash=strchr(line,'#'),*tok,*save=NULL ; int thisc=0 ;
+     if( hash!=NULL ) *hash='\0' ;
+     for( tok=strtok_r(line," \t\r\n",&save) ; tok!=NULL ;
+          tok=strtok_r(NULL," \t\r\n",&save) ){
+       char *end=NULL ; float x ;
+       if( strcmp(tok,".")==0 ){ x=NAN ; hasdot=1 ; }
+       else {
+         x=strtof(tok,&end) ;
+         if( end==tok || *end!='\0' || !isfinite(x) ){
+           fclose(fp) ; free(v) ;
+           if( hasdot ) ERROR_exit("matrix file '%s' has invalid token '%s'",fname,tok) ;
+           return NULL ;
+         }
+       }
+       if( nv==cap ){
+         cap=(cap==0)?64:2*cap ; v=(float *)realloc(v,sizeof(float)*cap) ;
+         if( v==NULL ){ fclose(fp) ; ERROR_exit("cannot allocate matrix read from '%s'",fname) ; }
+       }
+       v[nv++]=x ; thisc++ ;
+     }
+     if( thisc>0 ){
+       if( nc<0 ) nc=thisc ;
+       else if( thisc!=nc ){
+         fclose(fp) ; free(v) ;
+         if( hasdot ) ERROR_exit("matrix file '%s' has %d entries on row %d; expected %d",
+                                 fname,thisc,nr+1,nc) ;
+         return NULL ;
+       }
+       nr++ ;
+     }
+   }
+   fclose(fp) ;
+   if( !hasdot ){ free(v) ; return NULL ; }
+   if( nr<1 || nc<1 || nv!=nr*nc ){
+     free(v) ; ERROR_exit("cannot parse dot-masked matrix file '%s'",fname) ;
+   }
+   *nrow=nr ; *ncol=nc ; return v ;
+}
+
 THD_simmat * THD_simmat_read_1D( char *fname , int nexpect )
 {
-   MRI_IMAGE *im ; THD_simmat *sm ; float *iar ; int ii , jj , n ;
+   MRI_IMAGE *im=NULL ; THD_simmat *sm ; float *iar=NULL,*dotar ; int ii,jj,n,nr=0,nc=0 ;
 
-   im = mri_read_1D( fname ) ;
-   if( im == NULL ) ERROR_exit("can't read matrix file '%s'",fname) ;
-   if( im->nx != im->ny )
-     ERROR_exit("matrix file '%s' is %d x %d, but must be square",
-                fname , im->nx , im->ny ) ;
-   if( nexpect > 0 && im->nx != nexpect )
-     ERROR_exit("matrix file '%s' is %d x %d, but %d x %d is needed here",
-                fname , im->nx , im->ny , nexpect , nexpect ) ;
-
-   n = im->nx ; sm = THD_simmat_new(n) ; iar = MRI_FLOAT_PTR(im) ;
-   if( sm==NULL || iar==NULL ){
-     THD_simmat_free(sm) ; mri_free(im) ;
-     ERROR_exit("cannot allocate matrix read from '%s'",fname) ;
+   dotar=simmat_read_dot_file(fname,&nr,&nc) ;
+   if( dotar!=NULL ){
+     if( nr!=nc ){
+       free(dotar) ; ERROR_exit("matrix file '%s' is %d x %d, but must be square",fname,nr,nc) ;
+     }
+     n=nr ;
+     if( nexpect>0 && n!=nexpect ){
+       free(dotar) ; ERROR_exit("matrix file '%s' is %d x %d, but %d x %d is needed here",
+                                fname,n,n,nexpect,nexpect) ;
+     }
+     sm=THD_simmat_new(n) ;
+     if( sm==NULL ){ free(dotar) ; ERROR_exit("cannot allocate matrix read from '%s'",fname) ; }
+     memcpy(sm->mat,dotar,sizeof(float)*(size_t)n*n) ; free(dotar) ;
+   } else {
+     im=mri_read_1D(fname) ;
+     if( im==NULL ) ERROR_exit("can't read matrix file '%s'",fname) ;
+     if( im->nx!=im->ny )
+       ERROR_exit("matrix file '%s' is %d x %d, but must be square",fname,im->nx,im->ny) ;
+     if( nexpect>0 && im->nx!=nexpect )
+       ERROR_exit("matrix file '%s' is %d x %d, but %d x %d is needed here",
+                  fname,im->nx,im->ny,nexpect,nexpect) ;
+     n=im->nx ; sm=THD_simmat_new(n) ; iar=MRI_FLOAT_PTR(im) ;
+     if( sm==NULL || iar==NULL ){
+       THD_simmat_free(sm) ; mri_free(im) ;
+       ERROR_exit("cannot allocate matrix read from '%s'",fname) ;
+     }
+     /* mri_read_1D gives element (i,j) at iar[j*nx+i]; store row major */
+     for( ii=0 ; ii<n ; ii++ ) for( jj=0 ; jj<n ; jj++ )
+       sm->mat[ii*n+jj]=iar[jj*n+ii] ;
+     mri_free(im) ;
    }
-
-   /* mri_read_1D gives element (i,j) at iar[j*nx+i]; store row major */
-   for( ii=0 ; ii < n ; ii++ )
-     for( jj=0 ; jj < n ; jj++ ) sm->mat[ii*n+jj] = iar[ jj*n + ii ] ;
-
-   mri_free(im) ;
 
    /* A Mantel/RSA matrix must be finite and symmetric.  Only the strict upper
       triangle is analyzed, but the permutation relabels rows AND columns
@@ -738,11 +798,16 @@ THD_simmat * THD_simmat_read_1D( char *fname , int nexpect )
      for( ii=0 ; ii < n ; ii++ )
        for( jj=ii+1 ; jj < n ; jj++ ){
          float a = sm->mat[ii*n+jj] , b = sm->mat[jj*n+ii] , d ;
+         if( isnan(a) != isnan(b) ){
+           THD_simmat_free(sm) ;
+           ERROR_exit("matrix file '%s' masks only one side of pair (%d,%d).\n"
+                      "       A '.' is a pair mask, so both symmetric cells must be '.'.",
+                      fname,ii+1,jj+1) ;
+         }
+         if( isnan(a) ) continue ;
          if( !isfinite(a) || !isfinite(b) ){
            THD_simmat_free(sm) ;
-           ERROR_exit("matrix file '%s' has a non-finite entry at (%d,%d); RSA\n"
-                      "       needs finite similarities/distances",
-                      fname , ii+1 , jj+1 ) ;
+           ERROR_exit("matrix file '%s' has a non-finite entry at (%d,%d)",fname,ii+1,jj+1) ;
          }
          d = fabsf(a-b) ;
          if( d > maxasym ){ maxasym = d ; bi = ii ; bj = jj ; }
@@ -772,6 +837,22 @@ int THD_simmat_write_1D( char *fname , THD_simmat *sm )
    if( sm == NULL ) return 0 ;
    n = sm->n ;
 
+   if( THD_simmat_has_missing(sm) ){
+     FILE *fp=fopen(fname,"w") ;
+     if( fp==NULL ){ WARNING_message("can't write matrix file %s",fname) ; return 0 ; }
+     for( ii=0 ; ii<n ; ii++ ){
+       for( jj=0 ; jj<n ; jj++ ){
+         float x=sm->mat[(size_t)ii*n+jj] ;
+         if( jj>0 ) fputc(' ',fp) ;
+         if( isnan(x) ) fputc('.',fp) ; else fprintf(fp,"%.9g",x) ;
+       }
+       fputc('\n',fp) ;
+     }
+     rv=(fclose(fp)==0) ;
+     if( !rv ) WARNING_message("can't write matrix file %s",fname) ;
+     return rv ;
+   }
+
    /* build in the layout mri_read_1D produces, then let mri_write_1D (which
       transposes on the way out) make it an exact round trip */
    im  = mri_new( n , n , MRI_float ) ;
@@ -783,6 +864,20 @@ int THD_simmat_write_1D( char *fname , THD_simmat *sm )
    mri_free(im) ;
    if( !rv ) WARNING_message("can't write matrix file %s",fname) ;
    return rv ;
+}
+
+int THD_simmat_nvalid( THD_simmat *sm )
+{
+   int ii,jj,nv=0 ;
+   if( sm==NULL || sm->mat==NULL ) return 0 ;
+   for( ii=0 ; ii<sm->n ; ii++ ) for( jj=ii+1 ; jj<sm->n ; jj++ )
+     if( isfinite(sm->mat[(size_t)ii*sm->n+jj]) ) nv++ ;
+   return nv ;
+}
+
+int THD_simmat_has_missing( THD_simmat *sm )
+{
+   return sm!=NULL && THD_simmat_nvalid(sm)<THD_NTRI(sm->n) ;
 }
 
 /*============================================================================*/
@@ -1032,6 +1127,22 @@ void THD_rdm_ws_free( THD_rdm_ws *ws )
    free(ws) ;
 }
 
+float THD_simmat_corr_triangle( float *neural_tri, THD_simmat *model,
+                                int *perm, int cmp, THD_rdm_ws *ws )
+{
+   int ii,jj,q=0,k=0,n ;
+   if( neural_tri==NULL || model==NULL || ws==NULL || ws->n!=model->n ) return NAN ;
+   n=model->n ;
+   for( ii=0 ; ii<n ; ii++ ) for( jj=ii+1 ; jj<n ; jj++,q++ ){
+     int a=(perm!=NULL)?perm[ii]:ii,b=(perm!=NULL)?perm[jj]:jj ;
+     float mv=model->mat[(size_t)a*n+b] ;
+     if( !isfinite(mv) ) continue ;
+     ws->tri[k]=neural_tri[q] ; ws->yperm[k]=mv ; k++ ;
+   }
+   if( k<2 ) return NAN ;
+   return THD_tri_corr(k,ws->tri,ws->yperm,cmp,ws->sc1,ws->sc2) ;
+}
+
 /*--- small statistics ---*/
 
 float THD_onesamp_t( int n , float *v )
@@ -1134,7 +1245,8 @@ THD_mantel_cache * THD_mantel_cache_build( int nmodel, THD_simmat **models,
    n=models[0]->n ; m=THD_NTRI(n) ; np=pset->nperm ;
    if( n < 3 || np < 1 || pset->nobs != n ) return NULL ;
    for( mm=0 ; mm < nmodel ; mm++ )
-     if( models[mm] == NULL || models[mm]->n != n ) return NULL ;
+     if( models[mm] == NULL || models[mm]->n != n ||
+         THD_simmat_has_missing(models[mm]) ) return NULL ;
 
    mc=(THD_mantel_cache *)calloc(1,sizeof(THD_mantel_cache)) ;
    mc->n=n ; mc->m=m ; mc->nmodel=nmodel ; mc->nperm=np ; mc->cmp=cmp ;
@@ -1184,6 +1296,21 @@ THD_permstat THD_mantel_corr( THD_simmat *neural , THD_simmat *model ,
    int np = (pset != NULL) ? pset->nperm : 0 ;
 
    ps.stat = 0.0f ; ps.pval = -1.0f ; ps.zscr = 0.0f ; ps.nperm = np ;
+
+   if( THD_simmat_has_missing(model) ){
+     THD_simmat_to_tri(neural,ws->resid) ;
+     robs=THD_simmat_corr_triangle(ws->resid,model,NULL,cmp,ws) ;
+     ps.stat=robs ;
+     if( pset==NULL ){ ps.zscr=MYatanh(robs) ; return ps ; }
+     for( nge=0,pk=0 ; pk<np ; pk++ ){
+       int *perm=pset->perm+(size_t)pk*n ;
+       float rp=THD_simmat_corr_triangle(ws->resid,model,perm,cmp,ws) ;
+       if( fabsf(rp)>=fabsf(robs) ) nge++ ;
+       if( permnull!=NULL ) permnull[pk]=fabsf(rp) ;
+     }
+     ps.pval=(float)nge/(float)np ; ps.zscr=THD_p_to_z(ps.pval,robs) ;
+     return ps ;
+   }
 
    THD_simmat_to_tri( neural , ws->tri ) ;
    THD_simmat_to_tri( model  , ws->sc1 ) ;      /* sc1 reused below, so copy */
