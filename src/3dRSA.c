@@ -1122,11 +1122,12 @@ static void rsa_searchlight_memory_preflight(
    int nloo, int nloofam, int do_nc,
    int noise_norm, int do_dset, int cmp, int joint,
    double limit_gib, int limit_given,
-   int memory_override, int quiet )
+   int memory_override, int quiet, int searchlight )
 {
    const double GIB=1073741824.0 , FS=(double)sizeof(float) ;
    THD_memory_plan me ;
-   double warn=0.0 , nfwe=(nperm>0)?(double)nperm:0.0 ;
+   double warn=0.0 , nfwe=(nperm>0)?(double)nperm:0.0,runwise_full=0.0,transient=0.0 ;
+   const char *scope=searchlight?"searchlight":"runwise atlas" ;
    int jj,mm,kk,nfixed=0,ndset=0,maxvox,nfeat,ncol,ntri,nbrik,maxcond=nvals,maxloo=1 ;
    int dualboot=(nboot>0 && ncboot>0) ;
 
@@ -1149,9 +1150,10 @@ static void rsa_searchlight_memory_preflight(
    me.input += rsa_dset_bytes(mset) ;
    if( runset != NULL ){
      for( jj=0 ; jj < runset->nrow ; jj++ ){
-       me.input += rsa_dset_bytes(runset->betas[jj]) ;
-       if( noise_norm != NN_NONE ) me.input += rsa_dset_bytes(runset->resid[jj]) ;
+       runwise_full += rsa_dset_bytes(runset->betas[jj]) ;
+       if( noise_norm != NN_NONE ) runwise_full += rsa_dset_bytes(runset->resid[jj]) ;
      }
+     me.input += (runset->store_nvox>0) ? runset->store_bytes : runwise_full ;
    } else {
      int nn=(series_runs!=NULL)?series_runs->nrow:
             (condition_index!=NULL)?condition_index->ncell:nsub ;
@@ -1180,6 +1182,10 @@ static void rsa_searchlight_memory_preflight(
                 + (double)rl->nroi*(2.0*sizeof(int)+sizeof(intvec)+sizeof(char *)) ;
    for( kk=0 ; kk < rl->nroi ; kk++ )
      me.geometry += (double)rl->vox[kk].nar*sizeof(int) ;
+   if( runset!=NULL && runset->store_nvox>0 )
+     me.geometry += (double)runset->nvox*sizeof(int)
+                  + (double)runset->store_nvox*sizeof(int)
+                  + 2.0*runset->nrow*sizeof(float *) ;
 
    /* Fixed matrices, shared relabelings/resamples, result columns, and the
       synchronized max-null arrays do not scale with the OpenMP thread count. */
@@ -1363,39 +1369,52 @@ static void rsa_searchlight_memory_preflight(
    warn=limit_given ? 0.75*me.limit
                     : ((me.system>0.0) ? 0.50*me.system : 0.0) ;
    THD_memory_plan_finish(&me) ;
+   if( runset!=NULL && runset->store_nvox>0 ){
+     transient=runset->store_largest_input ;
+     double load_peak=me.input+me.geometry+me.shared+me.output
+                     +transient ;
+     if( load_peak>me.total ) me.total=load_peak ;
+   }
 
    if( !quiet ){
+     if( runset!=NULL && runset->store_nvox>0 )
+       INFO_message("3dRSA: runwise data held as exact float32 over %d of %d voxels/nodes:\n"
+                    "       %.3f GiB compact store (full-grid datasets would need %.3f GiB)",
+                    runset->store_nvox,runset->nvox,runset->store_bytes/GIB,
+                    runwise_full/GIB) ;
      if( me.limit > 0.0 )
-       INFO_message("3dRSA: searchlight memory preflight: estimated peak %.3f GiB\n"
+       INFO_message("3dRSA: %s memory preflight: estimated peak %.3f GiB\n"
                     "       = %.3f input + %.3f neighborhoods/shared/output"
-                    " + %d x %.3f thread scratch; limit %.3f GiB (%s)",
-                    me.total/GIB,me.input/GIB,(me.geometry+me.shared+me.output)/GIB,
-                    me.nthread,me.per_thread/GIB,me.limit/GIB,
+                    " + %d x %.3f thread scratch + %.3f transient load;"
+                    " limit %.3f GiB (%s)",
+                    scope,me.total/GIB,me.input/GIB,(me.geometry+me.shared+me.output)/GIB,
+                    me.nthread,me.per_thread/GIB,transient/GIB,me.limit/GIB,
                     limit_given?"-memory_limit":"80% of detected RAM") ;
      else
-       INFO_message("3dRSA: searchlight memory preflight: estimated peak %.3f GiB\n"
+       INFO_message("3dRSA: %s memory preflight: estimated peak %.3f GiB\n"
                     "       = %.3f input + %.3f neighborhoods/shared/output"
-                    " + %d x %.3f thread scratch; system RAM is unavailable",
-                    me.total/GIB,me.input/GIB,(me.geometry+me.shared+me.output)/GIB,
-                    me.nthread,me.per_thread/GIB) ;
+                    " + %d x %.3f thread scratch + %.3f transient load;"
+                    " system RAM is unavailable",
+                    scope,me.total/GIB,me.input/GIB,(me.geometry+me.shared+me.output)/GIB,
+                    me.nthread,me.per_thread/GIB,transient/GIB) ;
    }
 
    if( me.limit > 0.0 && me.total > me.limit ){
      if( !memory_override )
-       ERROR_exit("3dRSA: estimated searchlight peak memory %.3f GiB exceeds the\n"
+       ERROR_exit("3dRSA: estimated %s peak memory %.3f GiB exceeds the\n"
                   "       %.3f GiB %s limit. Reduce OMP_NUM_THREADS, use a smaller\n"
                   "       mask/input, add -no_dset, or set a suitable -memory_limit.\n"
                   "       If this allocation is intentional, rerun with\n"
                   "       -memory_override to acknowledge the risk.",
-                  me.total/GIB,me.limit/GIB,limit_given?"-memory_limit":"system-RAM") ;
+                  scope,me.total/GIB,me.limit/GIB,limit_given?"-memory_limit":"system-RAM") ;
      WARNING_message("3dRSA: estimated peak %.3f GiB exceeds the %.3f GiB limit;\n"
                      "       continuing because -memory_override was given",
                      me.total/GIB,me.limit/GIB) ;
    } else if( warn > 0.0 && me.total > warn ){
-     WARNING_message("3dRSA: estimated searchlight peak memory is %.3f GiB\n"
+     WARNING_message("3dRSA: estimated %s peak memory is %.3f GiB\n"
                      "       (more than %s of the applicable limit/system RAM).\n"
                      "       Consider fewer OMP_NUM_THREADS or a smaller mask.",
-                     me.total/GIB,limit_given?"75%":"50%") ;
+                     scope,me.total/GIB,limit_given?"75%":"50%") ;
    }
 }
 
@@ -1517,20 +1536,24 @@ void usage_3dRSA(int detail)
 "                      '-noise_norm none', 'diag', or 'shrinkage'.  Prefer this\n"
 "                      when conditions have independent repeated estimates.\n"
 "                 Both reuse the usual subject test/FDR/max-FWE path.\n"
-"                 All input datasets are held in memory, so watch memory on\n"
-"                 full-res data -- and doubly so with IS-RSA '-model_dset', which\n"
-"                 keeps the second modality resident too.  '-model_dset' IS\n"
+"                 Searchlights keep their needed input values resident. Runwise\n"
+"                 input is compacted to the analyzed voxel/node union; other\n"
+"                 full-res input -- and IS-RSA '-model_dset', which keeps a\n"
+"                 second modality resident -- can still be large. '-model_dset' IS\n"
 "                 supported: the\n"
 "                 cross-modal model is rebuilt from that other modality in each\n"
 "                 moving sphere, so you get a whole-brain map of where the two\n"
 "                 modalities share a subject geometry.  '-save_rdm' is not (it\n"
 "                 would write one matrix per voxel).\n"
 "\n"
-"  -memory_limit G = Searchlight peak-memory limit in GiB.  Before loading all\n"
+"  -memory_limit G = Searchlight/runwise peak-memory limit in GiB. Before loading\n"
 "                 subject datasets, 3dRSA estimates resident inputs, neighborhood\n"
 "                 indices, shared result/null/output arrays, and per-OpenMP-thread\n"
 "                 scratch (including crossnobis whitening).  By default it warns\n"
 "                 above 50%% of detected physical RAM and refuses above 80%%.\n"
+"                 Runwise analyses automatically keep only the union of analyzed\n"
+"                 voxels/nodes in exact float32 when that is smaller than the\n"
+"                 native full-grid datasets, reading one dataset at a time.\n"
 "                 This option replaces the 80%% limit with G GiB, which is useful\n"
 "                 under a scheduler/container whose job limit is below host RAM;\n"
 "                 with an explicit limit, the warning begins at 75%% of G.\n"
@@ -1759,6 +1782,13 @@ void usage_3dRSA(int detail)
 "                      the run's\n"
 "                      residual time series, needed only for the whitened\n"
 "                      (Mahalanobis) crossnobis distance.\n"
+"                   ++ AFNI-native residual slicing: add an 'Xmat' column that\n"
+"                      names the subject's X.xmat.1D on every run row, and give\n"
+"                      ResidFile as the WHOLE residual dataset without a selector.\n"
+"                      Run must then be its one-based numeric Xmat run. RunStart\n"
+"                      and GoodList select only that run's uncensored residual\n"
+"                      samples. InputFile remains the explicit run beta dataset\n"
+"                      or selector, so this composes with ConditionFile/TrialFile.\n"
 "                   ++ F21 unbalanced input: add a 'ConditionFile' column. Each\n"
 "                      row names a text file containing one whitespace-free\n"
 "                      condition label per InputFile sub-brick. Conditions may\n"
@@ -1812,8 +1842,28 @@ void usage_3dRSA(int detail)
 "                   ++ Add '-searchlight NNN' to compute the same runwise\n"
 "                      crossnobis analysis in every moving neighborhood.\n"
 "\n"
+"  -xmatTable FILE = Compact AFNI-native crossnobis input, one row per SUBJECT:\n"
+"\n"
+"                   Subj  Xmat          InputFile          ResidFile\n"
+"                   s01   X.xmat.1D     stats_REML+tlrc    errts_REML+tlrc\n"
+"                   s02   X.xmat.1D     stats_REML+tlrc    errts_REML+tlrc\n"
+"\n"
+"                 InputFile and optional ResidFile are whole datasets without\n"
+"                 selectors. The design matrix supplies stimulus conditions,\n"
+"                 one-run beta labels, run boundaries, and censoring. 3dRSA\n"
+"                 finds each matching *_Coef brick, expands the subject into\n"
+"                 runs, averages repeated condition betas within run, and uses\n"
+"                 only uncensored residual samples. Condition/model order is\n"
+"                 the Xmat StimLabels order. A stimulus regressor spanning runs\n"
+"                 cannot define an independent estimate and is rejected; use an\n"
+"                 explicit -runwiseTable for that design. Otherwise this has the\n"
+"                 same modes, metrics and inference as -runwiseTable.\n"
+"\n"
+"  -xmat_stims LIST = With -xmatTable, use only these comma-separated StimLabels\n"
+"                 [default: all]. Their relative order remains StimLabels order.\n"
+"\n"
 "  -noise_norm NNN = Noise-normalize the crossnobis distance using the residuals\n"
-"                 (needs '-runwiseTable' with a 'ResidFile' column).  Weighting\n"
+"                 (needs '-runwiseTable' or '-xmatTable' with ResidFile). Weighting\n"
 "                 each voxel by how noisy it is -- and, for the full version,\n"
 "                 decorrelating the voxels -- makes the distance a Mahalanobis\n"
 "                 distance and is what most improves crossnobis reliability\n"
@@ -3205,10 +3255,10 @@ static THD_simmat * rsa_subject_rdm( int jj , THD_roilist *rl , int kk ,
    for( r=0 ; r < nr ; r++ ){
      int row=runset->row_of[jj][r] ;
      if( !runset->has_condmap )
-       THD_roi_pattern(runset->betas[row],rl->vox+kk,rpat[r]) ;
+       THD_runset_roi_pattern(runset,row,0,rl->vox+kk,rpat[r]) ;
      else {
        int b ;
-       THD_roi_pattern(runset->betas[row],rl->vox+kk,runraw) ;
+       THD_runset_roi_pattern(runset,row,0,rl->vox+kk,runraw) ;
        memset(rpat[r],0,sizeof(float)*(size_t)nitem*nvx) ;
        for( b=0 ; b<runset->nbrick[row] ; b++ ){
          int gc=runset->cond_of[row][b] ; float *dst=rpat[r]+(size_t)gc*nvx ;
@@ -3229,7 +3279,7 @@ static THD_simmat * rsa_subject_rdm( int jj , THD_roilist *rl , int kk ,
      int ntot = 0 ;
      for( r=0 ; r < nr ; r++ ){
        int row = runset->row_of[jj][r] , nt = DSET_NVALS(runset->resid[row]) ;
-       THD_roi_pattern( runset->resid[row] , rl->vox+kk , wh->residbuf ) ;  /* [nt*nvx] */
+       THD_runset_roi_pattern(runset,row,1,rl->vox+kk,wh->residbuf) ; /* [nt*nvx] */
        for( v=0 ; v < nvx ; v++ ){        /* demean this run, per voxel */
          double m=0.0 ;
          for( t=0 ; t < nt ; t++ ) m += wh->residbuf[(size_t)t*nvx+v] ;
@@ -4305,7 +4355,7 @@ static char *rsa_options[] = {
    "-dataTable" , "-dataTableFile" , "-condition_column" , "-condition_order" ,
    "-run_column" , "-run_normalize" , "-run_analysis" ,
    "-run_model" , "-run_center" , "-run_factor" , "-run_contrast" ,
-   "-runwiseTable" , "-noise_norm" ,
+   "-runwiseTable" , "-xmatTable" , "-xmat_stims" , "-noise_norm" ,
    "-center_conditions" ,
    "-model" , "-model_mat" , "-model_series" , "-model_series_subjects" , "-model_dset" , "-model_joint" , "-ortvec" ,
    "-model_fit" , "-fit_ridge" , "-fit_condfold" ,
@@ -4332,7 +4382,7 @@ int main( int argc , char *argv[] )
    char domain_err[1024] ;
    char *seed_mask=NULL , *seed_roi_sel=NULL ;
    float *seed_srdm=NULL ; int seed_excluded=0 ;
-   char *runwise_file=NULL ; THD_runset *runset=NULL ;   /* -runwiseTable */
+   char *runwise_file=NULL,*xmat_file=NULL,*xmat_stims=NULL ; THD_runset *runset=NULL ;
    char *run_column=NULL ; int run_normalize=RUN_NORM_ZSCORE,run_normalize_given=0 ;
    char *condition_column=NULL,*condition_order_arg=NULL,**condition_level=NULL ;
    int ncondition_level=0 ;
@@ -4765,6 +4815,14 @@ int main( int argc , char *argv[] )
         if( ++nopt >= argc ) ERROR_exit("3dRSA: need a file name after -runwiseTable") ;
         runwise_file = argv[nopt] ; nopt++ ; continue ;
       }
+      if( strcasecmp(argv[nopt],"-xmatTable") == 0 ){
+        if( ++nopt >= argc ) ERROR_exit("3dRSA: need a file name after -xmatTable") ;
+        xmat_file = argv[nopt] ; nopt++ ; continue ;
+      }
+      if( strcasecmp(argv[nopt],"-xmat_stims") == 0 ){
+        if( ++nopt >= argc ) ERROR_exit("3dRSA: need a comma-separated stimulus list after -xmat_stims") ;
+        xmat_stims = argv[nopt] ; nopt++ ; continue ;
+      }
       if( strcasecmp(argv[nopt],"-run_column") == 0 ){
         if( ++nopt >= argc ) ERROR_exit("3dRSA: need a column name after -run_column") ;
         if( run_column!=NULL ) ERROR_exit("3dRSA: -run_column was given twice") ;
@@ -4913,33 +4971,42 @@ int main( int argc , char *argv[] )
      ERROR_exit("3dRSA: -mask is required (the one exception is a surface\n"
                 "       -searchlight, which may omit -mask to search the\n"
                 "       whole mesh)") ;
-   if( sl_nbhd == NULL && (memory_limit_given || memory_override) )
-     ERROR_exit("3dRSA: -memory_limit/-memory_override apply only with -searchlight") ;
+   if( sl_nbhd == NULL && runwise_file==NULL && xmat_file==NULL &&
+       (memory_limit_given || memory_override) )
+     ERROR_exit("3dRSA: -memory_limit/-memory_override apply only with -searchlight\n"
+                "       or runwise crossnobis input") ;
 
-   /* Runwise (cross-validated) classic RSA takes a different input -- one row
-      per subject x run -- so it has its own table.  Load and validate that
-      table here; the same crossnobis estimator serves atlas ROIs and moving
+   /* Cross-validated classic RSA takes either an explicit subject x run table
+      or a compact subject table expanded from X.xmat.1D. Load and validate it
+      here; the same crossnobis estimator serves atlas ROIs and moving
       searchlight neighborhoods downstream. */
-   if( runwise_file != NULL ){
+   if( runwise_file != NULL || xmat_file != NULL ){
      THD_3dim_dataset *mchk ;
+     const char *input_opt=(xmat_file!=NULL)?"-xmatTable":"-runwiseTable" ;
+     const char *input_file=(xmat_file!=NULL)?xmat_file:runwise_file ;
+     if( runwise_file!=NULL && xmat_file!=NULL )
+       ERROR_exit("3dRSA: use EITHER -runwiseTable OR -xmatTable, not both") ;
+     if( xmat_stims!=NULL && xmat_file==NULL )
+       ERROR_exit("3dRSA: -xmat_stims requires -xmatTable") ;
      if( maskname == NULL )
-       ERROR_exit("3dRSA: -mask is required with -runwiseTable (the mask-optional\n"
-                  "       surface searchlight is IS-RSA only)") ;
+       ERROR_exit("3dRSA: -mask is required with %s (the mask-optional\n"
+                  "       surface searchlight is IS-RSA only)",input_opt) ;
      if( tab != NULL )
-       ERROR_exit("3dRSA: use EITHER -runwiseTable OR -dataTable/-dataTableFile,\n"
-                  "       not both") ;
+       ERROR_exit("3dRSA: use EITHER %s OR -dataTable/-dataTableFile, not both",
+                  input_opt) ;
      if( rdm_over != RDM_BRICK && feat_override != MODE_RDM )
-       ERROR_exit("3dRSA: -runwiseTable supplies cross-validated condition RDMs.\n"
+       ERROR_exit("3dRSA: %s supplies cross-validated condition RDMs.\n"
                   "       Use '-mode RSA', or '-mode IS-RSA -featuretype rdm'\n"
-                  "       for second-order crossnobis IS-RSA.") ;
-     runset = THD_runset_read( runwise_file ) ;
+                  "       for second-order crossnobis IS-RSA.",input_opt) ;
+     runset = (xmat_file!=NULL) ? THD_runset_read_xmat(xmat_file,xmat_stims)
+                                : THD_runset_read(runwise_file) ;
      if( runset == NULL )
-       ERROR_exit("3dRSA: -runwiseTable '%s' failed to load (see message above)",
-                  runwise_file) ;
+       ERROR_exit("3dRSA: %s '%s' failed to load (see message above)",
+                  input_opt,input_file) ;
      if( noise_norm != NN_NONE && !runset->has_resid )
        ERROR_exit("3dRSA: -noise_norm %s needs a 'ResidFile' column in the\n"
-                  "       -runwiseTable to estimate the noise covariance",
-                  (noise_norm==NN_DIAG)?"diag":"shrinkage") ;
+                  "       %s to estimate the noise covariance",
+                  (noise_norm==NN_DIAG)?"diag":"shrinkage",input_opt) ;
      mchk = THD_open_dataset( maskname ) ;
      if( mchk == NULL ) ERROR_exit("3dRSA: can't open -mask '%s'",maskname) ;
      if( DSET_NVOX(mchk) != runset->nvox )
@@ -4955,9 +5022,9 @@ int main( int argc , char *argv[] )
      DSET_delete(mchk) ;
      if( !quiet ){
        THD_runset_print( runset , stdout ) ;
-       INFO_message("3dRSA: -runwiseTable -- %d subjects, %d conditions, %d "
+       INFO_message("3dRSA: %s -- %d subjects, %d conditions, %d "
                     "subject-runs; crossnobis (%s)",
-                    runset->nsub,runset->ncond,runset->nrow,
+                    input_opt,runset->nsub,runset->ncond,runset->nrow,
                     (noise_norm==NN_NONE)   ? "cross-validated squared Euclidean" :
                     (noise_norm==NN_DIAG)   ? "univariate noise-normalized"
                                             : "multivariate noise-normalized (shrinkage)") ;
@@ -4966,10 +5033,10 @@ int main( int argc , char *argv[] )
 
    if( noise_norm != NN_NONE && runset == NULL )
      ERROR_exit("3dRSA: -noise_norm only applies to cross-validated (crossnobis)\n"
-                "       RSA; give it with -runwiseTable.") ;
+                "       RSA; give it with -runwiseTable or -xmatTable.") ;
 
    if( tab == NULL && runset == NULL )
-     ERROR_exit("3dRSA: -dataTable, -dataTableFile or -runwiseTable is required") ;
+     ERROR_exit("3dRSA: -dataTable, -dataTableFile, -runwiseTable or -xmatTable is required") ;
    if( tab != NULL && tab->fname == NULL )
      ERROR_exit("3dRSA: the data table has no 'InputFile' column, so there are\n"
                 "       no datasets to analyze") ;
@@ -6367,17 +6434,21 @@ int main( int argc , char *argv[] )
      }
    }
 
-   /* F11: estimate the peak while all searchlight input headers are open but
-      before their voxel arrays are loaded.  Atlas/ROI mode unloads subjects as
-      it reduces them and therefore does not need this resident-input guard. */
-   if( streaming )
+   /* F11: estimate the peak before large voxel arrays are loaded. Ordinary
+      atlas input is reduced one dataset at a time; runwise atlas/searchlight
+      input uses the compact store planned here. */
+   if( runset!=NULL ){
+     int sc=THD_runset_plan_store(runset,rl,seedrl,noise_norm!=NN_NONE) ;
+     if( sc<0 ) ERROR_exit("3dRSA: cannot plan the runwise compact voxel store") ;
+   }
+   if( streaming || runset!=NULL )
      rsa_searchlight_memory_preflight(
        mset,rl,dset,runset,series_runs,condition_index,run_analysis,nrunconspec,mod,nmod,nort,nsub,mode,rdm_over,nitem,nvals,
        nperm,null_mode,nboot,ncboot,ncon,ncomq,nfit,nfitw,nfitcon,
        do_loo,nloo,nloofam,do_nc,
        noise_norm,do_dset,
        cmp_metric,joint,
-       memory_limit_gib,memory_limit_given,memory_override,quiet ) ;
+       memory_limit_gib,memory_limit_given,memory_override,quiet,streaming ) ;
 
    /* Build the seed once, before any atlas continuous-data reduction unloads
       subject datasets.  Searchlights retain the fixed seed geometry while
@@ -6386,9 +6457,17 @@ int main( int argc , char *argv[] )
      if( runset != NULL ){
        int rw ;
        for( rw=0 ; rw<runset->nrow ; rw++ ){
-         DSET_load(runset->betas[rw]) ; CHECK_LOAD_ERROR(runset->betas[rw]) ;
+         if( runset->store_nvox>0 ){
+           if( !THD_runset_load_store_row(runset,rw,0) )
+             ERROR_exit("3dRSA: cannot compact beta data for Subj %s, Run %s",
+                        runset->subj[runset->row_sub[rw]],runset->run_lab[rw]) ;
+         } else { DSET_load(runset->betas[rw]) ; CHECK_LOAD_ERROR(runset->betas[rw]) ; }
          if( noise_norm!=NN_NONE ){
-           DSET_load(runset->resid[rw]) ; CHECK_LOAD_ERROR(runset->resid[rw]) ;
+           if( runset->store_nvox>0 ){
+             if( !THD_runset_load_store_row(runset,rw,1) )
+               ERROR_exit("3dRSA: cannot compact residual data for Subj %s, Run %s",
+                          runset->subj[runset->row_sub[rw]],runset->run_lab[rw]) ;
+           } else { DSET_load(runset->resid[rw]) ; CHECK_LOAD_ERROR(runset->resid[rw]) ; }
          }
        }
      } else {
@@ -6433,10 +6512,18 @@ int main( int argc , char *argv[] )
      rsa_progress_init(&progress,progress_mode,quiet,3,"Loading runwise data",
                        runset->nrow*(1+(noise_norm!=NN_NONE)),"datasets") ;
      for( rw=0 ; rw < runset->nrow ; rw++ ){
-       DSET_load(runset->betas[rw]) ; CHECK_LOAD_ERROR(runset->betas[rw]) ;
+       if( runset->store_nvox>0 ){
+         if( !THD_runset_load_store_row(runset,rw,0) )
+           ERROR_exit("3dRSA: cannot compact beta data for Subj %s, Run %s",
+                      runset->subj[runset->row_sub[rw]],runset->run_lab[rw]) ;
+       } else { DSET_load(runset->betas[rw]) ; CHECK_LOAD_ERROR(runset->betas[rw]) ; }
        rsa_progress_advance(&progress) ;
        if( noise_norm != NN_NONE ){
-         DSET_load(runset->resid[rw]) ; CHECK_LOAD_ERROR(runset->resid[rw]) ;
+         if( runset->store_nvox>0 ){
+           if( !THD_runset_load_store_row(runset,rw,1) )
+             ERROR_exit("3dRSA: cannot compact residual data for Subj %s, Run %s",
+                        runset->subj[runset->row_sub[rw]],runset->run_lab[rw]) ;
+         } else { DSET_load(runset->resid[rw]) ; CHECK_LOAD_ERROR(runset->resid[rw]) ; }
          rsa_progress_advance(&progress) ;
        }
      }

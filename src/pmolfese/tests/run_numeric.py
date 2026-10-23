@@ -5093,6 +5093,21 @@ def run_checks(BIN, work, threads, verbose):
           os.path.exists(os.path.join(cnd, "mem_override.rsa.1D")),
           "rc=%d %s" % (rc, mout.strip()[-180:]))
 
+    # Runwise atlas analyses retain the same subject/run beta and residual
+    # collection, so guard them with the same preflight even without a moving
+    # searchlight.  The tiny limit keeps this a refusal-only, fast check.
+    atlas_mem = ["-runwiseTable", os.path.join(cnd, "rw.txt"), "-mask",
+                 os.path.join(cnd, "mask.nii.gz"), "-mode", "RSA",
+                 "-model_mat", "block", os.path.join(cnd, "block.1D"),
+                 "-metric", "spearman", "-nperm", "0", "-no_dset",
+                 "-memory_limit", "0.000001", "-prefix",
+                 os.path.join(cnd, "mem_atlas_refuse")]
+    rc, mout = rsa(atlas_mem)
+    check("F11 runwise atlas memory limit refuses before loading",
+          rc != 0 and "runwise atlas memory preflight" in mout and
+          "exceeds the" in mout and "-memory_override" in mout,
+          "rc=%d %s" % (rc, mout.strip()[-180:]))
+
     # =====================================================================
     # 7. -model_dset under searchlight.  Stream a second modality through the
     #    moving neighborhood.  With a radius covering the whole volume every

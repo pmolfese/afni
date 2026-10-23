@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int parser_test( void )
 {
@@ -250,10 +251,132 @@ done:
    return fail ;
 }
 
+static int write_runset_bucket( const char *fname, int nbrick, int residual )
+{
+   THD_3dim_dataset *ds=EDIT_empty_copy(NULL) ;
+   THD_ivec3 nxyz ; THD_fvec3 org,del ; int bb,vv ;
+   static const char *lab[4]={"face#0_Coef","face#1_Coef",
+                              "house#0_Coef","house#1_Coef"} ;
+   LOAD_IVEC3(nxyz,2,2,1) ; LOAD_FVEC3(org,0.0f,0.0f,0.0f) ;
+   LOAD_FVEC3(del,2.0f,2.0f,2.0f) ;
+   EDIT_dset_items(ds,ADN_nxyz,nxyz,ADN_xyzorg,org,ADN_xyzdel,del,
+                   ADN_prefix,fname,ADN_nvals,nbrick,ADN_type,HEAD_FUNC_TYPE,
+                   ADN_func_type,FUNC_BUCK_TYPE,ADN_none) ;
+   ds->daxes->xxorient=ORI_R2L_TYPE ; ds->daxes->yyorient=ORI_A2P_TYPE ;
+   ds->daxes->zzorient=ORI_I2S_TYPE ;
+   for( bb=0 ; bb<nbrick ; bb++ ){
+     float *v=(float *)malloc(4*sizeof(float)) ;
+     for( vv=0 ; vv<4 ; vv++ ) v[vv]=(float)(10*bb+vv+1) ;
+     EDIT_substitute_brick(ds,bb,MRI_float,v) ;
+     if( !residual && bb<4 ) EDIT_BRICK_LABEL(ds,bb,lab[bb]) ;
+   }
+   if( DSET_write(ds)==False ){ DSET_delete(ds) ; return 0 ; }
+   DSET_delete(ds) ; return 1 ;
+}
+
+static int write_runset_xmat( const char *fname )
+{
+   FILE *fp=fopen(fname,"w") ; int rr ;
+   static const int good[7]={0,1,2,4,5,6,7} ;
+   if( fp==NULL ) return 0 ;
+   fprintf(fp,"# <matrix\n#  ni_type = \"4*double\"\n#  ni_dimen = \"7\"\n"
+              "#  ColumnLabels = \"face#0 ; face#1 ; house#0 ; house#1\"\n"
+              "#  GoodList = \"0..2,4..7\"\n#  NRowFull = \"8\"\n"
+              "#  RunStart = \"0,4\"\n#  StimBots = \"0,2\"\n"
+              "#  StimTops = \"1,3\"\n#  StimLabels = \"face ; house\"\n# >\n") ;
+   for( rr=0 ; rr<7 ; rr++ ){
+     int t=good[rr] ;
+     fprintf(fp,"%d %d %d %d\n",t==0,t==4,t==1,t==5) ;
+   }
+   fprintf(fp,"# </matrix>\n") ; fclose(fp) ; return 1 ;
+}
+
+static void remove_runset_bucket( const char *fname )
+{
+   char path[1024] ;
+   remove(fname) ; snprintf(path,sizeof(path),"%s.HEAD",fname) ; remove(path) ;
+   snprintf(path,sizeof(path),"%s.BRIK",fname) ; remove(path) ;
+   snprintf(path,sizeof(path),"%s.BRIK.gz",fname) ; remove(path) ;
+}
+
+static int xmat_runset_test( void )
+{
+   const char *tmp=getenv("TMPDIR") ; long pid=(long)getpid() ;
+   char stats[900],resid[900],xmat[900],compact[900],wide[900],s1[1000],s2[1000] ;
+   THD_runset *xc=NULL,*xw=NULL ; FILE *fp=NULL ; int fail=0 ;
+   if( tmp==NULL ) tmp="." ;
+   snprintf(stats,sizeof(stats),"%s/thd_patterns_%ld_stats.nii",tmp,pid) ;
+   snprintf(resid,sizeof(resid),"%s/thd_patterns_%ld_resid.nii",tmp,pid) ;
+   snprintf(xmat,sizeof(xmat),"%s/thd_patterns_%ld.xmat.1D",tmp,pid) ;
+   snprintf(compact,sizeof(compact),"%s/thd_patterns_%ld_compact.txt",tmp,pid) ;
+   snprintf(wide,sizeof(wide),"%s/thd_patterns_%ld_wide.txt",tmp,pid) ;
+   if( !write_runset_bucket(stats,4,0) || !write_runset_bucket(resid,8,1) ||
+       !write_runset_xmat(xmat) ){
+     fprintf(stderr,"FAIL create Xmat runset fixtures\n") ; fail=1 ; goto done ;
+   }
+   fp=fopen(compact,"w") ;
+   if( fp==NULL ){ fail=1 ; goto done ; }
+   fprintf(fp,"Subj Xmat ResidFile InputFile\ns01 %s %s %s\n",xmat,resid,stats) ;
+   fclose(fp) ; fp=NULL ;
+   /* Selection order is deliberately reversed: model order must still follow
+      the Xmat StimLabels order (face, house). */
+   xc=THD_runset_read_xmat(compact,"house,face") ;
+   if( xc==NULL || !xc->from_xmat || xc->nsub!=1 || xc->nrow!=2 ||
+       xc->ncond!=2 || xc->has_condmap || !xc->has_resid ||
+       strcmp(xc->cond_lab[0],"face") || strcmp(xc->cond_lab[1],"house") ||
+       DSET_NVALS(xc->betas[0])!=2 || DSET_NVALS(xc->betas[1])!=2 ||
+       DSET_NVALS(xc->resid[0])!=3 || DSET_NVALS(xc->resid[1])!=4 ){
+     fprintf(stderr,"FAIL compact Xmat table expansion, condition order, or censored residual slices\n") ;
+     fail=1 ; goto done ;
+   }
+   { THD_roilist rl ; intvec rv ; int vv[2]={1,3},row ;
+     float bp[4],rp[6],bwant[4]={2,4,22,24},rwant[6]={2,4,12,14,22,24} ;
+     memset(&rl,0,sizeof(rl)) ; memset(&rv,0,sizeof(rv)) ;
+     rv.nar=2 ; rv.ar=vv ; rl.nroi=1 ; rl.vox=&rv ;
+     if( THD_runset_plan_store(xc,&rl,NULL,1)!=1 || xc->store_nvox!=2 ){
+       fprintf(stderr,"FAIL plan exact runwise compact store\n") ; fail=1 ; goto done ;
+     }
+     for( row=0 ; row<xc->nrow ; row++ )
+       if( !THD_runset_load_store_row(xc,row,0) ||
+           !THD_runset_load_store_row(xc,row,1) ){
+         fprintf(stderr,"FAIL fill exact runwise compact store\n") ; fail=1 ; goto done ;
+       }
+     THD_runset_roi_pattern(xc,0,0,&rv,bp) ;
+     THD_runset_roi_pattern(xc,0,1,&rv,rp) ;
+     for( row=0 ; row<4 ; row++ ) if( bp[row]!=bwant[row] ) fail=1 ;
+     for( row=0 ; row<6 ; row++ ) if( rp[row]!=rwant[row] ) fail=1 ;
+     if( fail ){
+       fprintf(stderr,"FAIL compact runwise values differ from full-grid values\n") ;
+       goto done ;
+     }
+   }
+   snprintf(s1,sizeof(s1),"%s[0,2]",stats) ;
+   snprintf(s2,sizeof(s2),"%s[1,3]",stats) ;
+   fp=fopen(wide,"w") ;
+   if( fp==NULL ){ fail=1 ; goto done ; }
+   fprintf(fp,"Subj Run Xmat ResidFile InputFile\n"
+              "s01 1 %s %s %s\n"
+              "s01 2 %s %s %s\n",xmat,resid,s1,xmat,resid,s2) ;
+   fclose(fp) ; fp=NULL ;
+   xw=THD_runset_read(wide) ;
+   if( xw==NULL || xw->from_xmat || xw->nrow!=2 || xw->ncond!=2 ||
+       xw->has_condmap || !xw->has_resid ||
+       DSET_NVALS(xw->resid[0])!=3 || DSET_NVALS(xw->resid[1])!=4 ){
+     fprintf(stderr,"FAIL wide Xmat residual slicing\n") ; fail=1 ;
+   }
+done:
+   if( fp!=NULL ) fclose(fp) ;
+   THD_runset_free(xc) ; THD_runset_free(xw) ;
+   remove(compact) ; remove(wide) ; remove(xmat) ;
+   remove_runset_bucket(stats) ; remove_runset_bucket(resid) ;
+   return fail ;
+}
+
 int main( void )
 {
-   int fail=parser_test()+paint_test()+sample_extraction_test()+surface_domain_test() ;
+   int fail=parser_test()+paint_test()+sample_extraction_test()+surface_domain_test()
+           +xmat_runset_test() ;
    if( fail ) return 1 ;
-   puts("PASS thd_patterns geometry, domains, painting, and selected-sample extraction") ;
+   puts("PASS thd_patterns geometry, domains, samples, and Xmat runwise inputs") ;
    return 0 ;
 }

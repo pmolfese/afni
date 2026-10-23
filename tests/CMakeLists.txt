@@ -223,6 +223,19 @@ if(TARGET 1dTrdm AND TARGET 3dRSA)
 endif()
 
 if(ENABLE_TESTS)
+  add_executable(
+    thd_datatable_unit
+    ${CMAKE_SOURCE_DIR}/src/thd_datatable.c
+    ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_datatable.c
+  )
+  target_include_directories(thd_datatable_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(
+    thd_datatable_unit
+    PRIVATE AFNI::mri NIFTI::nifti2 NIFTI::nifticdf m
+  )
+  add_test(NAME thd_datatable:unit COMMAND thd_datatable_unit)
+  set_tests_properties(thd_datatable:unit PROPERTIES LABELS "3dRSA;3dMVPA;3dInSync;numeric;unit")
+
   # Direct unit gate for the dataset-agnostic ISC summaries behind 3dInSync.
   add_executable(
     thd_insync_unit
@@ -256,7 +269,7 @@ if(ENABLE_TESTS)
   target_include_directories(thd_xmat_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(thd_xmat_unit PRIVATE AFNI::mri NIFTI::nifti2 NIFTI::nifticdf m)
   add_test(NAME thd_xmat:unit COMMAND thd_xmat_unit)
-  set_tests_properties(thd_xmat:unit PROPERTIES LABELS "3dSRM;xmat;unit")
+  set_tests_properties(thd_xmat:unit PROPERTIES LABELS "3dSRM;3dMVPA;3dRSA;numeric;xmat;unit")
   set_tests_properties(thd_srm:unit PROPERTIES LABELS "3dSRM;numeric;unit"
                        ENVIRONMENT "OMP_NUM_THREADS=4")
 
@@ -286,6 +299,7 @@ if(ENABLE_TESTS)
     thd_patterns_unit
     ${CMAKE_SOURCE_DIR}/src/thd_patterns.c
     ${CMAKE_SOURCE_DIR}/src/thd_datatable.c
+    ${CMAKE_SOURCE_DIR}/src/thd_xmat.c
     ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_patterns.c
   )
   target_include_directories(thd_patterns_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -309,20 +323,6 @@ if(ENABLE_TESTS)
   )
   add_test(NAME thd_rsa:unit COMMAND thd_rsa_unit)
   set_tests_properties(thd_rsa:unit PROPERTIES LABELS "3dRSA;numeric;unit")
-
-  add_executable(
-    thd_xmat_unit
-    ${CMAKE_SOURCE_DIR}/src/thd_xmat.c
-    ${CMAKE_SOURCE_DIR}/src/thd_datatable.c
-    ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_xmat.c
-  )
-  target_include_directories(thd_xmat_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
-  target_link_libraries(
-    thd_xmat_unit
-    PRIVATE AFNI::mri NIFTI::nifti2 NIFTI::nifticdf m
-  )
-  add_test(NAME thd_xmat:unit COMMAND thd_xmat_unit)
-  set_tests_properties(thd_xmat:unit PROPERTIES LABELS "3dSRM;3dMVPA;numeric;unit")
 
   add_executable(
     thd_sampleset_unit

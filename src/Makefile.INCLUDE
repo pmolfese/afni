@@ -1790,12 +1790,12 @@ sparse_array.o:sparse_array.c sparse_array.h
 	$(RM) $@
 	$(CCOMP) -o 3dMSE 3dMSE.o $(LFLAGS) $(LLIBS)
 
-RSA_OBJS = 3dRSA.o thd_datatable.o thd_mapinfer.o thd_patterns.o thd_permute.o \
+RSA_OBJS = 3dRSA.o thd_datatable.o thd_xmat.o thd_mapinfer.o thd_patterns.o thd_permute.o \
            thd_simmatrix.o thd_rsa.o thd_phasefft.o
-RSA_HDRS = thd_datatable.h thd_mapinfer.h thd_patterns.h thd_permute.h \
+RSA_HDRS = thd_datatable.h thd_xmat.h thd_mapinfer.h thd_patterns.h thd_permute.h \
            thd_simmatrix.h thd_rsa.h thd_phasefft.h niml.h AFNI_version.h
 
-$(RSA_OBJS): $(RSA_HDRS)
+$(filter-out thd_xmat.o,$(RSA_OBJS)): $(RSA_HDRS)
 	$(RM) $@
 	$(CCOMP) -c $(@:.o=.c) $(INFLAGS)
 
@@ -1805,7 +1805,7 @@ $(RSA_OBJS): $(RSA_HDRS)
 
 MVPA_OBJS = 3dMVPA.o thd_datatable.o thd_xmat.o thd_sampleset.o \
             thd_crossval.o thd_mapinfer.o thd_patterns.o thd_permute.o thd_mvpa.o
-MVPA_NEW_OBJS = 3dMVPA.o thd_xmat.o thd_sampleset.o thd_crossval.o thd_mvpa.o
+MVPA_NEW_OBJS = 3dMVPA.o thd_sampleset.o thd_crossval.o thd_mvpa.o
 MVPA_SHARED_OBJS = thd_datatable.o thd_mapinfer.o thd_patterns.o thd_permute.o
 MVPA_HDRS = thd_datatable.h thd_xmat.h thd_sampleset.h thd_crossval.h \
             thd_mapinfer.h thd_patterns.h thd_permute.h thd_mvpa.h \

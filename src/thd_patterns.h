@@ -173,6 +173,7 @@ typedef struct {
    int    nvox ;        /*!< voxels (grid), common to all datasets            */
    int    has_resid ;   /*!< 1 if a ResidFile column was present              */
    int    resid_nt ;    /*!< residual time points (min over rows); 0 if none  */
+   int    from_xmat ;   /*!< runs/conditions were expanded from an Xmat table */
 
    char **subj ;        /*!< [nsub] subject labels, in first-seen order       */
    int   *nrun ;        /*!< [nsub] runs per subject                          */
@@ -189,6 +190,16 @@ typedef struct {
    int  **nrep ;        /*!< [nrow][ncond] local repetitions (0 = absent)     */
    char ***trial_lab ;  /*!< [nrow][nbrick[row]] trial IDs, or NULL           */
 
+   /* Optional exact float32 store over only the voxels used by the analysis.
+      Headers remain open for metadata, but their full-grid arrays are unloaded. */
+   int    store_nvox ;  /*!< compact voxel count; 0 means ordinary datasets   */
+   int   *store_map ;   /*!< [nvox] full-grid voxel -> compact index, or -1    */
+   int   *store_vox ;   /*!< [store_nvox] compact index -> full-grid voxel     */
+   float **beta_store ; /*!< [nrow][nbrick[row]*store_nvox], brick-major       */
+   float **resid_store; /*!< [nrow][residual_nt[row]*store_nvox], or NULL      */
+   double store_bytes ; /*!< resident compact arrays                           */
+   double store_largest_input ; /*!< largest full dataset while filling store       */
+
    char  *source ;      /*!< where it came from, for messages                 */
 } THD_runset ;
 
@@ -203,6 +214,25 @@ typedef struct {
     checked. Returns NULL with an ERROR_message on any problem. Dataset headers
     are opened but not loaded (stream per ROI later). */
 extern THD_runset * THD_runset_read ( char *fname ) ;
+/*! Read a compact one-row-per-subject table with Subj, Xmat and whole-bucket
+    InputFile columns; ResidFile is optional and must likewise be the whole
+    residual dataset.  Stimulus beta labels, runs, conditions, censoring and
+    residual run samples are derived from Xmat.  stims is a comma-separated
+    stimulus-label subset, or NULL for all stimuli. */
+extern THD_runset * THD_runset_read_xmat( char *fname , char *stims ) ;
+/*! Plan an exact float32 store over the union of primary and optional extra
+    ROI voxels. It is enabled only when smaller than the datasets' native
+    resident arrays. include_resid says whether residuals will be consumed.
+    Returns 1 when compact storage was selected, 0 when dense storage is
+    already smaller/equal, and -1 on allocation or invalid-voxel failure. */
+extern int          THD_runset_plan_store( THD_runset *rs, THD_roilist *primary,
+                                           THD_roilist *extra, int include_resid ) ;
+/*! Load one row's beta (residual=0) or residual (residual=1) into the planned
+    compact store and unload its full-grid voxel array. */
+extern int          THD_runset_load_store_row( THD_runset *rs, int row, int residual ) ;
+/*! Extract a row's beta/residual patterns for an ROI from either representation. */
+extern void         THD_runset_roi_pattern( THD_runset *rs, int row, int residual,
+                                            intvec *vox, float *out ) ;
 extern void         THD_runset_free ( THD_runset *rs ) ;
 extern void         THD_runset_print( THD_runset *rs , FILE *fp ) ;
 

@@ -271,6 +271,7 @@ add_afni_executable(
   3dRSA
   3dRSA.c
   thd_datatable.c
+  thd_xmat.c
   thd_mapinfer.c
   thd_patterns.c
   thd_permute.c
