@@ -302,7 +302,7 @@ if(ENABLE_TESTS)
   # Direct unit gate for the dataset-agnostic ISC summaries behind 3dInSync.
   add_executable(
     thd_insync_unit
-    ${CMAKE_SOURCE_DIR}/src/thd_insync.c
+    ${CMAKE_SOURCE_DIR}/src/thd_insync_stats.c
     ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_insync.c
   )
   target_include_directories(thd_insync_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)

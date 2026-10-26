@@ -1820,18 +1820,23 @@ $(MVPA_SHARED_OBJS): %.o: %.c
 	$(RM) $@
 	$(CCOMP) -o 3dMVPA $(MVPA_OBJS) $(LFLAGS) $(LLIBS)
 
-INSYNC_OBJS = 3dInSync.o thd_insync.o thd_datatable.o thd_simmatrix.o \
+INSYNC_OBJS = 3dInSync.o thd_insync.o thd_insync_stats.o thd_datatable.o thd_simmatrix.o \
               thd_permute.o thd_mapinfer.o thd_phasefft.o thd_patterns.o
 
 3dInSync.o: 3dInSync.c thd_insync.h thd_datatable.h thd_simmatrix.h \
-             thd_permute.h thd_mapinfer.h thd_phasefft.h thd_patterns.h \
-             niml.h AFNI_version.h
+             thd_permute.h niml.h AFNI_version.h
 	$(RM) $@
 	$(CCOMP) -c 3dInSync.c $(INFLAGS)
 
-thd_insync.o: thd_insync.c thd_insync.h
+thd_insync.o: thd_insync.c thd_insync.h thd_datatable.h thd_simmatrix.h \
+              thd_permute.h thd_mapinfer.h thd_phasefft.h thd_patterns.h \
+              niml.h AFNI_version.h
 	$(RM) $@
 	$(CCOMP) -c thd_insync.c $(INFLAGS)
+
+thd_insync_stats.o: thd_insync_stats.c thd_insync.h thd_datatable.h
+	$(RM) $@
+	$(CCOMP) -c thd_insync_stats.c $(INFLAGS)
 
 3dInSync:$(INSYNC_OBJS) $(LIBMRI_OBJ)
 	$(RM) $@
