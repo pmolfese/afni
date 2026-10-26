@@ -45,6 +45,30 @@ extern THD_simmat * THD_rsa_condition_rdm( int ncondition, int nfeature,
                                            int center_conditions,
                                            char *err, size_t errlen ) ;
 
+/*! Strict condition RDM for participant outcomes. After optional centering,
+    reject nonfinite patterns, constant Pearson/Spearman patterns, and zero
+    cosine norms. Returns NULL for undefined geometry. This opt-in variant
+    leaves the ordinary condition-RDM API's degenerate-pattern behavior intact.
+    patterns is [condition][feature] and may be centered in place. */
+extern THD_simmat * THD_rsa_condition_rdm_checked(
+                       int ncondition, int nfeature, float *patterns,
+                       int metric, int center_conditions ) ;
+
+/*! Pearson or Spearman correlation of two RDM triangles, clipped to
+    +/-0.999999f before atanhf. Returns NAN for nonfinite/constant triangles
+    or invalid arguments. a, b, sc1 and sc2 each have ntriangle entries;
+    sc1/sc2 are caller-owned scratch. Inputs a/b are not modified. */
+extern float THD_rsa_fisher_corr( int ntriangle, float *a, float *b,
+                                  int metric, float *sc1, float *sc2 ) ;
+
+/*! Equal mean Fisher z over all unordered repeat-RDM pairs. triangles has
+    layout [nrepeat][ntriangle]; sc1/sc2 each hold ntriangle scratch entries.
+    Uses THD_rsa_fisher_corr's metric/clipping policy. Returns NAN if fewer
+    than two repeats or any pair is undefined; never drops individual pairs. */
+extern float THD_rsa_repeat_stability( int nrepeat, int ntriangle,
+                                       float *triangles, int metric,
+                                       float *sc1, float *sc2 ) ;
+
 /*! Copy a matrix's strict upper triangle.  With as_distance nonzero,
     similarities are converted entrywise to 1-s while distances are retained.
     This is the common feature sense required by second-order RSA. */

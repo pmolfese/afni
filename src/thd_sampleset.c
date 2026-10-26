@@ -1,6 +1,7 @@
 #include "thd_sampleset.h"
 
 #include <stdarg.h>
+#include <stdint.h>
 
 /*----------------------------------------------------------------------------
   Canonical sample organization for pattern analyses.  This file knows table
@@ -16,6 +17,64 @@ static int ss_error( char *err, int nerr, const char *fmt, ... )
      va_start(ap,fmt) ; vsnprintf(err,(size_t)nerr,fmt,ap) ; va_end(ap) ;
    }
    return 0 ;
+}
+
+void THD_sampleset_free_identity( THD_sampleset_identity *identity )
+{
+   int dd ;
+   if( identity==NULL ) return ;
+   if( identity->dataset_path!=NULL )
+     for( dd=0 ; dd<identity->ndset ; dd++ ) free(identity->dataset_path[dd]) ;
+   free(identity->dataset_path) ; free(identity->first_sample) ; free(identity) ;
+}
+
+THD_sampleset_identity * THD_sampleset_build_identity( const THD_sampleset *ss,
+                                                       char *err, int nerr )
+{
+   THD_sampleset_identity *identity=NULL ; int dd,ii,jj ;
+   if( err!=NULL && nerr>0 ) err[0]='\0' ;
+   if( ss==NULL || ss->nsample<1 || ss->ndset<1 || ss->dset==NULL ||
+       ss->sample_dset==NULL || ss->sample_brick==NULL ){
+     ss_error(err,nerr,"sample identity requires a nonempty resolved sample set") ; return NULL ;
+   }
+   if( (size_t)ss->nsample>SIZE_MAX/sizeof(int) ||
+       (size_t)ss->ndset>SIZE_MAX/sizeof(char *) ){
+     ss_error(err,nerr,"sample identity map is too large") ; return NULL ;
+   }
+   identity=(THD_sampleset_identity *)calloc(1,sizeof(*identity)) ;
+   if( identity==NULL ) goto nomem ;
+   identity->nsample=ss->nsample ; identity->ndset=ss->ndset ;
+   identity->first_sample=(int *)malloc(sizeof(int)*(size_t)ss->nsample) ;
+   identity->dataset_path=(char **)calloc((size_t)ss->ndset,sizeof(char *)) ;
+   if( identity->first_sample==NULL || identity->dataset_path==NULL ) goto nomem ;
+   for( dd=0 ; dd<ss->ndset ; dd++ ){
+     const char *name ;
+     if( !ISVALID_DSET(ss->dset[dd]) ||
+         (name=DSET_HEADNAME(ss->dset[dd]))==NULL || *name=='\0' ){
+       ss_error(err,nerr,"sample identity: dataset %d has no valid header path",dd+1) ; goto fail ;
+     }
+     identity->dataset_path[dd]=realpath(name,NULL) ;
+     if( identity->dataset_path[dd]==NULL ) identity->dataset_path[dd]=strdup(name) ;
+     if( identity->dataset_path[dd]==NULL ) goto nomem ;
+   }
+   for( ii=0 ; ii<ss->nsample ; ii++ ){
+     dd=ss->sample_dset[ii] ;
+     if( dd<0 || dd>=ss->ndset || ss->sample_brick[ii]<0 ||
+         ss->sample_brick[ii]>=DSET_NVALS(ss->dset[dd]) ){
+       ss_error(err,nerr,"sample identity: sample %d has an invalid dataset/brick index",ii+1) ; goto fail ;
+     }
+     identity->first_sample[ii]=ii ;
+     for( jj=0 ; jj<ii ; jj++ )
+       if( ss->sample_brick[ii]==ss->sample_brick[jj] &&
+           !strcmp(identity->dataset_path[dd],identity->dataset_path[ss->sample_dset[jj]]) ){
+         identity->first_sample[ii]=jj ; break ;
+       }
+   }
+   return identity ;
+nomem:
+   ss_error(err,nerr,"cannot allocate sample identity map") ;
+fail:
+   THD_sampleset_free_identity(identity) ; return NULL ;
 }
 
 void THD_sampleset_free_levels( char **level, int nlevel )
@@ -82,6 +141,18 @@ int THD_sampleset_encode_column( const THD_sampleset *ss, const char *column,
 {
    if( ss==NULL ) return ss_error(err,nerr,"cannot encode a column of a NULL sample set") ;
    return ss_encode_table_column(ss->metadata,column,code,level,nlevel,err,nerr) ;
+}
+
+float * THD_sampleset_numeric_columns( const THD_sampleset *ss,
+                                      const char * const *columns, int ncolumn,
+                                      char *err, int nerr )
+{
+   if( err!=NULL && nerr>0 ) err[0]='\0' ;
+   if( ss==NULL || ss->nsample<1 || ss->table_row==NULL ){
+     ss_error(err,nerr,"numeric extraction requires samples with a table-row map") ; return NULL ;
+   }
+   return THD_datatable_numeric_columns(ss->metadata,columns,ncolumn,
+                                        ss->table_row,ss->nsample,err,nerr) ;
 }
 
 void THD_sampleset_detect_columns( const THD_datatable *dt,

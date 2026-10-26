@@ -1,5 +1,443 @@
 # 3dMVPA Design and Implementation Plan
 
+## Item 22 groundwork complete: shared numeric-column extraction — 2026-10-26
+
+`THD_datatable_numeric_columns()` now resolves requested column names,
+rejects duplicate/missing/nonnumeric columns, checks selected values for
+finiteness as floats, and returns an owned row-major matrix. Column lookup is
+case-insensitive; requested order is preserved. An optional zero-based row
+map supports subsets, reordering and repeated rows. Numeric metadata must
+exist for the whole column; finiteness is checked on selected rows. Failures
+return NULL with bounded diagnostics identifying output and original table
+row positions. The helper also supports metadata-only tables.
+
+`THD_sampleset_numeric_columns()` applies the sample set's `table_row` mapping
+and delegates extraction to the table helper. `3dMVPA` retains comma-separated
+option parsing and requested output labels; decoding, encoding, coefficient
+refits and validation all use the shared extraction path. Existing options,
+matrix layout and model behavior are preserved. Diagnostics for nonfinite
+values now identify both output/sample position and metadata-table row.
+
+These helpers provide the numeric covariate input needed by item 22 without
+centering, scaling, imputation or fitting. Fold-local nuisance adjustment and
+its inference contract remain to be implemented; item 22 is not complete.
+
+Validation: build and all 14 focused CTest gates pass (eight MVPA integration
+tests and six shared-library unit tests). New coverage checks requested column
+order/case, mapped/repeated rows, owned storage, invalid maps/names, duplicate
+columns, whole-column numeric eligibility, selected-row finiteness, NaN/Inf,
+float overflow and CLI list errors. Existing regression oracles cover decoding,
+encoding, coefficients, fixed partitions, tuning, permutations and surfaces.
+Evidence and incremental patch: `validation_20261026/mvpa_numeric_columns/`.
+
+## Shared sample identity checks complete — 2026-10-26
+
+`THD_sampleset_build_identity()` and `THD_sampleset_free_identity()` now own
+dataset/brick identity resolution in `thd_sampleset.[ch]`. The owned snapshot
+records canonical header paths and the earliest equivalent sample for every
+row. Callers can identify repeated selections or compare arbitrary subsets
+without resolving paths again. It uses resolved brick indices, recognizes
+symlink/path aliases, and retains the original header path when `realpath()`
+cannot resolve it. It does not load voxel data, detect copied data/hard links,
+or establish scientific independence.
+
+`3dMVPA` uses the shared map for validation warnings and two-table overlap
+rejection. It retains warning/error policy and report formatting: validation
+warns once per repeated row, naming its earliest equivalent row; equivalent
+selections across training/test tables are rejected, while repeats confined
+to either table remain permitted. No command-line options or model behavior
+change. This extraction does not start item 22.
+
+Validation: build and all 11 focused CTest gates pass (eight MVPA integration
+tests and sample-set/fold/model unit tests). New unit coverage checks aliases,
+numeric/named selectors, distinct bricks/files, independent snapshot ownership,
+invalid indices/storage, bounded diagnostics and unresolved-path fallback.
+Validation tests check warning counts and earliest-row diagnostics; the final
+fixed-partition rerun also verifies within-side repeats remain permitted during
+validation and fitting. Evidence and incremental patch:
+`validation_20261026/mvpa_sample_identity/`.
+
+## Item 21 refactor complete: shared table concatenation — 2026-10-26
+
+`THD_datatable_concat_rows()` now owns schema matching, column reordering,
+deep copying and derived metadata rebuilding in `thd_datatable.[ch]`.
+It preserves the first table's column order/spelling and appends the second
+table's rows, matching column names case-insensitively. The API supports
+metadata-only tables, preserves duplicate rows and paths, and reports schema,
+size and allocation failures through a bounded error buffer. Inputs remain
+independently owned; numeric metadata is recomputed over the combined cells.
+
+`3dMVPA` calls this helper and retains analysis-specific policy: required sample
+input, reserved provenance columns, train/test roles, source rows and overlap
+rejection. Both existing partition interfaces and their analysis behavior are
+unchanged. This makes concatenation reusable without imposing MVPA rules on
+other table consumers.
+
+Validation: build and all 14 focused tests pass (eight MVPA integration tests
+and six shared-library unit tests). New concatenation cases cover reordered
+schemas, ownership, numeric/mixed metadata, metadata-only tables, duplicate
+rows, malformed schemas/cells, bounded errors and size overflow. Evidence and
+the incremental patch: `validation_20261026/mvpa_table_concat/`.
+
+## Item 21 extension complete: separate training/test tables — 2026-10-26
+
+`-testTable @testing.1D` (or `-testTableFile testing.1D`) now makes the ordinary
+`-dataTable`/`-dataTableFile` input the training set. `-testTable` also accepts
+the same inline syntax as `-dataTable`. The original single-table
+`-partition_column` interface remains available. These alternatives share
+`THD_foldplan_fixed()` and all existing training, scoring, tuning and inference
+code; neither creates a second model runner.
+
+The two tables must have the same column-name set; column order and case may
+differ. Both use direct sample input or matching X-matrix input. Targets remain
+required in the test table for evaluation. The tables are joined before Xmat
+expansion, with reserved `MVPA_Partition`, `MVPA_SourceTable` and `MVPA_SourceRow`
+metadata. Dataset paths keep their existing working-directory interpretation.
+Explicit sample IDs must be unique across both tables; omitted IDs are generated
+over the combined rows. The same resolved dataset/brick selected on both sides
+is rejected, including symlink aliases. This detects repeated selections, not
+copied data or broader scientific dependence.
+
+Prediction audits append `Partition`, `SourceTable` and `SourceRow`; the latter
+is the one-based original input data row before expansion. `TableRow` retains
+its canonical combined-row meaning. `-show_samples` prints a matching provenance
+table, also included by `-validate_only`. Single-table audit schemas are unchanged.
+
+Two-table input rejects `-partition_column`, `-train_value`, `-test_value`,
+outer-CV options and `-trial_manifest`. Trial manifests continue to support the
+single-table partition interface. The existing fixed-split restrictions on
+inner tuning, exchangeability blocks and full-data coefficient refits apply.
+Saved-model application and unlabeled test prediction remain item 27; dedicated
+transfer contracts remain item 38.
+
+Validation: build and all 11 focused CTest gates pass. Extended tests compare
+single/two-table predictions, scores, tuning and exact null results; cover all
+five classifiers, continuous decoding, voxel/pattern encoding, held-out
+perturbations, inline/file inputs, reordered/case-varied columns, generated IDs,
+source paths containing spaces, schema/ID/class/grid rejection and cross-table
+beta aliases. Xmat tests verify original source rows after expansion. Sparse
+surface maps and tuning match single-table results, with identical two-table
+predictions across one/two workers. Evidence and the incremental source diff:
+`validation_20261026/mvpa_two_tables/`. Item 22 remains next, awaiting direction.
+
+## Item 21 complete: explicit train/test partitions — 2026-10-26
+
+The CLI now exposes `THD_foldplan_fixed()` through `-partition_column NAME`,
+with optional `-train_value LABEL` and `-test_value LABEL` (defaults: `train`
+and `test`). Values are case-sensitive, every resolved sample must belong to
+one side, and both sets must be nonempty. This is one pooled fixed split;
+`-cv`, `-cv_column`, `-cv_k`, and `-within_column` are incompatible. Direct,
+inline, X-matrix-expanded and trial-manifest input share the same path.
+
+Classification (all five methods), ridge decoding and voxel/pattern encoding
+use the existing ROI, volume and sparse-surface runners. Preprocessing and
+fitting use training rows only; scores and confusion/subject summaries use
+test rows only. Training rows remain in prediction audits with `NA` predictions,
+CV folds, decisions and continuous training-mean baselines. Fixed-split class
+order follows first occurrence among training rows, so test labels cannot
+choose the argmax tie rule. Test-only classes are rejected.
+
+Tuned ridge/SVM require an explicit `-inner_cv_column`; grouped inner folds
+are restricted to the training partition, with existing class-coverage and
+minimum-group checks. `-inner_cv_k` remains available. `-validate_only` prints
+the actual outer/inner memberships and counts without fitting or writing
+analysis outputs.
+
+Fixed-split permutations require exchangeability blocks confined to one
+partition. Cross-split blocks and `-permute_within none` are rejected, including
+during validation. Supplied blocks are not silently changed; composite
+partition/block columns can express the intended exchangeability restriction.
+Both sides are relabeled within their own blocks and the training pipeline is
+refitted per null. The existing descriptive `-save_coefficients` full-data refit
+is rejected with a reserved split; training-only persistence remains item 27.
+Neither declared partitions nor validation establish upstream independence.
+
+Validation: CMake build succeeds; all 11 focused MVPA/sample/fold CTest gates
+pass. The new stdlib-only fixed-partition oracle checks independent centroid
+and ridge solutions, test-only continuous scores, held-out perturbation
+invariance for all classifiers and continuous modes, nested tuning, a 48-case
+exhaustive classification null, NA audits, custom labels and invalid options.
+Existing integration fixtures now check X-matrix partition propagation and
+sparse-surface fixed splits in all three modes, including nested/permutation
+results identical across one/two workers. Build/test logs and the scoped source
+diff are in `validation_20261026/mvpa_fixed_partitions/`.
+
+Users can reserve a session, run or subject explicitly and evaluate it once
+while tuning entirely within the training set. Item 22, fold-local nuisance
+adjustment, is the next milestone and awaits user direction.
+
+## Combined afni_proc.py tutorial command — 2026-10-25
+
+The next tutorial revision combines spatial preprocessing and the IM regression
+design into one afni_proc.py command per run, with `-execute` and default script,
+log and results-directory names. Keeping the command inside a run loop preserves
+run-local LSS estimation: the earlier subject-wide LSS fixture had nonzero
+cross-run estimator support, so simply merging every run into one LSS fit would
+undo that validation repair. A shared anatomical master and 3.5-mm grid make
+the run outputs compatible; the automatically generated anatomical/EPI masks
+are intersected for the common classification feature domain.
+
+At the user's request, the separate support-screening block is replaced by a
+short warning discussion before LSS. All twelve runs contribute after frame
+censoring. GOFORIT is not demonstrated; it is a 3dDeconvolve option, not an LSS
+option. The earlier single cl1_solve failure was in 3dToutcount on the scaled
+run-09 input of the previous two-stage workflow, not an LSS/design failure.
+
+The exact eight extracted Bash blocks completed from raw data under
+`validation_20261025/mvpa_combined_proc`, with four native threads and sequential
+jobs. All twelve designs and LSS fits succeeded; no cl1_solve warnings appeared
+in this workflow. Both native table validations passed. The common mask has
+21,436 voxels; 53/1,452 frames were censored; 24 face/house and 96 eight-class
+samples form twelve folds. Face/house BACC is 91.67%/95.83%/95.83%, and eight-class
+BACC is 34.38%/53.12%/51.04%, for centroid/ridge/SVM. All 360 predictions match
+independent references, with decision scores within fixed tolerances. All 864
+sampled LSS beta checks pass (maximum OLS error 3.49e-5). Sampled alignment views
+were reviewed for all twelve runs; relative-flip warnings remain unresolved.
+The post now reports these results, and its extracted commands match the
+executed script exactly. The prior post remains backed up in
+`mvpa_post_rewrite/MessageBoard_3dMVPA.before_combined_afni_proc.md`.
+
+### Run-wise LSS interface discussion (not implemented)
+
+The user suggested keeping one all-run afni_proc.py invocation and splitting
+its X.xmat.1D before LSS, then raised doing that directly inside 3dLSS and
+testing thd_xmat as a replacement for its current NI_element reader. Current
+3dLSS does not use thd_xmat. The shared reader already exposes the matrix,
+original attributes, run boundaries, censor mapping and stimulus information,
+but has no run-extraction/writer API yet. Generic 1d_tool.py -select_runs output
+was tested on the historical subject-wide design and rejected by 3dLSS: its
+writer does not emit the complete NIML matrix and Basis* metadata needed here.
+Evidence is in `mvpa_combined_proc/split_probe`.
+
+Options for discussion after this analysis completes: (1) preserve current
+3dLSS behavior while migrating its reader to thd_xmat, then add an explicit
+run-wise fitting option backed by shared extraction helpers; (2) implement a
+standalone metadata-preserving matrix splitter; (3) expose that shared utility
+through afni_proc.py/1d_tool.py. No new option or program is implemented. Reader
+migration must retain 3dLSS-specific required attributes, single-IM validation,
+beta ordering/labels and estimator-vector semantics; generic reader defaults
+must not silently weaken those checks. Run-wise fits must select rows using
+RunStart and GoodList, restrict nuisance and IM columns appropriately, retain
+original trial provenance, and have exactly zero estimator support in other
+runs. Regressors with ambiguous run ownership or no estimable support need
+explicit handling, not an arbitrary assignment.
+
+The current 3dRSA code already slices residuals by Xmat run/censor metadata and
+consumes estimated trial betas for within-run condition averages and crossnobis.
+3dSRM already reads run boundaries on its time axis and consumes existing LSS
+betas plus events on its item axis. They would benefit from run-independent
+LSS estimates upstream; neither needs a new physical split-matrix input just
+to consume those betas. A shared library leaves a future export utility open
+without requiring extra user-facing commands for the common LSS workflow.
+
+## Messageboard tutorial simplified to Bash/awk — 2026-10-25
+
+The user requested shell-based tutorial helpers and asked us to assume a correct
+download. Removed prerequisite/file-count checks and the custom Python/NumPy
+snippets. Timing/category mapping, censor-support selection and trial manifests
+now use Bash/awk. The ten command blocks retain anatomical preprocessing through
+afni_proc.py, run-local IM designs and 3dLSS. Matrix diagnostics now come from
+AFNI rather than the additional NumPy rank/condition thresholds; the numerical
+audits remain development evidence outside the tutorial.
+
+The replacement helpers were executed with macOS Bash against all twelve event
+files and the existing run designs. All 96 timings, seven retained runs and both
+manifests (14/56 samples) match the previous recipe, including resolved design
+and beta paths and design-column mappings. Both native input validations pass
+with zero warnings. The existing classification results therefore remain
+applicable. Evidence: `validation_20261025/mvpa_post_rewrite/` files
+`run_post_shell.sh`, `test_shell_helpers.sh`, `shell_helper_test.log`,
+`verify_shell_helpers.py` and `shell_helper_verification.json`.
+
+## Messageboard announcement rebuilt as a runnable anatomical example — 2026-10-25
+
+At the user's request, the accumulated local messageboard development log was
+backed up and replaced with a fresh classification/decoding/encoding announcement
+and a complete subject-1 Haxby classification walkthrough. It uses anatomicals,
+alignment and relative-flip QC to teach the usual workflow, with the unresolved
+Haxby orientation warning stated explicitly rather than claiming anatomical
+approval. The original draft is preserved as
+`MessageBoard_3dMVPA.backup_before_announcement_20261025_123935.md`.
+
+All eleven Bash blocks are self-contained and portable: data/prerequisites,
+timing_tool.py BIDS conversion, afni_proc.py anatomy/EPI preprocessing, run-local
+afni_proc.py IM designs, censor/support checks, 3dLSS, sample manifests, input
+validation, six classification analyses and output inspection. No private helper
+scripts are required. Every result file generated by the example is explained.
+The Haxby comparison distinguishes the original paper, this exact anatomical
+example, independent implementation checks and future encoding/decoding posts.
+
+The extracted commands were tested from raw data in
+`haxby_mvpa/messageboard_anat_demo/sub-1`. A Bash 3.2 empty-array/nounset issue
+was corrected before the classification block was resumed. Final command blocks
+match the posted text. Seven runs yield 56 blocks and 23,027 mask voxels; the
+face/house BACC is 85.71% for all three models, and eight-class BACC is
+23.21%/35.71%/32.14% for centroid/ridge/SVM. Both native validation reports pass.
+Independent OLS checks cover 504 beta values; all 210 classification predictions
+match NumPy/scikit-learn references and decision scores pass the fixed tolerances.
+Four native threads stayed below the user's eight-core cap. No native code changed.
+
+Evidence, exact extracted commands, logs and the new draft are under
+`validation_20261025/mvpa_post_rewrite`. This is a local draft, not a public
+messageboard submission or confirmation of availability in a distributed AFNI
+release. A build containing the documented 3dMVPA options remains a prerequisite.
+
+## 1.0 refined EPI masks and repeated comparisons — 2026-10-25
+
+The isolated `haxby_mvpa/epi_only/mask_refinement` stage is complete. Uniform
+`3dAutomask -clfrac 0.5 -peels 2` on each subject's equal-run-weighted mean
+motion-corrected EPI, intersected with the original estimation mask, replaces
+the original union mask for these comparisons. Mask choice was frozen before
+the revised classifiers ran. All final masks are single connected components.
+Voxel counts change from 25,208/26,292/31,893/26,091/26,891 to
+23,611/24,945/22,461/24,609/25,618 for subjects 1–5.
+
+Review of every axial slice for all subjects, every coronal/sagittal slice for
+subject 3, and sampled orthogonal slices for the others shows removal of the
+gross subject-3 jaw inclusion with broad brain coverage retained. Some boundary
+and inferior brainstem trimming is visible. This is an EPI feature-mask demo,
+not validated tissue segmentation or certification of absolute laterality.
+
+The 59 existing run-local afni_proc.py IM -> 3dLSS datasets are reused without
+modification; all new mask voxels were already estimated. Geometry, finiteness,
+and beta/design/manifest hashes are verified. The censoring policy, folds,
+45 eligible runs and 360 samples are unchanged. All five retained manifests
+pass native input validation with the refined masks.
+
+All 30 full-mask ROI and 810 sampled spatial-center configurations pass matched
+NumPy/scikit-learn and actual BrainIAK Searchlight comparisons, with zero label
+mismatches across 1,350 ROI and 36,450 spatial predictions. Decision scores
+pass unchanged tolerances. The original 27-center fixtures fit inside the new
+masks; all 30 spatial maps/prediction tables reproduce the previous stage
+exactly. The map/fold audit and all five one/four-thread checks also pass.
+Two independent four-thread batches stayed within the eight-core limit.
+
+The local messageboard draft and refined-mask README contain methods, figures,
+results and before/after ROI accuracy records. Compact evidence is in
+`validation_20261025/mvpa_mask_refinement/final_evidence`. No native code changed
+for this stage. Next proposed stage, awaiting the user's decision: package the
+reproducible demo and perform a clean-build release/documentation check.
+
+## 1.0 EPI-only Haxby numerical demo — 2026-10-25
+
+The separate `haxby_mvpa/epi_only` demo is complete for subjects 1–5, with no
+T1 inputs, EPI-to-anatomy transforms or anatomical masks. Spatial preprocessing
+uses afni_proc.py despike/volreg/mask/scale; each run then uses afni_proc.py
+`-regress_stim_types IM` and its built-in design generation, followed by 3dLSS
+on the full run with the censored matrix's GoodList. Onsets come from the events
+and remain in original run time.
+
+The real `policy.json` controls motion Enorm, preceding-frame censoring, raw
+outlier fraction, maximum run loss, minimum retained block-regressor energy
+and normalized-design conditioning. These are afni_proc/demo controls, not new
+3dMVPA options. A policy hash prevents mixing thresholds in an existing output
+directory. Defaults retain 45/59 runs and 360/472 blocks; 149/7,139 frames are
+censored. All five retained manifests pass native `-validate_only`.
+
+Independent OLS checks cover 4,248 beta values, with maximum absolute error
+0.000069301; saved-estimator application error is at most 0.000281724.
+All 30 full-mask ROI and 810 sampled spatial-center configurations match the
+NumPy/scikit-learn and actual BrainIAK Searchlight references. There are zero
+label mismatches across 1,350 ROI and 36,450 spatial predictions, and decision
+scores pass the previously fixed tolerances. The output audit checks 60 maps,
+7,560 fold-score rows, 30 ROI tables and five one/four-thread map comparisons.
+Computing stayed within eight cores and used the existing isccomp environment.
+
+This is a numerical feature-domain demonstration. Sampled mask review found
+extracranial jaw-region coverage in subject 3's EPI automask; the other sampled
+views are broadly plausible but do not constitute full-volume approval. Accuracy
+cannot be described as exclusively brain-derived. Absolute laterality remains
+uncertified, and the shared label-independent reference/mask is not fully
+training-only upstream preprocessing. No new null-calibration claim is made.
+
+The local messageboard draft includes the full afni_proc.py -> 3dLSS workflow,
+adjustable settings and results. Compact evidence is saved in
+`validation_20261025/mvpa_epi_only/final_evidence`. Next proposed stage, awaiting
+the user's decision: refine EPI masks with fuller visual review and repeat
+comparisons on the final feature domain before packaging the demo.
+
+## 1.0 anatomical/flip and censor-policy review — 2026-10-25
+
+Anatomical review is complete with **HOLD**, not anatomical approval: all five
+Haxby subjects retain relative-flip warnings; subject 2 has weak cost separation.
+Current qforms/sforms agree, but cannot prove absolute laterality. The 2023
+T1-header correction and historical unavailable-DICOM notice are documented
+separately. Sampled orthogonal views do not resolve the provenance problem;
+the original images, headers, alignment and masks have not been changed.
+
+The fixed demo censor policy combines AFNI Enorm >0.3 plus the preceding frame
+within run, and original pre-despike outlier fraction >0.05. Its run/block gates
+are <=20% frames lost, full design rank, and >=80% retained squared amplitude
+for every block regressor. The block-energy threshold is a conservative demo
+choice, not a universal standard or estimator-precision guarantee. It was set
+without consulting classification accuracy. Excluding whole failed runs keeps
+all eight categories balanced: 149/7,139 frames are flagged, 19 blocks in 14
+runs fail the support gate, and 45 runs/360 blocks remain motion-eligible.
+All 59 full designs retain rank; no run exceeds the 20% frame-loss gate.
+
+An isolated `afni_proc.py -regress_stim_types IM` -> `3dLSS` censoring sensitivity
+copy is under the Haxby runwise demo's `censor_policy_20261025` directory. It
+retains the historical anatomical grid/mask solely to isolate censoring. Its
+manifests distinguish all runs from motion-eligible runs; neither means anatomical
+approval. Complete numerical verification and input-validation status are recorded
+in `validation_20261025/mvpa_qc`, together with policy, figures and per-run/block
+tables. Existing numerical benchmark outputs remain historical and uncensored.
+
+Recommended next stage, requiring the user's next-stage decision: build an
+EPI-only numerical demo with this policy and repeat matched classifier checks.
+This would avoid unresolved T1 alignment while still withholding absolute
+hemisphere claims. Anatomical localization needs better orientation provenance
+and alignment QC, potentially from a different dataset.
+
+## 1.0 permutation/null-calibration validation — 2026-10-25
+
+The scoped validation passed without changes to the native inference code.
+Independent exhaustive references verify identity-inclusive probabilities,
+inclusive ties, synchronized spatial max-statistic FWE, BH q-values, null means,
+and restoration of observed predictions. Coverage includes fixed centroid/ridge/
+SVM, nested ridge/SVM tuning, repeated unsorted multiclass labels, spatial
+neighborhoods, and continuous ridge decoding/encoding with upper/lower-tail
+metrics. Exact and Monte Carlo spatial outputs agree at one/four threads.
+
+The predeclared synthetic experiment ran 200 replicates for each of six
+classifier/permutation configurations (1,200 analyses, 400 datasets shared
+across classifiers). At nominal alpha .05, prespecified-ROI rejection rates
+were 0.5–3.5%; any max-statistic FWE rejection across eight ROIs was 0–2.5%;
+global-null BH rejection was 0–1%. None triggered the predeclared one-sided
+binomial inflation test with .01/18 Bonferroni threshold. Small discrete nulls
+are conservative; these results do not establish calibration for every design,
+continuous outcomes, tuning configuration or partial-null correction family.
+
+Haxby subject-1 face/house execution (27 spatial centers, 199 permutations)
+reproduces all 1,944 earlier observed prediction rows across the three methods;
+maps/predictions agree at one/four threads. This is a numerical regression,
+not a claim that Haxby is a known-null or anatomically approved benchmark.
+
+Private reference scripts, the predeclared plan, full outputs, uncertainty
+intervals, logs and provenance are in `validation_20261025/mvpa_permutation`;
+external scientific Python packages are not new AFNI runtime/test dependencies.
+The local messageboard draft records the full results. Further MVP work awaits
+the user's next-stage decision; anatomical/flip QC remains open.
+
+## 1.0 input validation stage — 2026-10-25
+
+Implemented `3dMVPA -validate_only` inside the existing program, as requested.
+It uses the ordinary direct-table, X-matrix expansion and trial-manifest paths,
+prints the canonical table/resolved samples/folds plus class counts and spatial
+coverage, checks outer/inner training requirements and loaded selected values,
+then exits without fitting models, generating permutations or writing result files.
+Repeated beta selections and absent test classes are reported as warnings.
+The report does not certify event-label correctness, upstream independence or
+anatomical QC; finite-value checks follow AFNI reader conversion/repair.
+
+Validation: the focused CLI failure/no-output tests and existing MVPA integration
+and sample/fold/model unit suites pass. All five Haxby run-local manifests (472
+samples) validate; equivalent direct tables give identical summaries. Four
+subject-1 centroid/ridge binary/multiclass reruns reproduce the previously saved
+prediction rows exactly. Evidence is in `validation_20261025/mvpa_validate_only`.
+No separate manifest-building program was added. Further MVP work awaits the
+user's next-stage decision; the feature roadmap below remains separately tracked.
+
 ## Active Roadmap
 
 Keep this ordered list at the top of the plan and update it whenever priorities
@@ -59,9 +497,11 @@ or completion state change.
 20. **Classification and Subject-Summary Audits (Complete)** -- opt-in confusion
    matrices, per-class recall, pooled/fold/subject/stratum scores and equal-group
    summaries expose weighting without implying population inference.
-21. **Explicit Train/Test Partition Options (Proposed; Next, awaiting user direction)**
-   -- expose the existing fixed-partition library machinery for prespecified independent test sets.
-22. **Fold-Local Nuisance Adjustment (Proposed)** -- define and implement
+21. **Explicit Train/Test Partition Options (Complete)** -- `-partition_column`
+   or separate `-dataTable`/`-testTable` inputs expose fixed splits with
+   training-only fitting/tuning, test-only scores, NA training-row audits,
+   source-table provenance and partition-confined permutations.
+22. **Fold-Local Nuisance Adjustment (Proposed; Next, awaiting user direction)** -- define and implement
    training-only covariate adjustment, with an explicit scientific target and
    compatible inference contract.
 23. **Fold-Local Feature Selection (Proposed)** -- select informative features
@@ -121,10 +561,10 @@ or completion state change.
    extend item 29's L2 baseline with sparse L1/L2 classification penalties,
    nested strength/mixing selection and audited convergence.
 
-Items 21–40 are proposed scope, not implemented capabilities. Adding them to
+Items 22–40 are proposed scope, not implemented capabilities. Adding them to
 this roadmap does not authorize implementation; obtain user direction before
-starting item 21 and before advancing to each subsequent item.
-Existing item numbers are preserved; item 21 is next. Numbers
+starting item 22 and before advancing to each subsequent item.
+Existing item numbers are preserved; item 22 is next. Numbers
 identify proposals, not permission to skip dependencies: item 33 should provide
 shared tuning infrastructure for later estimators, and item 34 should precede
 the multi-penalty encoding work in item 35.
@@ -167,6 +607,7 @@ Status as of 2026-10-18:
 | Descriptive coefficient maps | Complete | `-save_coefficients CPREFIX` adds an independent full-data ridge refit for decode, encode, and ridge classification; coefficient/intercept and preprocessing TSVs identify every predictor/response and map brick, with volume/sparse-surface output and explicit fixed refit penalties for tuned CV |
 | Native linear SVM | Complete | `THD_svm_model` and `-method svm` provide deterministic squared-hinge classification with a penalized intercept, fixed/grouped nested C selection, explicit convergence diagnostics, shared ROI/volume/surface audits and fully refitted blocked label nulls |
 | Classification and subject-summary audits | Complete | `-save_confusion` exports truth-row matrices and per-class recall; `-save_summary_scores` exports pooled/fold/subject/stratum ACC/BACC plus equal-subject/stratum means from original held-out predictions, with explicit missing-class and weighting contracts |
+| Explicit train/test partitions | Complete | Single-table `-partition_column` or separate `-testTable` inputs, source-table/row provenance, explicit grouped inner tuning, training-only class order, test-only scores and NA audits; fixed-split permutation blocks cannot cross the split; full-data coefficient refits are rejected |
 
 ## Purpose
 
@@ -425,8 +866,8 @@ datasets:
 
 ```text
 Subj Run InputFile            SampleTable
-s01  r1  s01_r1_betas+tlrc   s01_r1_samples.tsv
-s01  r2  s01_r2_betas+tlrc   s01_r2_samples.tsv
+s01  r1  s01_r1_betas+tlrc   s01_r1_samples.1D
+s01  r2  s01_r2_betas+tlrc   s01_r2_samples.1D
 ```
 
 That form should also expand into the same canonical sample table; it must not
@@ -769,7 +1210,7 @@ responses are uninformative, the same deterministic choice is recorded with
 zero valid responses and NaN losses. The selected model and preprocessing are
 then refitted on all outer training rows.
 
-`PREFIX.tuning.tsv` records every outer-fold candidate loss, informative
+`PREFIX.tuning.1D` records every outer-fold candidate loss, informative
 response count, inner-fold count, and selection indicator. Fold-score audits
 append `Lambda`, `InnerNFold`, `InnerNValid`, and selected `InnerLoss`. Fixed
 lambda runs report their penalty with zero inner folds and NaN inner loss.
@@ -814,12 +1255,12 @@ Full-data penalty selection is outside this slice.
 
 Outputs:
 
-- `CPREFIX.coefficients.tsv` records spatial unit, feature and response IDs,
+- `CPREFIX.coefficients.1D` records spatial unit, feature and response IDs,
   slope, response intercept, refit penalty, total sample count, map prefix and
   zero-based map brick. Neural IDs are `voxel_INDEX` or `node_MESHID`; named
   numeric columns and class labels are preserved. Classification responses
   are the existing 0/1 class indicators, with scores that are not probabilities.
-- `CPREFIX.preprocessing.tsv` records feature centers/scales and constant
+- `CPREFIX.preprocessing.1D` records feature centers/scales and constant
   flags, or each full-data subject/run group mean and original sample/group
   membership. Weights satisfy `y = intercept + preprocessed_X * coefficient`.
   `feature_zscore` uses population SD and sets constant features to zero;
@@ -896,7 +1337,7 @@ afterward. Existing empirical above-chance/P/Z/Q/FWE correction is unchanged.
 counterpart share confusion matrices, recall, pooled/fold metrics, and original
 sample ordering across centroid and ridge. Existing centroid entry points stay
 available. Ridge fold audits append Lambda/InnerNFold/InnerNValid/InnerLoss;
-automatic `PREFIX.tuning.tsv` records all candidates for nested runs. Centroid
+automatic `PREFIX.tuning.1D` records all candidates for nested runs. Centroid
 table layouts and default behavior remain unchanged.
 
 Known-answer tests cover three-class decisions and losses, outer-test label
@@ -1039,7 +1480,7 @@ C  InnerNFold  InnerLoss  SolverIterations  SolverResidual
 
 Fixed fits have zero inner folds and NaN inner loss. Solver diagnostics are
 the largest sweep count and final residual over that outer fold's binary
-class models. Tuned runs always write `PREFIX.tuning.tsv` with unit, outer
+class models. Tuned runs always write `PREFIX.tuning.1D` with unit, outer
 fold/stratum, inner fold count, candidate C, pooled loss and selection flag.
 All preprocessing, C selection and fits repeat for each synchronized blocked
 label permutation; the observed run is restored afterward. The existing
@@ -1065,7 +1506,7 @@ coefficient exports and saved-model application are outside this slice.
 Validation: all six MVPA gates pass (`thd_mvpa:unit`, classification, ridge,
 coefficient, SVM and surface integration). Both CMake and Make continue to
 compile the existing `thd_mvpa` source; no new build dependency is introduced.
-Roadmap items 1–20 are complete. Items 21–40 are proposed expansions; item 21
+Roadmap items 1–21 are complete. Items 22–40 are proposed expansions; item 22
 is next pending user direction. Further implementation follows the development
 cadence recorded at the top of this plan.
 
@@ -1141,7 +1582,7 @@ Implemented: `-target_column` or comma-separated `-target_columns` selects
 finite numeric columns, `-method ridge` is the continuous default, and
 `-metric cross_validated_r2` is the default score. Each target has separate
 SCORE/PEARSON/SPEARMAN/CVR2/MAE/RMSE/NVALID map bricks; NFEAT and NFOLD follow.
-`PREFIX.continuous.tsv` preserves all metrics. Optional `-save_predictions`
+`PREFIX.continuous.1D` preserves all metrics. Optional `-save_predictions`
 and `-save_fold_scores` retain response identity and sample/fold provenance.
 There is no implicit average across decoding targets.
 
@@ -1253,7 +1694,7 @@ then adds these eight inference bricks per target, followed by NFEAT/NFOLD:
 NULL_MEAN ABOVE_NULL PVAL ZSCR QVAL PFWE ZFWE NNULL_VALID
 ```
 
-`PREFIX.inference.tsv` records scores, null means, inference, finite-null counts,
+`PREFIX.inference.1D` records scores, null means, inference, finite-null counts,
 and total identity-inclusive NPERM. One spatial correction family is used per
 decoding target, or one for the selected encoding voxel/pattern statistic.
 Targets are not jointly corrected. Encoding pattern scores use the existing
@@ -1548,7 +1989,7 @@ Deliver a scientifically useful classification program:
 ```text
 3dMVPA
     -mode classify
-    -dataTable @samples.tsv
+    -dataTable @samples.1D
     -target_column LABEL
     -cv_column RUN
     -mask MASK
@@ -1611,8 +2052,8 @@ Current Phase 2 progress:
 ### Phase 5: audit and workflow expansion (items 20–27)
 
 The user approved adding the following proposals on 2026-10-15 and authorized
-item 20 implementation on 2026-10-18. Item 20 is complete; items 21–27 remain
-proposals. Each slice must preserve existing CV/inference behavior,
+item 20 implementation on 2026-10-18 and item 21 on 2026-10-26. Items 20–21
+are complete; items 22–27 remain proposals. Each slice must preserve existing CV/inference behavior,
 record its validation evidence, and conclude with what fMRI users can now do
 and how it helps their analyses. Prompt the user before the next slice.
 
@@ -1634,8 +2075,8 @@ Users can add either or both options to any supported classification method
 volumetric searchlight or sparse-surface searchlight analyses:
 
 ```text
--save_confusion results.confusion.tsv
--save_summary_scores results.summaries.tsv
+-save_confusion results.confusion.1D
+-save_summary_scores results.summaries.1D
 ```
 
 `-save_confusion` has one row per true class, spatial unit and summary group.
@@ -1690,8 +2131,8 @@ subject sizes (pooled ACC 0.75 versus equal-subject ACC 5/7), missing test
 classes, independent within-subject runs, unstratified pooled models, blocked
 null restoration, opt-in invariance and filename/mode rejection. Volume and
 sparse-surface fixtures verify original spatial IDs and byte-identical tables
-with one versus two OpenMP workers. Item 21 remains proposed and requires
-separate user direction.
+with one versus two OpenMP workers. Item 21 was completed on 2026-10-26;
+see its fixed-partition contract at the top of this plan.
 
 #### Audit repairs (2026-10-18)
 
@@ -1773,7 +2214,7 @@ prediction maps do not provide a dedicated population-inference workflow.
 
 ### Phase 6: proposed estimator expansion (items 28–32)
 
-The user approved adding these model proposals on 2026-10-15. Item 21 is now
+The user approved adding these model proposals on 2026-10-15. Item 22 is now
 next; this phase does not reorder or start implementation. Huber regression
 has its own item so its scientific scope and validation can be approved
 separately from linear SVR. All implementations remain native and use the
@@ -1851,7 +2292,7 @@ existing AFNI sample, spatial, grouped CV and inference infrastructure.
 
 Added on 2026-10-15 after reconciling the model/capability discussion against
 the existing roadmap. Existing proposals 20–32 and completed items 18–19 are
-retained, not duplicated or restarted. Item 20 is now complete; item 21 is
+retained, not duplicated or restarted. Items 20–21 are now complete; item 22 is
 next pending user direction. These additions authorize planning only, not
 implementation.
 
@@ -1932,7 +2373,7 @@ Classification:
 ```bash
 3dMVPA                                      \
     -mode classify                         \
-    -dataTable @samples.tsv                 \
+    -dataTable @samples.1D                 \
     -target_column Condition                \
     -cv_column Run                          \
     -mask brain_mask+tlrc                   \
@@ -1948,7 +2389,7 @@ with `Xmat` and whole stats buckets:
 ```bash
 3dMVPA                                      \
     -mode classify                         \
-    -dataTable @subjects_with_xmat.tsv      \
+    -dataTable @subjects_with_xmat.1D      \
     -xmat_stims face,house                  \
     -target_column Condition                \
     -cv_column Run                          \
@@ -1968,7 +2409,7 @@ Continuous decoding:
 ```bash
 3dMVPA                                      \
     -mode decode                           \
-    -dataTable @samples.tsv                 \
+    -dataTable @samples.1D                 \
     -target_columns Rating,Arousal          \
     -cv_column Run                          \
     -mask atlas+tlrc                        \
@@ -1983,7 +2424,7 @@ Voxelwise encoding:
 ```bash
 3dMVPA                                      \
     -mode encode                           \
-    -dataTable @samples.tsv                 \
+    -dataTable @samples.1D                 \
     -design_columns Visual,Semantic,Motion  \
     -cv_column Run                          \
     -mask brain_mask+tlrc                   \
@@ -2060,7 +2501,7 @@ ridge or classifier is numerically inferior. [BrainIAK module index](https://bra
 |---|---|---|
 | Estimator breadth | No logistic/probability model, elastic net, PLS, SVR, Huber or nonlinear kernels yet | PyMVPA exposes additional learners and external estimator adapters, including sparse multinomial logistic regression. Existing proposals 28–32, 36–37 and 40 cover selected expansions, not blanket estimator compatibility. [Examples](https://www.pymvpa.org/examples.html), [sparse logistic model](https://www.pymvpa.org/generated/mvpa2.clfs.smlr.SMLR.html). |
 | Pipeline composition | No CLI fold-local feature selection, PCA/PCR or nuisance adjustment; arbitrary user-defined measures cannot simply be plugged into the command | PyMVPA composes mappers and meta-classifiers within CV, and documents training-only feature selection. Items 22–24 and 33 are higher-value gaps than adding many nearly equivalent classifiers. [Meta-classifiers](https://www.pymvpa.org/tutorial_meta_classifiers.html), [training-only selection](https://www.pymvpa.org/tutorial_sensitivity.html). |
-| Training/application workflow | CLI fixed independent partitions, frozen model reload/application and cross-condition transfer are still proposed | PyMVPA has reusable fitted learners/mappers and HDF5 object storage. Our coefficient exports are not complete reusable model files. Items 21, 27 and 38 need versioned feature/preprocessing contracts. [Object storage](https://www.pymvpa.org/generated/mvpa2.base.hdf5.html), [mapper composition](https://www.pymvpa.org/tutorial_meta_classifiers.html). |
+| Training/application workflow | CLI fixed independent partitions are implemented; frozen model reload/application and cross-condition transfer remain proposed | PyMVPA has reusable fitted learners/mappers and HDF5 object storage. Our coefficient exports are not complete reusable model files. Items 27 and 38 need explicit feature/preprocessing contracts. [Object storage](https://www.pymvpa.org/generated/mvpa2.base.hdf5.html), [mapper composition](https://www.pymvpa.org/tutorial_meta_classifiers.html). |
 | Functional alignment | No fold-local SRM or hyperalignment stage inside 3dMVPA | PyMVPA documents ROI/searchlight hyperalignment; BrainIAK offers SRM variants. The separate 3dSRM work does not establish leakage-safe integration with this classifier pipeline. Any integration needs its own training/application and held-out-subject contract; do not silently add it to current scope. [Hyperalignment](https://www.pymvpa.org/examples/hyperalignment.html), [functional alignment](https://brainiak.org/docs/brainiak.funcalign.html). |
 | Specialized encoding/reconstruction | Ridge prediction of neural responses is not an inverted encoding model or circular stimulus reconstruction | BrainIAK documents 1D/2D basis-channel reconstruction. Items 34–37 improve predictive encoding but do not supply that distinct analysis; circular reconstruction would need a separate scientific proposal. [Inverted encoding models](https://brainiak.org/docs/brainiak.reconstruct.html). |
 | Distributed/custom searchlights | OpenMP spatial workers on one machine; no MPI engine or user-supplied searchlight callback | BrainIAK distributes data across MPI ranks and runs user-defined voxel/block functions. This is a real flexibility/scaling gap; adding it should depend on measured workload requirements, not an assumption that native C is faster. [Distributed searchlights](https://brainiak.org/docs/brainiak.searchlight.html). |
@@ -2140,8 +2581,9 @@ For a reproducible comparison, record exact installed versions and:
    out of program code and runtime requirements. Nice Python runs and cap their
    numerical-library/core use at five cores, as requested.
 
-With item 20's reporting complete, the next gap closure is item 21's explicit
-independent partitions, followed by training-only transforms,
+With items 20–21's reporting and explicit independent partitions complete,
+the next gap closure is item 22's training-only nuisance adjustment, followed by
+feature selection/PCA,
 generalized tuning/logistic classification, model application and the encoding
 extensions already proposed. This comparison does not reorder the active
 roadmap or authorize additional implementation.

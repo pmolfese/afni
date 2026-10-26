@@ -20,6 +20,9 @@
 #endif
 
 #define PROGRAM_NAME "3dMVPA"
+#define MVPA_PARTITION "MVPA_Partition"
+#define MVPA_SOURCE_TABLE "MVPA_SourceTable"
+#define MVPA_SOURCE_ROW "MVPA_SourceRow"
 
 /*----------------------------------------------------------------------------
   Classification and continuous prediction in ROIs and spatial neighborhoods.
@@ -29,17 +32,19 @@
 
 static char *mvpa_options[]={
    "-mode","-dataTable","-dataTableFile","-trial_manifest","-xmat_stims",
+   "-testTable","-testTableFile",
    "-target_column","-target_columns","-design_columns","-lambda","-score",
    "-lambda_grid","-inner_cv_column","-inner_cv_k",
    "-shrinkage","-class_prior","-variance_floor",
    "-svm_c","-svm_c_grid","-svm_tol","-svm_max_iter",
    "-cv_column","-cv","-cv_k","-within_column",
+   "-partition_column","-train_value","-test_value",
    "-subject_column","-run_column","-item_column","-fold_column","-sample_column",
    "-mask","-roi_sel","-searchlight","-surf","-method","-distance","-scale","-metric","-prefix",
    "-nperm","-seed","-permute_within","-block_column",
    "-save_predictions","-save_fold_scores","-save_confusion","-save_summary_scores",
    "-save_coefficients","-coef_lambda",
-   "-show_table","-show_samples","-show_folds","-quiet","-help","-h",NULL
+   "-show_table","-show_samples","-show_folds","-validate_only","-quiet","-help","-h",NULL
 } ;
 
 static void usage_3dMVPA( void )
@@ -64,6 +69,26 @@ static void usage_3dMVPA( void )
 "                         A subject-level table with Xmat and whole-bucket\n"
 "                         InputFile columns is expanded to the same sample\n"
 "                         representation before analysis.\n"
+"  -testTable @TABLE      Optional independent test table. When supplied,\n"
+"  -testTableFile TABLE   -dataTable/-dataTableFile contains training rows only.\n"
+"                         -testTable also accepts an inline table, with InputFile\n"
+"                         last, just like -dataTable. Both tables must have the\n"
+"                         same column names (order/case may differ), including\n"
+"                         test targets for scoring. Both may use Xmat expansion.\n"
+"                         Dataset paths retain the usual working-directory basis.\n"
+"                         Explicit sample IDs must be unique across both tables;\n"
+"                         omitted IDs are generated over the combined rows.\n"
+"                         The same dataset/brick on both sides is an error\n"
+"                         (including symlink aliases). Separate files alone do\n"
+"                         not establish scientific independence.\n"
+"                         Cannot accompany -trial_manifest, -partition_column,\n"
+"                         -train_value, -test_value, or outer CV options. All\n"
+"                         fixed-split tuning/inference restrictions below apply.\n"
+"                         Prediction audits append Partition, SourceTable, and\n"
+"                         SourceRow (one-based input data row, before expansion).\n"
+"                         -show_samples also prints this provenance. Internal\n"
+"                         MVPA_Partition/MVPA_SourceTable/MVPA_SourceRow columns\n"
+"                         are reserved in two-table input.\n"
 "  -trial_manifest FILE   Alternative to -dataTable: one row per trial beta.\n"
 "                         InputFile names a whole LSS or LSA beta bucket;\n"
 "                         Volume is its zero-based sub-brick index. Supply\n"
@@ -81,7 +106,8 @@ static void usage_3dMVPA( void )
 "  -score voxel|pattern  Encoding output: voxel [default] predicts each masked\n"
 "                         voxel; pattern averages per-response metrics within\n"
 "                         each ROI/searchlight, excluding undefined values.\n"
-"  -cv_column NAME        Leave one level of NAME out at a time.\n"
+"  -cv_column NAME        Leave one level of NAME out at a time. Choose this\n"
+"                         (or -cv), -partition_column, OR a separate -testTable.\n"
 "  -mask DSET             Without -searchlight, positive values define ROIs and\n"
 "                         a binary mask is one ROI. With -searchlight, nonzero\n"
 "                         voxels define eligible centers and neighborhood voxels.\n"
@@ -96,6 +122,26 @@ static void usage_3dMVPA( void )
 "                         instead of leave-one-group-out.\n"
 "  -within_column NAME    Build independent folds inside each NAME level.\n"
 "                         For within-subject run CV, use Subj here.\n"
+"\n"
+"  -partition_column NAME One prespecified train/test split, for all modes.\n"
+"                         Every row must have exactly one of the two values\n"
+"                         below; both sets must be nonempty. Values are case-\n"
+"                         sensitive. Cannot accompany -cv, -cv_column, -cv_k,\n"
+"                         or -within_column. No automatic subject/run splitting.\n"
+"  -train_value LABEL     Training value [train]; requires -partition_column.\n"
+"  -test_value LABEL      Testing value [test]; requires -partition_column.\n"
+"                         Only training rows fit preprocessing and the model;\n"
+"                         only test rows contribute to scores. Prediction audits\n"
+"                         retain training rows with NA predictions/folds.\n"
+"                         All test classes must be represented in training;\n"
+"                         class order comes from first appearance in training.\n"
+"                         Tuned ridge/SVM require -inner_cv_column, with at\n"
+"                         least two groups among training rows. Inner CV never\n"
+"                         uses the reserved test rows.\n"
+"                         Permutation blocks must lie entirely in one partition;\n"
+"                         use a composite partition/block column if needed.\n"
+"                         Full-data -save_coefficients is incompatible with a\n"
+"                         reserved test set. This is evaluation, not model saving.\n"
 "\n"
 "Sample roles:                                               ~1~\n"
 "\n"
@@ -128,7 +174,7 @@ static void usage_3dMVPA( void )
 "                         over pooled inner held-out rows. Ties choose SMALLER\n"
 "                         C. Every inner training set needs every class.\n"
 "                         Scaling, selection and fitting repeat per permutation.\n"
-"                         PREFIX.tuning.tsv records all candidate losses.\n"
+"                         PREFIX.tuning.1D records all candidate losses.\n"
 "  -svm_tol T            Absolute projected-dual-gradient tolerance [1e-6],\n"
 "                         range [1e-12,1e-2]. Deterministic cyclic coordinate\n"
 "                         descent verifies final KKT residual for every class.\n"
@@ -169,12 +215,13 @@ static void usage_3dMVPA( void )
 "                         not accuracy/BACC. All inner training sets must\n"
 "                         contain every class, including under permutations.\n"
 "  -inner_cv_column NAME Inner grouping column [outer -cv_column].\n"
+"                         Required explicitly with tuned fixed partitions.\n"
 "  -inner_cv_k K          Balance whole inner groups into K folds [default:\n"
 "                         leave one group out]. Every outer training set must\n"
 "                         contain at least two inner groups (or K if given).\n"
 "                         Shared by ridge and SVM tuning. Preprocessing is\n"
 "                         refitted within every inner split.\n"
-"                         PREFIX.tuning.tsv records all candidate losses;\n"
+"                         PREFIX.tuning.1D records all candidate losses;\n"
 "                         fold audits append selected penalties and losses.\n"
 "  -distance D            Centroid only: euclidean [default], correlation, cosine.\n"
 "  -scale S               feature_zscore [default], sample_center, run_center,\n"
@@ -214,7 +261,7 @@ static void usage_3dMVPA( void )
 "                         Each decoding target has a separate spatial family;\n"
 "                         encoding tests its voxel or mean-pattern score.\n"
 "                         MAE/RMSE use the lower tail; other metrics the upper.\n"
-"                         PREFIX.inference.tsv reports all continuous results.\n"
+"                         PREFIX.inference.1D reports all continuous results.\n"
 "                         Buckets add NULL_MEAN, ABOVE_NULL, PVAL/ZSCR/QVAL,\n"
 "                         PFWE/ZFWE, and NNULL_VALID per target. ABOVE_NULL is\n"
 "                         positive for improvement, including lower errors.\n"
@@ -245,10 +292,10 @@ static void usage_3dMVPA( void )
 "                         Without inference the dataset contains SCORE, NFEAT,\n"
 "                         and NFOLD. -nperm adds ABOVE_CHANCE, PVAL, ZSCR,\n"
 "                         QVAL, PFWE, and ZFWE before NFEAT and NFOLD.\n"
-"                         ROI analysis also writes PREFIX.roi.tsv with SCORE,\n"
+"                         ROI analysis also writes PREFIX.roi.1D with SCORE,\n"
 "                         ACC, BACC, NFEAT, and NFOLD for every ROI.\n"
 "  -save_coefficients CPREFIX  Ridge only: separate descriptive full-data refit.\n"
-"                         Writes CPREFIX.coefficients.tsv and .preprocessing.tsv.\n"
+"                         Writes CPREFIX.coefficients.1D and .preprocessing.1D.\n"
 "                         Encoding without searchlights writes CPREFIX maps: one\n"
 "                         brick per design column plus REFIT_INTERCEPT. Other\n"
 "                         analyses write CPREFIX.unit_ID per ROI/searchlight: one\n"
@@ -301,17 +348,61 @@ static void usage_3dMVPA( void )
 "  -show_table            Print the canonical table after input conversion.\n"
 "  -show_samples          Print resolved datasets, bricks, and sample roles.\n"
 "  -show_folds            Print every training/test row in every fold.\n"
+"  -validate_only         Read and resolve the actual analysis inputs, print\n"
+"                         all three reports above plus class/fold counts and\n"
+"                         spatial coverage, then exit without fitting models\n"
+"                         or writing result/audit files. Redirect stdout to\n"
+"                         save this report. Errors return nonzero status.\n"
+"                         Checks include selected beta values (finite inside\n"
+"                         the selected ROIs/neighborhoods), numeric targets,\n"
+"                         grids/node domains, and outer/inner training folds.\n"
+"                         Values are checked after AFNI loading/conversion;\n"
+"                         readers may repair bad floats. This is not a raw\n"
+"                         file-integrity check.\n"
+"                         Repeated dataset/brick selections are warnings.\n"
+"                         Permutation block metadata is checked, but nulls\n"
+"                         are not generated or validated. Output paths and\n"
+"                         solver convergence are not tested. Supplied labels\n"
+"                         and XColumn provenance are not proof of correct\n"
+"                         event mapping, anatomical QC or run independence.\n"
 "  -quiet                 Suppress informational messages.\n"
 "\n"
 "Example:                                                    ~1~\n"
 "\n"
-"  3dMVPA -mode classify -dataTable @samples.tsv             \\\n"
+"Tabular outputs use AFNI .1D files: tabs separate columns, # lines hold\n"
+"comments, and # Columns: names the fields. Text labels remain text (as in\n"
+"3dRSA result tables); use a table reader for mixed text/numeric outputs.\n"
+"Explicit -save_* filenames are honored, regardless of extension.\n"
+"\n"
+"  3dMVPA -mode classify -dataTable @samples.1D             \\\n"
 "         -target_column Condition -cv_column Run             \\\n"
 "         -mask brain+tlrc -searchlight 'SPHERE(5)'           \\\n"
 "         -nperm 5000 -permute_within Run -seed 314159        \\\n"
 "         -prefix face_scene\n"
 "\n"
 "Without -nperm, the ROI table and maps remain descriptive held-out results.\n"
+"\n"
+"Independent test set (Split contains train or test on every sample row):\n"
+"\n"
+"  3dMVPA -mode classify -dataTable @samples.1D            \\\n"
+"         -target_column Condition -partition_column Split \\\n"
+"         -method ridge -lambda auto -inner_cv_column Run  \\\n"
+"         -mask brain+tlrc -save_predictions heldout.pred.1D \\\n"
+"         -prefix heldout\n"
+"\n"
+"Alternatively, supply separate tables instead of -partition_column Split:\n"
+"\n"
+"  3dMVPA -mode classify -dataTable @training.1D           \\\n"
+"         -testTable @testing.1D -target_column Condition  \\\n"
+"         -method ridge -lambda auto -inner_cv_column Run \\\n"
+"         -mask brain+tlrc -save_predictions heldout.pred.1D \\\n"
+"         -prefix heldout\n"
+"\n"
+"Reserve independent runs/sessions/subjects according to the question. This\n"
+"option assigns rows as supplied; it cannot establish upstream independence.\n"
+"Use -validate_only to inspect the split before fitting. Fixed-split nulls\n"
+"relabel within the supplied blocks separately on each side of the split;\n"
+"choose blocks whose rows are exchangeable under the intended null.\n"
 "\n"
 "Trial betas from 3dLSS or LSA:                               ~1~\n"
 "\n"
@@ -328,7 +419,7 @@ static void usage_3dMVPA( void )
 "IM stimulus's estimates, in design-column order. Volume 0 therefore maps to\n"
 "that stimulus's first column, not necessarily design column 0.\n"
 "\n"
-"Create lss_trials.tsv (whitespace-separated; paths relative to the current\n"
+"Create lss_trials.1D (whitespace-separated; paths relative to the current\n"
 "working directory). This small example assumes two trials per run:\n"
 "\n"
 "  Subj Run Item Condition Volume InputFile\n"
@@ -337,7 +428,7 @@ static void usage_3dMVPA( void )
 "  s01  2   t03  face      0      LSS.r2+tlrc\n"
 "  s01  2   t04  house     1      LSS.r2+tlrc\n"
 "\n"
-"  3dMVPA -mode classify -trial_manifest lss_trials.tsv     \\\n"
+"  3dMVPA -mode classify -trial_manifest lss_trials.1D     \\\n"
 "         -target_column Condition -cv_column Run           \\\n"
 "         -mask rois+tlrc -show_table -show_samples -show_folds \\\n"
 "         -prefix LSS_decode\n"
@@ -356,7 +447,7 @@ static void usage_3dMVPA( void )
 "Range checks cannot establish that the chosen beta and regressor correspond.\n"
 "Run and Condition remain explicit; neither is inferred from XColumn.\n"
 "\n"
-"For an LSA comparison, make lsa_trials.tsv with the same trial metadata but\n"
+"For an LSA comparison, make lsa_trials.1D with the same trial metadata but\n"
 "InputFile naming the Deconvolve/REMLfit bucket and Volume selecting each\n"
 "trial's actual _Coef brick (not a t-statistic, and not the design-column\n"
 "index). Run the same command with that manifest and -prefix LSA_decode.\n"
@@ -412,7 +503,7 @@ static void mvpa_write_roi_table( const char *fname, const THD_roilist *rl,
    if( pr!=NULL )
      fprintf(fp,"\n# Label permutations: %d; within=%s; tail=upper; FWE_family=%d_ROIs",
              pr->nperm,permute_within,rl->nroi) ;
-   fprintf(fp,"\nROI\tLabel\tSCORE\tACC\tBACC") ;
+   fprintf(fp,"\n# Columns: ROI\tLabel\tSCORE\tACC\tBACC") ;
    if( pr!=NULL ) fputs("\tABOVE_CHANCE\tPVAL\tZSCR\tQVAL\tPFWE\tZFWE",fp) ;
    fputs("\tNFEAT\tNFOLD\n",fp) ;
    for( rr=0 ; rr<rl->nroi ; rr++ ){
@@ -474,19 +565,21 @@ static THD_3dim_dataset * mvpa_make_roi_map( THD_3dim_dataset *mset,
    return oset ;
 }
 
-static void mvpa_tsv_text( FILE *fp, const char *text )
+static void mvpa_1D_text(FILE *fp,const char *text)
+{ THD_1D_print_token(fp,text); }
+
+/* Append fields only for two-table input, leaving existing audit schemas intact.
+   Original source rows are stamped before Xmat expansion, so one source row may
+   correspond to several canonical TableRows/Items. */
+static void mvpa_source_fields(FILE *fp,const THD_sampleset *ss,int row)
 {
-   const char *cc ; int quote=0 ;
-   if( text==NULL ) text="NA" ;
-   for( cc=text ; *cc!='\0' ; cc++ )
-     if( *cc=='\t' || *cc=='\n' || *cc=='\r' || *cc=='\"' ){ quote=1 ; break ; }
-   if( !quote ){ fputs(text,fp) ; return ; }
-   fputc('\"',fp) ;
-   for( cc=text ; *cc!='\0' ; cc++ ){
-     if( *cc=='\"' ) fputc('\"',fp) ;
-     fputc(*cc,fp) ;
+   const char *names[]={MVPA_PARTITION,MVPA_SOURCE_TABLE,MVPA_SOURCE_ROW};int j;
+   if(row<0){fputs("\tPartition\tSourceTable\tSourceRow",fp);return;}
+   for(j=0;j<3;j++){
+      int col=THD_datatable_column(ss->metadata,(char *)names[j]);
+      if(col<0)ERROR_exit(PROGRAM_NAME ": missing two-table provenance %s",names[j]);
+      fputc('\t',fp);mvpa_1D_text(fp,DT_CELL(ss->metadata,ss->table_row[row],col));
    }
-   fputc('\"',fp) ;
 }
 
 static FILE * mvpa_open_audit( const char *fname, const char *what )
@@ -506,9 +599,9 @@ static void mvpa_write_audit_header( FILE *fp, const char *kind,
                                      int nclass, int searchlight, int surface )
 {
    int cc ;
-   fprintf(fp,"# 3dMVPA %s\n# Target\t",kind) ; mvpa_tsv_text(fp,target) ; fputc('\n',fp) ;
+   fprintf(fp,"# 3dMVPA %s\n# Target\t",kind) ; mvpa_1D_text(fp,target) ; fputc('\n',fp) ;
    for( cc=0 ; cc<nclass ; cc++ ){
-     fprintf(fp,"# Class\t%d\t",cc) ; mvpa_tsv_text(fp,class_label[cc]) ; fputc('\n',fp) ;
+     fprintf(fp,"# Class\t%d\t",cc) ; mvpa_1D_text(fp,class_label[cc]) ; fputc('\n',fp) ;
    }
    if( surface )
      fputs("# Surface searchlight UnitID is the mesh node index; I/J/K are NA.\n",fp) ;
@@ -523,7 +616,7 @@ static void mvpa_write_spatial_prefix( FILE *fp, THD_3dim_dataset *mset,
    int idx=rl->center[rr] ;
    fputs(surface?"Node\t":searchlight?"Voxel\t":"ROI\t",fp) ;
    fprintf(fp,"%d\t",rl->val[rr]) ;
-   mvpa_tsv_text(fp,rl->lab[rr]?rl->lab[rr]:"NA") ; fputc('\t',fp) ;
+   mvpa_1D_text(fp,rl->lab[rr]?rl->lab[rr]:"NA") ; fputc('\t',fp) ;
    if( surface ) fputs("NA\tNA\tNA\t",fp) ;
    else if( searchlight ){
      int nx=DSET_NX(mset),nxy=nx*DSET_NY(mset) ;
@@ -548,7 +641,7 @@ static void mvpa_write_fold_identity( FILE *fp, int fold, const char *stratum )
 {
    if(fold>=0) fprintf(fp,"\t%d",fold);
    else fputs("\tNA",fp);
-   fputc('\t',fp);mvpa_tsv_text(fp,stratum);
+   fputc('\t',fp);mvpa_1D_text(fp,stratum);
 }
 
 static void mvpa_write_class_summary( FILE *fp, const char *scope,
@@ -557,8 +650,8 @@ static void mvpa_write_class_summary( FILE *fp, const char *scope,
                                       int ngroup, int average,
                                       int fold, const char *stratum )
 {
-   fputc('\t',fp); mvpa_tsv_text(fp,scope);
-   fputc('\t',fp); mvpa_tsv_text(fp,group);
+   fputc('\t',fp); mvpa_1D_text(fp,scope);
+   fputc('\t',fp); mvpa_1D_text(fp,group);
    fprintf(fp,"\t%d",score->nsample);
    if(average) fputs("\tNA\tNA",fp);
    else fprintf(fp,"\t%d\t%d",score->ncorrect,score->nclass_present);
@@ -617,9 +710,9 @@ static void mvpa_write_class_audits( FILE *conf, FILE *summary,
          int total=0;
          for(pp=0;pp<w->nclass;pp++) total+=a->confusion[(size_t)cc*w->nclass+pp];
          mvpa_write_spatial_prefix(conf,mset,rl,rr,searchlight,surface);
-         fputc('\t',conf);mvpa_tsv_text(conf,scope[kind]);
-         fputc('\t',conf);mvpa_tsv_text(conf,label);
-         fprintf(conf,"\t%d\t",cc);mvpa_tsv_text(conf,class_label[cc]);
+         fputc('\t',conf);mvpa_1D_text(conf,scope[kind]);
+         fputc('\t',conf);mvpa_1D_text(conf,label);
+         fprintf(conf,"\t%d\t",cc);mvpa_1D_text(conf,class_label[cc]);
          fprintf(conf,"\t%d",total);
          if(isfinite(a->recall[cc])) fprintf(conf,"\t%.17g",a->recall[cc]);
          else fputs("\tNA",conf);
@@ -646,28 +739,29 @@ static void mvpa_write_prediction_rows( FILE *fp, THD_3dim_dataset *mset,
                                         const THD_sampleset *ss,
                                         const THD_foldplan *plan,
                                         const int *class_id, char **class_label,
-                                        const THD_mvpa_workspace *workspace )
+                                        const THD_mvpa_workspace *workspace,int two_tables )
 {
    int ii,cc ;
    for( ii=0 ; ii<ss->nsample ; ii++ ){
      int ff=plan->sample_test_fold[ii],pred=workspace->prediction[ii] ;
      mvpa_write_spatial_prefix(fp,mset,rl,rr,searchlight,surface) ;
-     fprintf(fp,"\t%d\t",ss->table_row[ii]+1) ; mvpa_tsv_text(fp,ss->sample_label[ii]) ;
-     fputc('\t',fp) ; mvpa_tsv_text(fp,mvpa_level(ss->subject_label,ss->subject[ii])) ;
-     fputc('\t',fp) ; mvpa_tsv_text(fp,mvpa_level(ss->run_label,ss->run[ii])) ;
-     fputc('\t',fp) ; mvpa_tsv_text(fp,mvpa_level(ss->item_label,ss->item[ii])) ;
-     fputc('\t',fp) ; mvpa_tsv_text(fp,mvpa_level(ss->fold_label,ss->fold[ii])) ;
-     fputc('\t',fp) ; mvpa_tsv_text(fp,(ff>=0)?plan->name[ff]:"NA") ;
+     fprintf(fp,"\t%d\t",ss->table_row[ii]+1) ; mvpa_1D_text(fp,ss->sample_label[ii]) ;
+     fputc('\t',fp) ; mvpa_1D_text(fp,mvpa_level(ss->subject_label,ss->subject[ii])) ;
+     fputc('\t',fp) ; mvpa_1D_text(fp,mvpa_level(ss->run_label,ss->run[ii])) ;
+     fputc('\t',fp) ; mvpa_1D_text(fp,mvpa_level(ss->item_label,ss->item[ii])) ;
+     fputc('\t',fp) ; mvpa_1D_text(fp,mvpa_level(ss->fold_label,ss->fold[ii])) ;
+     fputc('\t',fp) ; mvpa_1D_text(fp,(ff>=0)?plan->name[ff]:"NA") ;
      fputc('\t',fp) ;
-     mvpa_tsv_text(fp,(ff>=0)?mvpa_level(plan->stratum_label,plan->fold_stratum[ff]):"NA") ;
-     fputc('\t',fp) ; mvpa_tsv_text(fp,class_label[class_id[ii]]) ; fputc('\t',fp) ;
+     mvpa_1D_text(fp,(ff>=0)?mvpa_level(plan->stratum_label,plan->fold_stratum[ff]):"NA") ;
+     fputc('\t',fp) ; mvpa_1D_text(fp,class_label[class_id[ii]]) ; fputc('\t',fp) ;
      if( pred>=0 ){
-       mvpa_tsv_text(fp,class_label[pred]) ; fprintf(fp,"\t%d",pred==class_id[ii]) ;
+       mvpa_1D_text(fp,class_label[pred]) ; fprintf(fp,"\t%d",pred==class_id[ii]) ;
      } else fputs("NA\tNA",fp) ;
      for( cc=0 ; cc<workspace->nclass ; cc++ ){
        double dd=workspace->decision[(size_t)ii*workspace->nclass+cc] ;
        if( isfinite(dd) ) fprintf(fp,"\t%.17g",dd) ; else fputs("\tNA",fp) ;
      }
+     if(two_tables)mvpa_source_fields(fp,ss,ii);
      fputc('\n',fp) ;
    }
 }
@@ -681,8 +775,8 @@ static void mvpa_write_fold_rows( FILE *fp, THD_3dim_dataset *mset,
    int ff ;
    for( ff=0 ; ff<plan->nfold ; ff++ ){
      mvpa_write_spatial_prefix(fp,mset,rl,rr,searchlight,surface) ; fputc('\t',fp) ;
-     mvpa_tsv_text(fp,plan->name[ff]) ; fputc('\t',fp) ;
-     mvpa_tsv_text(fp,mvpa_level(plan->stratum_label,plan->fold_stratum[ff])) ;
+     mvpa_1D_text(fp,plan->name[ff]) ; fputc('\t',fp) ;
+     mvpa_1D_text(fp,mvpa_level(plan->stratum_label,plan->fold_stratum[ff])) ;
      fprintf(fp,"\t%d\t%d\t%.17g\t%.17g",plan->ntrain[ff],
              workspace->fold_nsample[ff],workspace->fold_accuracy[ff],
              workspace->fold_balanced_accuracy[ff]) ;
@@ -722,31 +816,32 @@ static double mvpa_cont_value(const THD_mvpa_continuous_score *s,int metric)
    }
 }
 
-static float *mvpa_numeric_columns(THD_sampleset *ss,const char *list,
+/* CLI list syntax and requested output labels stay here; numeric validation
+   and extraction in sample order are shared library operations. */
+static float *mvpa_numeric_columns(const THD_sampleset *ss,const char *list,
                                     char ***names,int *count)
 {
-   char *copy,*cur,*next;int n=1,j,i,k;float *v;
+   char *copy,*cur,*next,err[1024];int n=1,j;float *v;
    if(!list || !*list)ERROR_exit(PROGRAM_NAME ": numeric column list is empty");
-   for(cur=(char *)list;*cur;cur++)if(*cur==',')n++;
+   for(cur=(char *)list;*cur;cur++)if(*cur==','){
+      if(n==INT_MAX)ERROR_exit(PROGRAM_NAME ": too many numeric columns");
+      n++;
+   }
+   if((size_t)n>SIZE_MAX/sizeof(char *))ERROR_exit(PROGRAM_NAME ": too many numeric columns");
    *names=calloc((size_t)n,sizeof(char *));
-   v=malloc(sizeof(float)*(size_t)ss->nsample*n);copy=strdup(list);
-   if(!*names || !v || !copy)ERROR_exit(PROGRAM_NAME ": cannot allocate numeric columns");
+   copy=strdup(list);
+   if(!*names || !copy)ERROR_exit(PROGRAM_NAME ": cannot allocate numeric column names");
    cur=copy;
    for(j=0;j<n;j++){
       next=strchr(cur,',');if(next)*next++='\0';
-      k=THD_datatable_column(ss->metadata,cur);
-      if(k<0 || !ss->metadata->isnum[k])
-         ERROR_exit(PROGRAM_NAME ": column '%s' must contain finite numeric values",cur);
-      for(i=0;i<j;i++)if(!strcasecmp((*names)[i],cur))
-         ERROR_exit(PROGRAM_NAME ": duplicate numeric column '%s'",cur);
       (*names)[j]=strdup(cur);
-      for(i=0;i<ss->nsample;i++){
-         float a=ss->metadata->val[k][ss->table_row[i]];
-         if(!isfinite(a))ERROR_exit(PROGRAM_NAME ": column '%s', sample %d is not finite",cur,i+1);
-         v[(size_t)i*n+j]=a;
-      }cur=next;
+      if(!(*names)[j])ERROR_exit(PROGRAM_NAME ": cannot copy numeric column name");
+      cur=next;
    }
-   free(copy);*count=n;return v;
+   free(copy);
+   v=THD_sampleset_numeric_columns(ss,(const char *const *)*names,n,err,sizeof(err));
+   if(!v){THD_sampleset_free_levels(*names,n);*names=NULL;ERROR_exit(PROGRAM_NAME ": %s",err);}
+   *count=n;return v;
 }
 
 static THD_roilist *mvpa_voxel_units(THD_3dim_dataset *mask)
@@ -795,7 +890,7 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
  const char *predfile,const char *foldfile,int nworker,int quiet,
  const THD_nested_foldplan *nested,const double *grid,int nl,const char *inner_column,
  const PERM_set *pset,const char *permute_within,
- int argc,char **argv)
+ int two_tables,int argc,char **argv)
 {
    char **names=NULL,err[1024],label[256],*tablefile,runerr[1024]="";
    float *attr,**patterns,*values,*paint;int na,maxvox,r,o,k,b,nout,nbrick,i,failed=0;
@@ -854,7 +949,7 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
    paint=malloc(sizeof(float)*(size_t)rl->nroi);
    tablefile=malloc(strlen(prefix)+20);
    if(!values || !paint || !tablefile)ERROR_exit(PROGRAM_NAME ": out of memory in continuous analysis");
-   sprintf(tablefile,"%s.continuous.tsv",prefix);
+   sprintf(tablefile,"%s.continuous.1D",prefix);
    if((predfile && !strcmp(predfile,tablefile)) || (foldfile && !strcmp(foldfile,tablefile)))
       ERROR_exit(PROGRAM_NAME ": continuous result and audit filenames must differ");
    table=mvpa_open_audit(tablefile,"continuous results");
@@ -863,24 +958,26 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
    if(!nested)fprintf(table,"# fixed lambda=%.17g\n",lambda);
    fprintf(table,"# Pattern summaries: arithmetic mean over defined per-response metrics; NaN when none are defined.\n");
    fprintf(table,"# Undefined metrics are NaN here and zero in maps; NVALID counts defined primary-metric responses.\n");
-   if(pset)fprintf(table,"# Inference in PREFIX.inference.tsv: %d identity-inclusive row permutations within %s; one spatial family per decoding target (one for encoding).\n",np,permute_within);
-   fprintf(table,"Unit\tResponse\tNResponse\tNValid\tSCORE\tPEARSON\tSPEARMAN\tCVR2\tMAE\tRMSE\n");
+   if(pset)fprintf(table,"# Inference in PREFIX.inference.1D: %d identity-inclusive row permutations within %s; one spatial family per decoding target (one for encoding).\n",np,permute_within);
+   fprintf(table,"# Columns: Unit\tResponse\tNResponse\tNValid\tSCORE\tPEARSON\tSPEARMAN\tCVR2\tMAE\tRMSE\n");
    if(predfile){
       pred=mvpa_open_audit(predfile,"continuous predictions");
-      fprintf(pred,"Unit\tResponse\tTableRow\tSample\tSubject\tRun\tCVFold\tObserved\tPredicted\tTrainingMean\tItem\tInputFold\tCVStratum\n");
+      fprintf(pred,"# Columns: Unit\tResponse\tTableRow\tSample\tSubject\tRun\tCVFold\tObserved\tPredicted\tTrainingMean\tItem\tInputFold\tCVStratum");
+      if(two_tables)mvpa_source_fields(pred,ss,-1);
+      fputc('\n',pred);
    }
    if(foldfile){
       fold=mvpa_open_audit(foldfile,"continuous fold scores");
-      fprintf(fold,"Unit\tResponse\tCVFold\tCVStratum\tNTrain\tNTest\tPEARSON\tSPEARMAN\tCVR2\tMAE\tRMSE\tLambda\tInnerNFold\tInnerNValid\tInnerLoss\n");
+      fprintf(fold,"# Columns: Unit\tResponse\tCVFold\tCVStratum\tNTrain\tNTest\tPEARSON\tSPEARMAN\tCVR2\tMAE\tRMSE\tLambda\tInnerNFold\tInnerNValid\tInnerLoss\n");
    }
    if(nested){
       tunefile=malloc(strlen(prefix)+20);if(!tunefile)ERROR_exit(PROGRAM_NAME ": cannot name tuning audit");
-      sprintf(tunefile,"%s.tuning.tsv",prefix);
+      sprintf(tunefile,"%s.tuning.1D",prefix);
       if((predfile && !strcmp(predfile,tunefile)) || (foldfile && !strcmp(foldfile,tunefile)))
          ERROR_exit(PROGRAM_NAME ": tuning result and prediction/fold filenames must differ");
       tuning=mvpa_open_audit(tunefile,"lambda tuning audit");
       fprintf(tuning,"# inner_group=%s; objective=mean_response_SSE_over_training_mean_baseline_SSE; ties_or_no_valid_responses=largest_lambda\n",inner_column);
-      fprintf(tuning,"Unit\tCVFold\tCVStratum\tInnerNFold\tInnerNValid\tLambda\tInnerLoss\tSelected\n");
+      fprintf(tuning,"# Columns: Unit\tCVFold\tCVStratum\tInnerNFold\tInnerNValid\tLambda\tInnerLoss\tSelected\n");
    }
    AFNI_OMP_START;
 #ifdef USE_OMP
@@ -923,8 +1020,8 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
          pr->effect[r]=isfinite(obs) && count?(float)(direction*(obs-mean/count)):0;
       }
       if(tuning)for(f=0;f<plan->nfold;f++)for(i=0;i<nl;i++){
-         fprintf(tuning,"%d\t",rl->val[r]);mvpa_tsv_text(tuning,plan->name[f]);
-         fputc('\t',tuning);mvpa_tsv_text(tuning,plan->stratum_label[plan->fold_stratum[f]]);
+         fprintf(tuning,"%d\t",rl->val[r]);mvpa_1D_text(tuning,plan->name[f]);
+         fputc('\t',tuning);mvpa_1D_text(tuning,plan->stratum_label[plan->fold_stratum[f]]);
          fprintf(tuning,"\t%d\t%d\t%.17g\t%.17g\t%d\n",nested->inner[f]->nfold,
                  w->inner_nvalid[f],grid[i],w->inner_loss[(size_t)f*nl+i],grid[i]==w->selected_lambda[f]);
       }
@@ -937,7 +1034,7 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
          b=o*7;
          for(k=0;k<6;k++)values[(size_t)(b+k)*rl->nroi+r]=count[k]?(float)(sum[k]/count[k]):NAN;
          values[(size_t)(b+6)*rl->nroi+r]=(float)count[0];
-         fprintf(table,"%d\t",rl->val[r]);mvpa_tsv_text(table,encoding?"pattern":names[o]);
+         fprintf(table,"%d\t",rl->val[r]);mvpa_1D_text(table,encoding?"pattern":names[o]);
          fprintf(table,"\t%d\t%d",encoding?q:1,count[0]);
          for(k=0;k<6;k++)fprintf(table,"\t%.9g",values[(size_t)(b+k)*rl->nroi+r]);
          fputc('\n',table);
@@ -955,21 +1052,24 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
          else snprintf(response,sizeof(response),"%s",names[o]);
          if(pred)for(i=0;i<ss->nsample;i++){
             f=plan->sample_test_fold[i];
-            fprintf(pred,"%d\t",rl->val[r]);mvpa_tsv_text(pred,response);
-            fprintf(pred,"\t%d\t",ss->table_row[i]+1);mvpa_tsv_text(pred,ss->sample_label[i]);
-            fputc('\t',pred);mvpa_tsv_text(pred,ss->subject_label[ss->subject[i]]);
-            fputc('\t',pred);mvpa_tsv_text(pred,ss->run[i]>=0?ss->run_label[ss->run[i]]:NULL);
-            fputc('\t',pred);mvpa_tsv_text(pred,f>=0?plan->name[f]:NULL);
-            fprintf(pred,"\t%.9g\t%.9g\t%.9g\t",yy[(size_t)i*q+o],w->prediction[(size_t)i*q+o],w->baseline[(size_t)i*q+o]);
-            mvpa_tsv_text(pred,ss->item[i]>=0?ss->item_label[ss->item[i]]:NULL);
-            fputc('\t',pred);mvpa_tsv_text(pred,ss->fold[i]>=0?ss->fold_label[ss->fold[i]]:NULL);
-            fputc('\t',pred);mvpa_tsv_text(pred,f>=0?plan->stratum_label[plan->fold_stratum[f]]:NULL);
+            fprintf(pred,"%d\t",rl->val[r]);mvpa_1D_text(pred,response);
+            fprintf(pred,"\t%d\t",ss->table_row[i]+1);mvpa_1D_text(pred,ss->sample_label[i]);
+            fputc('\t',pred);mvpa_1D_text(pred,ss->subject_label[ss->subject[i]]);
+            fputc('\t',pred);mvpa_1D_text(pred,ss->run[i]>=0?ss->run_label[ss->run[i]]:NULL);
+            fputc('\t',pred);mvpa_1D_text(pred,f>=0?plan->name[f]:NULL);
+            fprintf(pred,"\t%.9g",yy[(size_t)i*q+o]);
+            if(f>=0)fprintf(pred,"\t%.9g\t%.9g\t",w->prediction[(size_t)i*q+o],w->baseline[(size_t)i*q+o]);
+            else fputs("\tNA\tNA\t",pred);
+            mvpa_1D_text(pred,ss->item[i]>=0?ss->item_label[ss->item[i]]:NULL);
+            fputc('\t',pred);mvpa_1D_text(pred,ss->fold[i]>=0?ss->fold_label[ss->fold[i]]:NULL);
+            fputc('\t',pred);mvpa_1D_text(pred,f>=0?plan->stratum_label[plan->fold_stratum[f]]:NULL);
+            if(two_tables)mvpa_source_fields(pred,ss,i);
             fputc('\n',pred);
          }
          if(fold)for(f=0;f<plan->nfold;f++){
-            fprintf(fold,"%d\t",rl->val[r]);mvpa_tsv_text(fold,response);
-            fputc('\t',fold);mvpa_tsv_text(fold,plan->name[f]);
-            fputc('\t',fold);mvpa_tsv_text(fold,plan->stratum_label[plan->fold_stratum[f]]);
+            fprintf(fold,"%d\t",rl->val[r]);mvpa_1D_text(fold,response);
+            fputc('\t',fold);mvpa_1D_text(fold,plan->name[f]);
+            fputc('\t',fold);mvpa_1D_text(fold,plan->stratum_label[plan->fold_stratum[f]]);
             fprintf(fold,"\t%d\t%d",plan->ntrain[f],plan->ntest[f]);
             for(k=0;k<5;k++)fprintf(fold,"\t%.9g",mvpa_cont_value(w->fold_score+(size_t)f*q+o,THD_METRIC_PEARSON+k));
             {
@@ -993,7 +1093,7 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
    if(pset){
       FILE *fp;char *fname=malloc(strlen(prefix)+20);int ww,ip;
       if(!fname)ERROR_exit(PROGRAM_NAME ": cannot name inference audit");
-      sprintf(fname,"%s.inference.tsv",prefix);
+      sprintf(fname,"%s.inference.1D",prefix);
       if((predfile && !strcmp(predfile,fname)) || (foldfile && !strcmp(foldfile,fname)))
          ERROR_exit(PROGRAM_NAME ": inference audit and prediction/fold filenames must differ");
       fp=mvpa_open_audit(fname,"continuous inference audit");
@@ -1001,7 +1101,7 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
               encoding?"design":"target",permute_within,np,pset->is_exact,direction>0?"upper":"lower");
       fprintf(fp,"# All preprocessing/tuning/models refitted per relabeling. Undefined observed metrics have p=q=pfwe=1 and z=0.\n");
       fprintf(fp,"# Undefined null metrics count as exceedances for defined observations and conservatively enter that slot's family maximum.\n");
-      fprintf(fp,"Unit\tResponse\tSCORE\tNULL_MEAN\tABOVE_NULL\tPVAL\tZSCR\tQVAL\tPFWE\tZFWE\tNNULL_VALID\tNPERM\n");
+      fprintf(fp,"# Columns: Unit\tResponse\tSCORE\tNULL_MEAN\tABOVE_NULL\tPVAL\tZSCR\tQVAL\tPFWE\tZFWE\tNNULL_VALID\tNPERM\n");
       for(o=0;o<nout;o++){
          PERM_result *pr=inference[o];
          for(ww=0;ww<nworker;ww++)THD_max_accum(np,pr->max_null,max_null[ww]+(size_t)o*np);
@@ -1012,7 +1112,7 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
             float vv[8]={null_mean[(size_t)o*rl->nroi+r],pr->effect[r],pr->p_unc[r],pr->z_unc[r],
                          qval[(size_t)o*rl->nroi+r],pr->p_fwe[r],pr->z_fwe[r],null_valid[(size_t)o*rl->nroi+r]};
             for(k=0;k<8;k++)values[(size_t)(nout*7+o*8+k)*rl->nroi+r]=vv[k];
-            fprintf(fp,"%d\t",rl->val[r]);mvpa_tsv_text(fp,encoding?"pattern":names[o]);
+            fprintf(fp,"%d\t",rl->val[r]);mvpa_1D_text(fp,encoding?"pattern":names[o]);
             fprintf(fp,"\t%.9g",values[(size_t)(o*7)*rl->nroi+r]);
             for(k=0;k<8;k++)fprintf(fp,"\t%.9g",vv[k]);
             fprintf(fp,"\t%d\n",np);
@@ -1137,25 +1237,25 @@ static void mvpa_descriptive_coefficients(THD_sampleset *ss,THD_3dim_dataset *ms
    if(!rows || !neural || !transformed || !coef || !intercept || !ridge)
       ERROR_exit(PROGRAM_NAME ": cannot allocate descriptive refit");
    for(i=0;i<n;i++)rows[i]=i;
-   sprintf(fname,"%s.coefficients.tsv",prefix);table=mvpa_open_audit(fname,"descriptive coefficients");
+   sprintf(fname,"%s.coefficients.1D",prefix);table=mvpa_open_audit(fname,"descriptive coefficients");
    fprintf(table,"# Descriptive full-data ridge refit; NOT held-out scores, activation/Haufe maps, or coefficient significance.\n");
    fprintf(table,"# scale=%s; lambda=%.17g; nfit=%d; objective=sum_squared_error+lambda*sum_squared_slopes; intercept_unpenalized\n",
            THD_preprocess_name(preprocess),lambda,n);
    fprintf(table,"# y = Intercept + sum(preprocessed_feature * Coefficient); responses retain original units%s.\n",
            classes?" (classification: 0/1 indicators; decisions are not probabilities)":"");
-   fprintf(table,"# Preprocessing fitted on ALL samples; see PREFIX.preprocessing.tsv. Weights use transformed predictor units.\n");
+   fprintf(table,"# Preprocessing fitted on ALL samples; see PREFIX.preprocessing.1D. Weights use transformed predictor units.\n");
    fprintf(table,"# Map bricks are zero-based; outside-unit values are zero. Overlapping fits have separate unit maps.\n");
-   fprintf(table,"Unit\tFeature\tResponse\tCoefficient\tIntercept\tLambda\tNFit\tMapPrefix\tMapBrick\n");
-   sprintf(fname,"%s.preprocessing.tsv",prefix);prepfile=mvpa_open_audit(fname,"descriptive preprocessing");
+   fprintf(table,"# Columns: Unit\tFeature\tResponse\tCoefficient\tIntercept\tLambda\tNFit\tMapPrefix\tMapBrick\n");
+   sprintf(fname,"%s.preprocessing.1D",prefix);prepfile=mvpa_open_audit(fname,"descriptive preprocessing");
    fprintf(prepfile,"# scale=%s; feature_zscore: (x-center)/scale (population SD); constant features become zero.\n",THD_preprocess_name(preprocess));
    fprintf(prepfile,"# none: x unchanged; sample_center: subtract each sample's own mean across this unit's predictors.\n");
    fprintf(prepfile,"# run_center: subtract full-data subject/run feature means; Group is SubjectRunID below.\n");
    if(groups)for(i=0;i<n;i++){
       fprintf(prepfile,"# SampleGroup\t%d\t%d\t",ss->table_row[i]+1,groups[i]);
-      mvpa_tsv_text(prepfile,ss->subject_label[ss->subject[i]]);fputc('\t',prepfile);
-      mvpa_tsv_text(prepfile,ss->run_label[ss->run[i]]);fputc('\n',prepfile);
+      mvpa_1D_text(prepfile,ss->subject_label[ss->subject[i]]);fputc('\t',prepfile);
+      mvpa_1D_text(prepfile,ss->run_label[ss->run[i]]);fputc('\n',prepfile);
    }
-   fprintf(prepfile,"Unit\tFeature\tGroup\tCenter\tScale\tConstant\n");
+   fprintf(prepfile,"# Columns: Unit\tFeature\tGroup\tCenter\tScale\tConstant\n");
    if(combined){
       mvpa_coefficient_prefix(mapname,strlen(prefix)+64,mset,prefix,1,0);
       out=mvpa_coefficient_map(mset,mapname,na+1,argc,argv);
@@ -1182,7 +1282,7 @@ static void mvpa_descriptive_coefficients(THD_sampleset *ss,THD_3dim_dataset *ms
             double center=0,scale=1;int constant=0;
             if(preprocess==THD_PREP_FEATURE_ZSCORE){center=prep->center[j];scale=prep->scale[j];constant=prep->constant[j];}
             if(preprocess==THD_PREP_RUN_CENTER)center=prep->center[(size_t)g*p+j];
-            fprintf(prepfile,"%d\t",rl->val[r]);mvpa_tsv_text(prepfile,feature_id);
+            fprintf(prepfile,"%d\t",rl->val[r]);mvpa_1D_text(prepfile,feature_id);
             if(preprocess==THD_PREP_RUN_CENTER)fprintf(prepfile,"\t%d",prep->group_value[g]);
             else fputs("\tNA",prepfile);
             fprintf(prepfile,"\t%.17g\t%.17g\t%d\n",center,scale,constant);
@@ -1192,9 +1292,9 @@ static void mvpa_descriptive_coefficients(THD_sampleset *ss,THD_3dim_dataset *ms
             const char *response_id;
             if(encoding)mvpa_neural_id(response,sizeof(response),mset,row);
             response_id=encoding?response:names[o];
-            fprintf(table,"%d\t",rl->val[r]);mvpa_tsv_text(table,feature_id);fputc('\t',table);mvpa_tsv_text(table,response_id);
+            fprintf(table,"%d\t",rl->val[r]);mvpa_1D_text(table,feature_id);fputc('\t',table);mvpa_1D_text(table,response_id);
             fprintf(table,"\t%.17g\t%.17g\t%.17g\t%d\t",coef[(size_t)j*q+o],intercept[o],lambda,n);
-            mvpa_tsv_text(table,mapname);fprintf(table,"\t%d\n",brick);
+            mvpa_1D_text(table,mapname);fprintf(table,"\t%d\n",brick);
             ((float *)DSET_ARRAY(out,brick))[row]=mvpa_coefficient_float(coef[(size_t)j*q+o]);
          }
       }
@@ -1217,15 +1317,246 @@ static void mvpa_descriptive_coefficients(THD_sampleset *ss,THD_3dim_dataset *ms
    }
    if(ferror(table) || fclose(table))ERROR_exit(PROGRAM_NAME ": error writing coefficients");
    if(ferror(prepfile) || fclose(prepfile))ERROR_exit(PROGRAM_NAME ": error writing descriptive preprocessing");
-   if(!quiet)INFO_message(PROGRAM_NAME ": descriptive full-data coefficients: %d units, lambda %.9g; %s.coefficients.tsv",rl->nroi,lambda,prefix);
+   if(!quiet)INFO_message(PROGRAM_NAME ": descriptive full-data coefficients: %d units, lambda %.9g; %s.coefficients.1D",rl->nroi,lambda,prefix);
    THD_ridge_free(ridge);free(rows);free(neural);free(transformed);free(coef);free(intercept);
    if(!classes)THD_sampleset_free_levels(names,na);
    free(attr);free(fname);free(mapname);
 }
 
+/* Check model-independent training requirements without allocating a solver.
+   Inner-fold indexes are local to the outer training set. */
+static void mvpa_validate_fold_inputs(const THD_foldplan *plan,
+   const int *classes,int nclass,const int *groups,int lda,const char *scope)
+{
+   int f,i,j;char err[512];
+   if(classes && !THD_foldplan_check_classes(plan,classes,nclass,0,err,sizeof(err)))
+      ERROR_exit(PROGRAM_NAME ": %s: %s",scope,err);
+   for(f=0;f<plan->nfold;f++){
+      if(lda && plan->ntrain[f]<=nclass)
+         ERROR_exit(PROGRAM_NAME ": %s fold %s: LDA needs more training rows than classes",
+                    scope,plan->name[f]);
+      if(groups)for(i=0;i<plan->ntest[f];i++){
+         int row=plan->test[f][i];
+         for(j=0;j<plan->ntrain[f];j++)
+            if(groups[row]==groups[plan->train[f][j]])break;
+         if(j==plan->ntrain[f])
+            ERROR_exit(PROGRAM_NAME ": %s fold %s: run_center sample %d has a run/group absent from training",
+                       scope,plan->name[f],row+1);
+      }
+   }
+}
+
+/* Use the resolved samples, folds and spatial units, not a second input parser.
+   Scan the union of selected features once per sample, using the same extraction
+   routine as fitting. No estimator, permutation set or result file is created. */
+static void mvpa_validate_report(THD_sampleset *ss,const THD_foldplan *plan,
+   const THD_nested_foldplan *nested,const THD_roilist *rl,
+   const char *spatial_reference,const char *mode,const char *method,const char *target,int continuous,
+   const int *classes,char **labels,int nclass,const int *groups,int lda,
+   int nperm,const char *permute_within)
+{
+   int i,j,f,c,nfeature=0,warnings=0;char err[1024];
+   unsigned char *selected;intvec vox={0,NULL};float *values;
+   THD_sampleset_identity *identity;
+   printf("\n# 3dMVPA input validation (no model fitting)\n");
+   printf("# Mode\t%s\n# Method\t%s\n# TargetColumns\t%s\n",mode,method,target);
+   printf("# SpatialReference\t%s\n# SampleGridOrNodeDomain\tMATCHED\n",spatial_reference);
+   printf("# Samples\t%d\n# Subjects\t%d\n# RunLevels\t%d\n# Datasets\t%d\n# Folds\t%d\n",
+          ss->nsample,ss->nsubject,ss->nrun,ss->ndset,plan->nfold);
+   if(continuous){
+      char **names=NULL;int count=0;
+      float *numeric=mvpa_numeric_columns(ss,target,&names,&count);
+      printf("# FiniteNumericColumns\t%d\n",count);
+      free(numeric);THD_sampleset_free_levels(names,count);
+   }
+   mvpa_validate_fold_inputs(plan,classes,nclass,groups,lda,"outer");
+   if(nested)for(f=0;f<plan->nfold;f++){
+      int *local_class=classes?malloc(sizeof(int)*(size_t)plan->ntrain[f]):NULL;
+      int *local_group=groups?malloc(sizeof(int)*(size_t)plan->ntrain[f]):NULL;
+      char scope[256];
+      if((classes && !local_class) || (groups && !local_group))
+         ERROR_exit(PROGRAM_NAME ": cannot allocate inner-fold validation rows");
+      for(i=0;i<plan->ntrain[f];i++){
+         if(classes)local_class[i]=classes[plan->train[f][i]];
+         if(groups)local_group[i]=groups[plan->train[f][i]];
+      }
+      snprintf(scope,sizeof(scope),"inner folds of outer %s",plan->name[f]);
+      mvpa_validate_fold_inputs(nested->inner[f],local_class,nclass,local_group,lda,scope);
+      free(local_class);free(local_group);
+   }
+   printf("# FoldSummary\nFold\tStratum\tNTrain\tNTest\n");
+   for(f=0;f<plan->nfold;f++)
+      printf("%s\t%s\t%d\t%d\n",plan->name[f],plan->stratum_label[plan->fold_stratum[f]],
+             plan->ntrain[f],plan->ntest[f]);
+   if(classes){
+      int *train=calloc((size_t)nclass,sizeof(int)),*test=calloc((size_t)nclass,sizeof(int));
+      if(!train || !test)ERROR_exit(PROGRAM_NAME ": cannot allocate validation class counts");
+      printf("# Classes\t%d\n# ClassCounts\nClass\tLabel\tNSample\n",nclass);
+      for(i=0;i<ss->nsample;i++)train[classes[i]]++;
+      for(c=0;c<nclass;c++)printf("%d\t%s\t%d\n",c,labels[c],train[c]);
+      printf("# FoldClassCounts\nFold\tStratum\tClass\tLabel\tNTrain\tNTest\n");
+      for(f=0;f<plan->nfold;f++){
+         memset(train,0,sizeof(int)*(size_t)nclass);memset(test,0,sizeof(int)*(size_t)nclass);
+         for(i=0;i<plan->ntrain[f];i++)train[classes[plan->train[f][i]]]++;
+         for(i=0;i<plan->ntest[f];i++)test[classes[plan->test[f][i]]]++;
+         for(c=0;c<nclass;c++){
+            printf("%s\t%s\t%d\t%s\t%d\t%d\n",plan->name[f],
+                   plan->stratum_label[plan->fold_stratum[f]],c,labels[c],train[c],test[c]);
+            if(!test[c]){
+               printf("# WARNING: fold %s has no test observations of class %s; its BACC omits that class.\n",
+                      plan->name[f],labels[c]);warnings++;
+            }
+         }
+      }
+      free(train);free(test);
+   }
+   identity=THD_sampleset_build_identity(ss,err,sizeof(err));
+   if(!identity)ERROR_exit(PROGRAM_NAME ": %s",err);
+   for(i=0;i<ss->nsample;i++){
+      j=identity->first_sample[i];
+      if(j!=i){
+         printf("# WARNING: repeated beta selection in rows %d (%s) and %d (%s); inspect fold assignments.\n",
+                j+1,ss->sample_label[j],i+1,ss->sample_label[i]);warnings++;
+      }
+   }
+   THD_sampleset_free_identity(identity);
+   if(nperm>0 && strcasecmp(permute_within,"none")){
+      int *code=NULL,count=0;char **levels=NULL;
+      if(!THD_sampleset_encode_column(ss,permute_within,&code,&levels,&count,err,sizeof(err)))
+         ERROR_exit(PROGRAM_NAME ": %s",err);
+      printf("# PermutationBlockLevels\t%d\n",count);
+      free(code);THD_sampleset_free_levels(levels,count);
+   }
+   selected=calloc((size_t)ss->nvox,1);
+   if(!selected)ERROR_exit(PROGRAM_NAME ": cannot allocate validation feature mask");
+   for(i=0;i<rl->nroi;i++)for(j=0;j<rl->vox[i].nar;j++)selected[rl->vox[i].ar[j]]=1;
+   for(i=0;i<ss->nvox;i++)nfeature+=selected[i]!=0;
+   if(nfeature<1)ERROR_exit(PROGRAM_NAME ": no selected features to validate");
+   vox.nar=nfeature;vox.ar=malloc(sizeof(int)*(size_t)nfeature);
+   values=malloc(sizeof(float)*(size_t)nfeature);
+   if(!vox.ar || !values)ERROR_exit(PROGRAM_NAME ": cannot allocate validation feature buffer");
+   for(i=0,j=0;i<ss->nvox;i++)if(selected[i])vox.ar[j++]=i;
+   free(selected);
+   for(i=0;i<ss->nsample;i++){
+      if(!THD_roi_samples(ss,&i,1,&vox,values,err,sizeof(err)))
+         ERROR_exit(PROGRAM_NAME ": %s",err);
+      for(j=0;j<nfeature;j++)if(!isfinite(values[j]))
+         ERROR_exit(PROGRAM_NAME ": sample %d (%s), selected voxel/node row %d is not finite",
+                    i+1,ss->sample_label[i],vox.ar[j]);
+   }
+   free(values);free(vox.ar);
+   printf("# SpatialUnits\t%d\n# SelectedFeatures\t%d\n# FiniteSelectedValues\t%llu\n",
+          rl->nroi,nfeature,(unsigned long long)ss->nsample*(unsigned long long)nfeature);
+   printf("# Values checked after AFNI loading/conversion; reader repairs of bad floats are not a raw-file integrity check.\n");
+   printf("# Not checked: event-label correctness, beta/design correspondence beyond index ranges, anatomical QC, or upstream independence.\n");
+   printf("# No models fitted, no permutations generated, no result files written; output paths and solver convergence not checked.\n");
+   printf("# Validation PASS\t%d warning(s)\n",warnings);
+}
+
+/* Fixed-split class coding must not let test-row order or labels choose the
+   argmax tie rule. Class coverage has already been checked against training. */
+static void mvpa_fixed_class_order(const THD_foldplan *plan,int *classes,
+                                   char **labels,int nclass)
+{
+   int i,n=0,*code=malloc(sizeof(int)*(size_t)nclass);
+   char **ordered=malloc(sizeof(char *)*(size_t)nclass);
+   if(!code || !ordered)ERROR_exit(PROGRAM_NAME ": cannot order training classes");
+   for(i=0;i<nclass;i++)code[i]=-1;
+   for(i=0;i<plan->ntrain[0];i++){
+      int c=classes[plan->train[0][i]];
+      if(code[c]<0){code[c]=n;ordered[n++]=labels[c];}
+   }
+   if(n!=nclass)ERROR_exit(PROGRAM_NAME ": fixed partition has a class absent from training");
+   for(i=0;i<plan->nsample;i++)classes[i]=code[classes[i]];
+   memcpy(labels,ordered,sizeof(char *)*(size_t)nclass);
+   free(code);free(ordered);
+}
+
+/* Preserve the reserved set even in null fits. Validate block membership before
+   drawing permutations, including for -validate_only and small random draws. */
+static void mvpa_fixed_permutation_blocks(const THD_sampleset *ss,
+   const THD_foldplan *plan,const char *column)
+{
+   int *code=NULL,*side,nlevel=0,i;char **labels=NULL,err[1024];
+   if(!strcasecmp(column,"none"))
+      ERROR_exit(PROGRAM_NAME ": fixed partitions require permutation blocks confined to train or test; -permute_within none crosses the split");
+   if(!THD_sampleset_encode_column(ss,column,&code,&labels,&nlevel,err,sizeof(err)))
+      ERROR_exit(PROGRAM_NAME ": %s",err);
+   side=malloc(sizeof(int)*(size_t)nlevel);
+   if(!side)ERROR_exit(PROGRAM_NAME ": cannot validate partition permutation blocks");
+   for(i=0;i<nlevel;i++)side[i]=-1;
+   for(i=0;i<ss->nsample;i++){
+      int test=plan->sample_test_fold[i]>=0,b=code[i];
+      if(side[b]>=0 && side[b]!=test)
+         ERROR_exit(PROGRAM_NAME ": permutation block '%s' in '%s' crosses the train/test partition; use a composite partition/block column",
+                    labels[b],column);
+      side[b]=test;
+   }
+   free(side);free(code);THD_sampleset_free_levels(labels,nlevel);
+}
+
+/* MVPA policy adds roles and source provenance to the shared concatenation.
+   Paths, table schemas and row copying are handled by thd_datatable. */
+static THD_datatable *mvpa_train_test_table(THD_datatable *train,THD_datatable *test)
+{
+   THD_datatable *tables[]={train,test},*combined,*out;
+   const char *reserved[]={MVPA_PARTITION,MVPA_SOURCE_TABLE,MVPA_SOURCE_ROW};
+   char **tok,(*rownum)[32],err[1024];int c,j,s,r,k=0,ncol;
+   size_t ntok;
+   for(s=0;s<2;s++){
+      THD_datatable *dt=tables[s];
+      if(dt->nrow<1 || dt->icol_input<0)
+         ERROR_exit(PROGRAM_NAME ": both training and test tables need samples and InputFile");
+      for(c=0;c<dt->ncol;c++)for(j=0;j<3;j++)if(!strcasecmp(dt->cname[c],reserved[j]))
+         ERROR_exit(PROGRAM_NAME ": column '%s' is reserved for two-table provenance",dt->cname[c]);
+   }
+   combined=THD_datatable_concat_rows(train,test,err,sizeof(err));
+   if(!combined)ERROR_exit(PROGRAM_NAME ": %s",err);
+   if(combined->ncol>INT_MAX-3)
+      ERROR_exit(PROGRAM_NAME ": provenance table has too many columns");
+   ncol=combined->ncol+3;
+   if((size_t)combined->nrow+1>(size_t)INT_MAX/ncol)
+      ERROR_exit(PROGRAM_NAME ": provenance table has too many cells");
+   ntok=((size_t)combined->nrow+1)*ncol;
+   if(ntok>SIZE_MAX/sizeof(char *) || (size_t)combined->nrow>SIZE_MAX/sizeof(*rownum))
+      ERROR_exit(PROGRAM_NAME ": provenance table is too large");
+   tok=malloc(ntok*sizeof(char *));rownum=malloc(sizeof(*rownum)*(size_t)combined->nrow);
+   if(!tok || !rownum)ERROR_exit(PROGRAM_NAME ": cannot allocate table provenance");
+   for(c=0;c<combined->ncol;c++)if(c!=combined->icol_input)tok[k++]=combined->cname[c];
+   for(j=0;j<3;j++)tok[k++]=(char *)reserved[j];
+   tok[k++]="InputFile";
+   for(r=0;r<combined->nrow;r++){
+      s=r>=train->nrow;
+      for(c=0;c<combined->ncol;c++)if(c!=combined->icol_input)tok[k++]=DT_CELL(combined,r,c);
+      snprintf(rownum[r],sizeof(rownum[r]),"%d",(s?r-train->nrow:r)+1);
+      tok[k++]=s?"test":"train";
+      tok[k++]=tables[s]->source?tables[s]->source:(s?"test table":"training table");
+      tok[k++]=rownum[r];tok[k++]=DT_CELL(combined,r,combined->icol_input);
+   }
+   out=THD_parse_datatable(tok,k,"combined training and test tables");
+   free(tok);free(rownum);THD_free_datatable(combined);
+   return out;
+}
+
+/* MVPA policy rejects an equivalent selection on both sides of a two-table
+   split; dataset/brick identity and alias resolution belong to thd_sampleset. */
+static void mvpa_check_table_overlap(const THD_sampleset *ss,const THD_foldplan *plan)
+{
+   int i,j;char err[1024];
+   THD_sampleset_identity *identity=THD_sampleset_build_identity(ss,err,sizeof(err));
+   if(!identity)ERROR_exit(PROGRAM_NAME ": %s",err);
+   for(i=0;i<plan->ntrain[0];i++)for(j=0;j<plan->ntest[0];j++){
+      int a=plan->train[0][i],b=plan->test[0][j];
+      if(identity->first_sample[a]==identity->first_sample[b])
+         ERROR_exit(PROGRAM_NAME ": training sample '%s' and test sample '%s' select the same dataset/brick (%s[%d]); separate tables must not share beta selections",
+                    ss->sample_label[a],ss->sample_label[b],identity->dataset_path[ss->sample_dset[a]],ss->sample_brick[a]);
+   }
+   THD_sampleset_free_identity(identity);
+}
+
 int main( int argc, char **argv )
 {
-   THD_datatable *tab=NULL,*expanded=NULL ; THD_sampleset *ss=NULL ;
+   THD_datatable *tab=NULL,*test_tab=NULL,*expanded=NULL ; THD_sampleset *ss=NULL ;
    THD_sampleset_columns columns ; THD_foldplan *plan=NULL ;
    THD_nested_foldplan *nested=NULL;
    THD_3dim_dataset *mset=NULL,*oset=NULL ; THD_roilist *rl=NULL ;
@@ -1233,9 +1564,10 @@ int main( int argc, char **argv )
    PERM_scheme *perm_scheme=NULL ; PERM_set *perm_set=NULL ;
    PERM_result *perm_result=NULL ;
    char *mode=NULL,*target_column=NULL,*cv_column=NULL,*within_column=NULL ;
+   char *partition_column=NULL,*train_value=NULL,*test_value=NULL;
    char *subject_column=NULL,*run_column=NULL,*item_column=NULL ;
    char *fold_column=NULL,*sample_column=NULL,*xmat_stims=NULL ;
-   int trial_manifest=0 ;
+   int trial_manifest=0,validate_only=0,two_tables=0 ;
    char *maskname=NULL,*roi_sel=NULL,*searchlight=NULL,*surf_file=NULL ;
    char *prefix="MVPA",*method=NULL,*design_columns=NULL,*score_mode=NULL ;
    char *coef_prefix=NULL;double coef_lambda=0;int coef_lambda_given=0;
@@ -1321,6 +1653,13 @@ int main( int argc, char **argv )
      }
      else if( IS("-inner_cv_column") ){NEEDARG("an inner grouping column");inner_column=argv[nopt++];}
      else if( IS("-inner_cv_k") ){NEEDARG("K >= 2");inner_k=(int)mvpa_parse_long("-inner_cv_k",argv[nopt++],2,INT_MAX);}
+     else if(IS("-partition_column") || IS("-train_value") || IS("-test_value")){
+       char **dest=IS("-partition_column")?&partition_column:IS("-train_value")?&train_value:&test_value;
+       if(*dest)ERROR_exit(PROGRAM_NAME ": %s was specified twice",argv[nopt]);
+       NEEDARG("a nonempty column name or partition value");
+       if(!argv[nopt][0])ERROR_exit(PROGRAM_NAME ": partition column and values must be nonempty");
+       *dest=argv[nopt++];
+     }
      else if( IS("-cv_column") ){ NEEDARG("a column name") ; cv_column=argv[nopt++] ; }
      else if( IS("-cv") ){
        NEEDARG("run, subject, or item") ;
@@ -1391,6 +1730,7 @@ int main( int argc, char **argv )
      else if( IS("-show_table") ){ show_table=1 ; nopt++ ; }
      else if( IS("-show_samples") ){ show_samples=1 ; nopt++ ; }
      else if( IS("-show_folds") ){ show_folds=1 ; nopt++ ; }
+     else if( IS("-validate_only") ){ validate_only=1 ; nopt++ ; }
      else if( IS("-quiet") ){ quiet=1 ; nopt++ ; }
      else if( IS("-trial_manifest") ){
        NEEDARG("a trial manifest filename") ;
@@ -1407,11 +1747,18 @@ int main( int argc, char **argv )
        if( tab!=NULL ) ERROR_exit(PROGRAM_NAME ": the data table was given twice") ;
        tab=THD_read_datatable_args(argc,argv,nopt,mvpa_options,&nused) ; nopt+=nused ;
      }
+     else if(IS("-testTable") || IS("-testTableFile")){
+       int file=IS("-testTableFile"),nused=0;NEEDARG("a test table or @file");
+       if(test_tab)ERROR_exit(PROGRAM_NAME ": the test table was given twice");
+       if(file)test_tab=THD_read_datatable_file(argv[nopt++]);
+       else{test_tab=THD_read_datatable_args(argc,argv,nopt,mvpa_options,&nused);nopt+=nused;}
+     }
      else ERROR_exit(PROGRAM_NAME ": unknown option '%s'",argv[nopt]) ;
 #undef NEEDARG
 #undef IS
    }
    if( nopt<argc ) ERROR_exit(PROGRAM_NAME ": unexpected argument '%s'",argv[nopt]) ;
+   if( validate_only ) show_table=show_samples=show_folds=1 ;
    if( mode==NULL || (strcasecmp(mode,"classify") && strcasecmp(mode,"decode") && strcasecmp(mode,"encode")) )
      ERROR_exit(PROGRAM_NAME ": -mode must be classify, decode, or encode") ;
    encoding=!strcasecmp(mode,"encode");continuous=encoding || !strcasecmp(mode,"decode");
@@ -1458,7 +1805,27 @@ int main( int argc, char **argv )
    }else if(design_columns || score_mode)ERROR_exit(PROGRAM_NAME ": -design_columns and -score require -mode encode");
    if( tab==NULL ) ERROR_exit(PROGRAM_NAME ": -dataTable or -dataTableFile is required") ;
    if( !encoding && target_column==NULL ) ERROR_exit(PROGRAM_NAME ": -target_column or -target_columns is required") ;
-   if( cv_column==NULL ) ERROR_exit(PROGRAM_NAME ": -cv_column or -cv is required") ;
+   if(test_tab){
+     if(trial_manifest || partition_column || train_value || test_value)
+       ERROR_exit(PROGRAM_NAME ": -testTable cannot accompany -trial_manifest, -partition_column, -train_value, or -test_value");
+     two_tables=1;partition_column=MVPA_PARTITION;
+   }
+   if(partition_column){
+     if(cv_column || cv_k || within_column)
+       ERROR_exit(PROGRAM_NAME ": -partition_column/-testTable cannot accompany -cv, -cv_column, -cv_k, or -within_column");
+     if((tune || svm_tune) && !inner_column)
+       ERROR_exit(PROGRAM_NAME ": tuned fixed partitions require an explicit -inner_cv_column using training groups");
+     if(coef_prefix)
+       ERROR_exit(PROGRAM_NAME ": -save_coefficients refits all rows and cannot accompany -partition_column/-testTable; keep the reserved test set out of refitting");
+     if(!train_value)train_value="train";
+     if(!test_value)test_value="test";
+     if(!strcmp(train_value,test_value))
+       ERROR_exit(PROGRAM_NAME ": fixed partitions require distinct train/test values");
+   }else{
+     if(train_value || test_value)
+       ERROR_exit(PROGRAM_NAME ": -train_value and -test_value require -partition_column");
+     if(!cv_column)ERROR_exit(PROGRAM_NAME ": -cv_column, -cv, or -partition_column is required");
+   }
    if( nperm==1 ) ERROR_exit(PROGRAM_NAME ": -nperm must be 0 or at least 2") ;
    if( nperm>0 && permute_within==NULL )
      ERROR_exit(PROGRAM_NAME ": -nperm requires -permute_within COLUMN (or explicit 'none')") ;
@@ -1495,6 +1862,11 @@ int main( int argc, char **argv )
    if(continuous && metric<THD_METRIC_PEARSON)
      ERROR_exit(PROGRAM_NAME ": continuous metric must be pearson, spearman, cross_validated_r2, MAE, or RMSE");
 
+   if(two_tables){
+     expanded=mvpa_train_test_table(tab,test_tab);
+     THD_free_datatable(tab);THD_free_datatable(test_tab);test_tab=NULL;
+     tab=expanded;expanded=NULL;
+   }
    if( trial_manifest ){
      if( xmat_stims!=NULL ) ERROR_exit(PROGRAM_NAME ": -xmat_stims cannot accompany -trial_manifest") ;
      expanded=THD_datatable_trial_manifest(tab) ;
@@ -1520,15 +1892,30 @@ int main( int argc, char **argv )
    THD_free_datatable(tab) ; tab=NULL ;
    if( ss==NULL ) ERROR_exit(PROGRAM_NAME ": %s",err) ;
    if( show_samples ) THD_sampleset_print(ss,stdout) ;
+   if(show_samples && two_tables){
+     fputs("# Two-table sample provenance\n# Columns: TableRow\tSample",stdout);
+     mvpa_source_fields(stdout,ss,-1);fputc('\n',stdout);
+     for(ii=0;ii<ss->nsample;ii++){
+       fprintf(stdout,"%d\t",ss->table_row[ii]+1);mvpa_1D_text(stdout,ss->sample_label[ii]);
+       mvpa_source_fields(stdout,ss,ii);fputc('\n',stdout);
+     }
+   }
 
    if( !continuous && !THD_sampleset_encode_column(ss,target_column,&class_id,&class_label,&nclass,err,sizeof(err)) )
      ERROR_exit(PROGRAM_NAME ": %s",err) ;
    if( !continuous && nclass<2 ) ERROR_exit(PROGRAM_NAME ": target column '%s' has only %d class",target_column,nclass) ;
-   plan=(cv_k>0) ? THD_foldplan_grouped_kfold(ss,cv_column,within_column,cv_k,err,sizeof(err))
+   plan=partition_column ? THD_foldplan_fixed(ss,partition_column,train_value,test_value,err,sizeof(err))
+        :(cv_k>0) ? THD_foldplan_grouped_kfold(ss,cv_column,within_column,cv_k,err,sizeof(err))
                  : THD_foldplan_leave_group_out(ss,cv_column,within_column,err,sizeof(err)) ;
    if( plan==NULL ) ERROR_exit(PROGRAM_NAME ": %s",err) ;
+   if(two_tables)mvpa_check_table_overlap(ss,plan);
    if( !continuous && !THD_foldplan_check_classes(plan,class_id,nclass,0,err,sizeof(err)) )
      ERROR_exit(PROGRAM_NAME ": %s",err) ;
+   if(partition_column && !continuous)mvpa_fixed_class_order(plan,class_id,class_label,nclass);
+   if(partition_column && nperm>0)mvpa_fixed_permutation_blocks(ss,plan,permute_within);
+   if(partition_column && !quiet)
+     INFO_message(PROGRAM_NAME ": fixed partition %s: %d training (%s), %d test (%s); scores use test rows only",
+                  partition_column,plan->ntrain[0],train_value,plan->ntest[0],test_value);
    if( show_folds ) THD_foldplan_print(plan,ss,stdout) ;
    if(tune || svm_tune){
      int *inner_groups=NULL,ng=0;char **labels=NULL;
@@ -1542,7 +1929,7 @@ int main( int argc, char **argv )
      if(!quiet)INFO_message(PROGRAM_NAME ": nested %s selection over %d penalties; inner groups from %s",svm_class?"SVM C":"ridge",svm_class?svm_ngrid:nlambda,inner_column);
    }
 
-   if( nperm>0 ){
+   if( nperm>0 && !validate_only ){
      int ip,*check_class ; long long group_size ;
      perm_scheme=THD_perm_scheme_new(ss->nsample) ;
      if( perm_scheme==NULL ) ERROR_exit(PROGRAM_NAME ": cannot allocate the label-permutation scheme") ;
@@ -1661,8 +2048,21 @@ int main( int argc, char **argv )
      if( rl==NULL || rl->nroi<1 )
        ERROR_exit(PROGRAM_NAME ": mask has no selected positive-valued ROIs") ;
    }
+   if(validate_only){
+     mvpa_validate_report(ss,plan,nested,rl,DSET_HEADNAME(mset),mode,method,encoding?design_columns:target_column,
+                          continuous,class_id,class_label,nclass,group_id,lda_mode>=0,
+                          nperm,permute_within);
+     DSET_delete(mset);THD_roilist_free(rl);THD_nested_foldplan_free(nested);THD_foldplan_free(plan);
+     THD_sampleset_free_levels(class_label,nclass);free(class_id);free(group_id);
+     free(lambda_grid);free(svm_grid);THD_sampleset_free(ss);
+     return 0;
+   }
+   { const char *audit[]={save_predictions,save_fold_scores,save_confusion,save_summary_scores};int ai;
+     for(ai=0;ai<4;ai++) if(audit[ai] && !strcmp(prefix,audit[ai]))
+       ERROR_exit(PROGRAM_NAME ": audit cannot replace score output prefix '%s'",prefix);
+   }
    if(coef_prefix){
-     const char *suffix[]={".coefficients.tsv",".preprocessing.tsv"};int c;
+     const char *suffix[]={".coefficients.1D",".preprocessing.1D"};int c;
      char *cf=malloc(strlen(coef_prefix)+32);
      if(!cf)ERROR_exit(PROGRAM_NAME ": cannot name coefficient audits");
      for(c=0;c<2;c++){
@@ -1708,7 +2108,7 @@ int main( int argc, char **argv )
    if(continuous){
      mvpa_continuous_analysis(ss,plan,mset,rl,encoding,encoding?design_columns:target_column,
        preprocess,group_id,lambda,metric,prefix,save_predictions,save_fold_scores,
-       nworker,quiet,nested,lambda_grid,nlambda,inner_column,perm_set,permute_within,argc,argv);
+       nworker,quiet,nested,lambda_grid,nlambda,inner_column,perm_set,permute_within,two_tables,argc,argv);
      if(coef_prefix)mvpa_descriptive_coefficients(ss,mset,rl,encoding,searchlight!=NULL,
        encoding?design_columns:target_column,NULL,NULL,0,preprocess,group_id,coef_lambda,
        coef_prefix,quiet,argc,argv);
@@ -1767,7 +2167,7 @@ int main( int argc, char **argv )
    if( searchlight==NULL ){
      table_name=(char *)malloc(strlen(prefix)+9) ;
      if( table_name==NULL ) ERROR_exit(PROGRAM_NAME ": out of memory naming the ROI table") ;
-     sprintf(table_name,"%s.roi.tsv",prefix) ;
+     sprintf(table_name,"%s.roi.1D",prefix) ;
      if( save_predictions!=NULL && strcmp(save_predictions,table_name)==0 )
        ERROR_exit(PROGRAM_NAME ": -save_predictions cannot replace ROI table '%s'",table_name) ;
      if( save_fold_scores!=NULL && strcmp(save_fold_scores,table_name)==0 )
@@ -1780,7 +2180,7 @@ int main( int argc, char **argv )
    if((ridge_class || svm_class) && nested){
      class_tunefile=malloc(strlen(prefix)+20);
      if(!class_tunefile) ERROR_exit(PROGRAM_NAME ": cannot name classification tuning audit");
-     sprintf(class_tunefile,"%s.tuning.tsv",prefix);
+     sprintf(class_tunefile,"%s.tuning.1D",prefix);
      if((save_predictions && !strcmp(save_predictions,class_tunefile)) ||
         (save_fold_scores && !strcmp(save_fold_scores,class_tunefile)) ||
         (save_confusion && !strcmp(save_confusion,class_tunefile)) ||
@@ -1803,7 +2203,7 @@ int main( int argc, char **argv )
              "# Untested rows are excluded; group BACC is mean recall over present true classes.\n",confusion_fp);
        fputs("# Counts: true-class rows, predicted-class columns. Absent true classes: NTrue=0, Recall=NA.\n",confusion_fp);
        fputs("# CVFoldID is zero-based for Fold rows (NA elsewhere); CVStratum is explicit for Fold/Stratum rows.\n",confusion_fp);
-       fputs("UnitType\tUnitID\tUnitLabel\tI\tJ\tK\tNFeat\tScope\tGroup\tTrueClassID\tTrueClass\tNTrue\tRecall",confusion_fp);
+       fputs("# Columns: UnitType\tUnitID\tUnitLabel\tI\tJ\tK\tNFeat\tScope\tGroup\tTrueClassID\tTrueClass\tNTrue\tRecall",confusion_fp);
        for(ii=0;ii<nclass;ii++) fprintf(confusion_fp,"\tCountClass%d",ii);
        fputs("\tCVFoldID\tCVStratum\n",confusion_fp);
      }
@@ -1818,7 +2218,7 @@ int main( int argc, char **argv )
              "# Equal-group NTest sums tested rows; NCorrect/NClassPresent are NA; NGroups counts nonempty groups.\n"
              "# Untested rows are excluded. Empty groups have NTest=0 and ACC/BACC=NA.\n",summary_fp);
        fputs("# CVFoldID is zero-based for Fold rows (NA elsewhere); CVStratum is explicit for Fold/Stratum rows.\n",summary_fp);
-       fputs("UnitType\tUnitID\tUnitLabel\tI\tJ\tK\tNFeat\tScope\tGroup\tNTest\tNCorrect\tNClassPresent\tNGroups\tACC\tBACC\tCVFoldID\tCVStratum\n",summary_fp);
+       fputs("# Columns: UnitType\tUnitID\tUnitLabel\tI\tJ\tK\tNFeat\tScope\tGroup\tNTest\tNCorrect\tNClassPresent\tNGroups\tACC\tBACC\tCVFoldID\tCVStratum\n",summary_fp);
      }
    }
    if( save_predictions!=NULL ){
@@ -1830,8 +2230,9 @@ int main( int argc, char **argv )
      if(ridge_class)fputs("# Method: ridge; DecisionClass columns are 0/1-regression scores, not probabilities.\n",prediction_fp);
      if(lda_mode>=0)fprintf(prediction_fp,"# Method: %s; class_prior=%s; shrinkage=%.17g; relative_variance_floor=%.17g; decisions=centered_linear_discriminants_not_probabilities\n",
                            method,empirical_prior?"empirical":"equal",lda_mode==THD_LDA_DIAGONAL?0:shrinkage,variance_floor);
-     fputs("UnitType\tUnitID\tUnitLabel\tI\tJ\tK\tNFeat\tTableRow\tSample\tSubj\tRun\tItem\tInputFold\tCVFold\tCVStratum\tObserved\tPredicted\tCorrect",prediction_fp) ;
+     fputs("# Columns: UnitType\tUnitID\tUnitLabel\tI\tJ\tK\tNFeat\tTableRow\tSample\tSubj\tRun\tItem\tInputFold\tCVFold\tCVStratum\tObserved\tPredicted\tCorrect",prediction_fp) ;
      for( ii=0 ; ii<nclass ; ii++ ) fprintf(prediction_fp,"\tDecisionClass%d",ii) ;
+     if(two_tables)mvpa_source_fields(prediction_fp,ss,-1);
      fputc('\n',prediction_fp) ;
    }
    if( save_fold_scores!=NULL ){
@@ -1842,7 +2243,7 @@ int main( int argc, char **argv )
      if(svm_class)fprintf(fold_fp,"# Method: svm; loss=squared_hinge; intercept_penalized=1; tolerance=%.17g; max_iter=%d; inner_objective=1-%s; ties=smallest_C\n",svm_tolerance,svm_max_iter,THD_mvpa_metric_name(metric));
      if(lda_mode>=0)fprintf(fold_fp,"# Method: %s; class_prior=%s; covariance_denominator=ntrain-nclass; relative_variance_floor=%.17g\n",
                            method,empirical_prior?"empirical":"equal",variance_floor);
-     fputs("UnitType\tUnitID\tUnitLabel\tI\tJ\tK\tNFeat\tCVFold\tStratum\tNTrain\tNTest\tACC\tBACC",fold_fp) ;
+     fputs("# Columns: UnitType\tUnitID\tUnitLabel\tI\tJ\tK\tNFeat\tCVFold\tStratum\tNTrain\tNTest\tACC\tBACC",fold_fp) ;
      if(svm_class)fputs("\tC\tInnerNFold\tInnerLoss\tSolverIterations\tSolverResidual",fold_fp);
      if(ridge_class)fputs("\tLambda\tInnerNFold\tInnerNValid\tInnerLoss",fold_fp);
      if(lda_mode>=0)fputs("\tShrinkage\tCovarianceScale\tVarianceFloor\tCovarianceForm",fold_fp);
@@ -1852,10 +2253,10 @@ int main( int argc, char **argv )
      class_tuning=mvpa_open_audit(class_tunefile,"classification tuning audit");
      if(svm_class){
        fprintf(class_tuning,"# method=svm; inner_group=%s; objective=1-%s; ties=smallest_C; intercept_penalized=1\n",inner_column,THD_mvpa_metric_name(metric));
-       fputs("Unit\tCVFold\tCVStratum\tInnerNFold\tC\tInnerLoss\tSelected\n",class_tuning);
+       fputs("# Columns: Unit\tCVFold\tCVStratum\tInnerNFold\tC\tInnerLoss\tSelected\n",class_tuning);
      }else{
      fprintf(class_tuning,"# method=ridge; coding=one_hot_0_1; inner_group=%s; objective=mean_class_SSE_over_training_mean_baseline_SSE; ties=largest_lambda\n",inner_column);
-     fputs("Unit\tCVFold\tCVStratum\tInnerNFold\tInnerNValid\tLambda\tInnerLoss\tSelected\n",class_tuning);
+     fputs("# Columns: Unit\tCVFold\tCVStratum\tInnerNFold\tInnerNValid\tLambda\tInnerLoss\tSelected\n",class_tuning);
      }
    }
    if( searchlight!=NULL && !quiet )
@@ -1919,7 +2320,7 @@ int main( int argc, char **argv )
        if( ok && prediction_fp!=NULL )
          mvpa_write_prediction_rows(prediction_fp,mset,rl,rr,searchlight!=NULL,
                                     surf_file!=NULL,
-                                    ss,plan,class_id,class_label,workspace[tid]) ;
+                                    ss,plan,class_id,class_label,workspace[tid],two_tables) ;
        if( ok && fold_fp!=NULL )
          mvpa_write_fold_rows(fold_fp,mset,rl,rr,searchlight!=NULL,
                               surf_file!=NULL,plan,workspace[tid]) ;
@@ -1930,8 +2331,8 @@ int main( int argc, char **argv )
        if(ok && class_tuning && svm_class){
          int f,l;const THD_mvpa_workspace *sw=workspace[tid];
          for(f=0;f<plan->nfold;f++)for(l=0;l<svm_ngrid;l++){
-           fprintf(class_tuning,"%d\t",rl->val[rr]);mvpa_tsv_text(class_tuning,plan->name[f]);
-           fputc('\t',class_tuning);mvpa_tsv_text(class_tuning,plan->stratum_label[plan->fold_stratum[f]]);
+           fprintf(class_tuning,"%d\t",rl->val[rr]);mvpa_1D_text(class_tuning,plan->name[f]);
+           fputc('\t',class_tuning);mvpa_1D_text(class_tuning,plan->stratum_label[plan->fold_stratum[f]]);
            fprintf(class_tuning,"\t%d\t%.17g\t%.17g\t%d\n",nested->inner[f]->nfold,
              svm_grid[l],sw->svm_loss[(size_t)f*svm_ngrid+l],svm_grid[l]==sw->svm_selected[f]);
          }
@@ -1939,8 +2340,8 @@ int main( int argc, char **argv )
        if(ok && class_tuning && ridge_class){
          int f,l;const THD_mvpa_ridge_workspace *rw=workspace[tid]->ridge_cv;
          for(f=0;f<plan->nfold;f++)for(l=0;l<nlambda;l++){
-           fprintf(class_tuning,"%d\t",rl->val[rr]);mvpa_tsv_text(class_tuning,plan->name[f]);
-           fputc('\t',class_tuning);mvpa_tsv_text(class_tuning,plan->stratum_label[plan->fold_stratum[f]]);
+           fprintf(class_tuning,"%d\t",rl->val[rr]);mvpa_1D_text(class_tuning,plan->name[f]);
+           fputc('\t',class_tuning);mvpa_1D_text(class_tuning,plan->stratum_label[plan->fold_stratum[f]]);
            fprintf(class_tuning,"\t%d\t%d\t%.17g\t%.17g\t%d\n",nested->inner[f]->nfold,
              rw->inner_nvalid[f],lambda_grid[l],rw->inner_loss[(size_t)f*nlambda+l],lambda_grid[l]==rw->selected_lambda[f]);
          }

@@ -30,7 +30,7 @@ make_dset b1  10 10 5 5
 make_dset a2   1 1 5 5
 make_dset b2   9 9 5 5
 
-cat > "$work/direct.tsv" <<EOF
+cat > "$work/direct.1D" <<EOF
 Subj Run Sample Condition InputFile
 s01 r1 a1 A $work/dset_a1+orig
 s01 r1 b1 B $work/dset_b1+orig
@@ -38,11 +38,11 @@ s01 r2 a2 A $work/dset_a2+orig
 s01 r2 b2 B $work/dset_b2+orig
 EOF
 
-"$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
+"$mvpa" -mode classify -dataTable "@$work/direct.1D" \
   -target_column Condition -cv_column Run -mask "$work/dset_mask+orig" \
   -prefix "$work/direct_result" -show_samples -show_folds \
-  -save_predictions "$work/direct.predictions.tsv" \
-  -save_fold_scores "$work/direct.folds.tsv" \
+  -save_predictions "$work/direct.predictions.1D" \
+  -save_fold_scores "$work/direct.folds.1D" \
   > "$work/direct.audit.txt"
 
 grep -q '^# samples from ' "$work/direct.audit.txt"
@@ -51,7 +51,7 @@ awk -F '\t' '
   $1 == 1 { if ($3 != 1 || $4 != 1 || $5 != 1 || $6 != 2 || $7 != 2) exit 1; one=1 }
   $1 == 2 { if ($3 != .5 || $4 != .5 || $5 != .5 || $6 != 2 || $7 != 2) exit 1; two=1 }
   END { if (!one || !two) exit 1 }
-' "$work/direct_result.roi.tsv"
+' "$work/direct_result.roi.1D"
 test "$("$dinfo" -nv "$work/direct_result+orig")" = 3
 awk -F '\t' '
   /^#/ { next }
@@ -70,7 +70,7 @@ awk -F '\t' '
         $16 == "B" && $17 == "A" && $18 == 0) miss=1
   }
   END { if (n != 8 || !good || !miss) exit 1 }
-' "$work/direct.predictions.tsv"
+' "$work/direct.predictions.1D"
 awk -F '\t' '
   /^#/ { next }
   $1 == "UnitType" { next }
@@ -82,9 +82,9 @@ awk -F '\t' '
         $12 == .5 && $13 == .5) chance=1
   }
   END { if (n != 4 || !good || !chance) exit 1 }
-' "$work/direct.folds.tsv"
+' "$work/direct.folds.1D"
 
-"$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
+"$mvpa" -mode classify -dataTable "@$work/direct.1D" \
   -target_column Condition -cv_column Run -mask "$work/dset_mask+orig" \
   -nperm 99 -permute_within Run -seed 42 \
   -prefix "$work/permutation_result" > "$work/permutation.audit.txt" 2>&1
@@ -110,7 +110,7 @@ awk -F '\t' '
     chance=1
   }
   END { if (!signal || !chance) exit 1 }
-' "$work/permutation_result.roi.tsv"
+' "$work/permutation_result.roi.1D"
 
 "$bucket" -prefix "$work/stats" \
   "$work/dset_a1+orig" "$work/dset_a2+orig" \
@@ -137,12 +137,12 @@ cat > "$work/design.xmat.1D" <<'EOF'
 0 0 0 1
 # </matrix>
 EOF
-cat > "$work/xmat.tsv" <<EOF
+cat > "$work/xmat.1D" <<EOF
 Subj Xmat InputFile
 s01 $work/design.xmat.1D $work/stats+orig
 EOF
 
-"$mvpa" -mode classify -dataTable "@$work/xmat.tsv" \
+"$mvpa" -mode classify -dataTable "@$work/xmat.1D" \
   -target_column Condition -cv_column Run -mask "$work/dset_mask+orig" \
   -prefix "$work/xmat_result" -show_table > "$work/xmat.audit.txt"
 
@@ -151,22 +151,72 @@ awk -F '\t' '
   $1 == 1 { if ($3 != 1 || $4 != 1 || $5 != 1) exit 1; one=1 }
   $1 == 2 { if ($3 != .5 || $4 != .5 || $5 != .5) exit 1; two=1 }
   END { if (!one || !two) exit 1 }
-' "$work/xmat_result.roi.tsv"
+' "$work/xmat_result.roi.1D"
 test "$("$dinfo" -nv "$work/xmat_result+orig")" = 3
 
-OMP_NUM_THREADS=2 "$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
+"$mvpa" -mode classify -dataTable "@$work/xmat.1D" \
+  -target_column Condition -cv_column Run -mask "$work/dset_mask+orig" \
+  -prefix "$work/validation_only" -validate_only > "$work/xmat.validate.txt"
+grep -q $'^# Samples\t4$' "$work/xmat.validate.txt"
+grep -q $'^# Validation PASS\t0 warning(s)$' "$work/xmat.validate.txt"
+test ! -e "$work/validation_only+orig.HEAD"
+
+# X-matrix expansion preserves fixed partitions from the source table. Reusing
+# this tiny bucket tests the adapter, not scientific independence of the sets.
+cat > "$work/xmat_fixed.1D" <<EOF
+Subj Split Xmat InputFile
+s01 train $work/design.xmat.1D $work/stats+orig
+s02 test $work/design.xmat.1D $work/stats+orig
+EOF
+"$mvpa" -mode classify -dataTableFile "$work/xmat_fixed.1D" \
+  -target_column Condition -partition_column Split -mask "$work/dset_mask+orig" \
+  -prefix "$work/xmat_fixed" -save_predictions "$work/xmat_fixed.pred.1D" \
+  -save_fold_scores "$work/xmat_fixed.fold.1D"
+awk -F '\t' '/^#/ {next}
+  $10=="s01" {n++;if($14!="NA" || $17!="NA")exit 1}
+  $10=="s02" {t++;if($14!="test" || $17=="NA")exit 1}
+  END{if(n!=8 || t!=8)exit 1}' "$work/xmat_fixed.pred.1D"
+awk -F '\t' '/^#/ {next} {n++;if($10!=4 || $11!=4)exit 1}
+  END{if(n!=2)exit 1}' "$work/xmat_fixed.fold.1D"
+"$mvpa" -mode classify -dataTableFile "$work/xmat_fixed.1D" \
+  -target_column Condition -partition_column Split -mask "$work/dset_mask+orig" \
+  -validate_only > "$work/xmat_fixed.validate.txt"
+grep -q $'^test\tAll\t4\t4$' "$work/xmat_fixed.validate.txt"
+
+# Two-table Xmat expansion keeps the pre-expansion source row on every beta.
+"$bucket" -prefix "$work/test_stats" "$work/stats+orig" >/dev/null 2>&1
+cat > "$work/xmat_train.1D" <<EOF
+Subj Xmat InputFile
+s01 $work/design.xmat.1D $work/stats+orig
+EOF
+cat > "$work/xmat_test.1D" <<EOF
+InputFile Xmat Subj
+$work/test_stats+orig $work/design.xmat.1D s02
+EOF
+"$mvpa" -mode classify -dataTable "@$work/xmat_train.1D" -testTable "@$work/xmat_test.1D" \
+  -target_column Condition -mask "$work/dset_mask+orig" \
+  -prefix "$work/xmat_dual" -save_predictions "$work/xmat_dual.pred.1D"
+awk -F '\t' -v train="$work/xmat_train.1D" -v test="$work/xmat_test.1D" '
+  /^#/ {next}
+  {if($23!=1)exit 1}
+  $10=="s01" {n++;if($17!="NA" || $21!="train" || $22!=train)exit 1}
+  $10=="s02" {t++;if($17=="NA" || $21!="test" || $22!=test)exit 1}
+  END{if(n!=8 || t!=8)exit 1}' "$work/xmat_dual.pred.1D"
+cmp "$work/xmat_fixed.roi.1D" "$work/xmat_dual.roi.1D"
+
+OMP_NUM_THREADS=2 "$mvpa" -mode classify -dataTable "@$work/direct.1D" \
   -target_column Condition -cv_column Run -mask "$work/dset_mask+orig" \
   -searchlight 'SPHERE(1.1)' -prefix "$work/searchlight_result" \
   -nperm 99 -permute_within Run -seed 42 \
-  -save_predictions "$work/searchlight_parallel.predictions.tsv" \
-  -save_fold_scores "$work/searchlight_parallel.folds.tsv" \
-  -save_confusion "$work/searchlight_parallel.confusion.tsv" \
-  -save_summary_scores "$work/searchlight_parallel.summary.tsv" \
+  -save_predictions "$work/searchlight_parallel.predictions.1D" \
+  -save_fold_scores "$work/searchlight_parallel.folds.1D" \
+  -save_confusion "$work/searchlight_parallel.confusion.1D" \
+  -save_summary_scores "$work/searchlight_parallel.summary.1D" \
   > "$work/searchlight.audit.txt" 2>&1
 
 grep -q "searchlight neighborhood 'SPHERE(1.1)'" "$work/searchlight.audit.txt"
 grep -q '2 workers' "$work/searchlight.audit.txt"
-test ! -e "$work/searchlight_result.roi.tsv"
+test ! -e "$work/searchlight_result.roi.1D"
 test "$("$dinfo" -nv "$work/searchlight_result+orig")" = 9
 "$maskave" -quiet -ibox 0 0 0 -dindex 0 \
   "$work/searchlight_result+orig" | awk '{ if ($1 != 1) exit 1 }'
@@ -181,14 +231,14 @@ test "$("$dinfo" -nv "$work/searchlight_result+orig")" = 9
 "$maskave" -quiet -ibox 0 1 0 -dindex 0 \
   "$work/searchlight_result+orig" | awk '{ if ($1 != 0) exit 1 }'
 
-OMP_NUM_THREADS=1 "$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
+OMP_NUM_THREADS=1 "$mvpa" -mode classify -dataTable "@$work/direct.1D" \
   -target_column Condition -cv_column Run -mask "$work/dset_mask+orig" \
   -searchlight 'SPHERE(1.1)' -prefix "$work/searchlight_serial" -quiet \
   -nperm 99 -permute_within Run -seed 42 \
-  -save_predictions "$work/searchlight_serial.predictions.tsv" \
-  -save_fold_scores "$work/searchlight_serial.folds.tsv" \
-  -save_confusion "$work/searchlight_serial.confusion.tsv" \
-  -save_summary_scores "$work/searchlight_serial.summary.tsv"
+  -save_predictions "$work/searchlight_serial.predictions.1D" \
+  -save_fold_scores "$work/searchlight_serial.folds.1D" \
+  -save_confusion "$work/searchlight_serial.confusion.1D" \
+  -save_summary_scores "$work/searchlight_serial.summary.1D"
 "$maskdump" -noijk -mask "$work/dset_mask+orig" \
   -o "$work/searchlight_parallel.txt" "$work/searchlight_result+orig" \
   >/dev/null 2>&1
@@ -196,22 +246,22 @@ OMP_NUM_THREADS=1 "$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
   -o "$work/searchlight_serial.txt" "$work/searchlight_serial+orig" \
   >/dev/null 2>&1
 cmp "$work/searchlight_parallel.txt" "$work/searchlight_serial.txt"
-cmp "$work/searchlight_parallel.predictions.tsv" "$work/searchlight_serial.predictions.tsv"
-cmp "$work/searchlight_parallel.folds.tsv" "$work/searchlight_serial.folds.tsv"
-cmp "$work/searchlight_parallel.confusion.tsv" "$work/searchlight_serial.confusion.tsv"
-cmp "$work/searchlight_parallel.summary.tsv" "$work/searchlight_serial.summary.tsv"
+cmp "$work/searchlight_parallel.predictions.1D" "$work/searchlight_serial.predictions.1D"
+cmp "$work/searchlight_parallel.folds.1D" "$work/searchlight_serial.folds.1D"
+cmp "$work/searchlight_parallel.confusion.1D" "$work/searchlight_serial.confusion.1D"
+cmp "$work/searchlight_parallel.summary.1D" "$work/searchlight_serial.summary.1D"
 awk -F '\t' '
   /^#/ || $1 == "UnitType" { next }
   { if ($1 != "Voxel" || $2 != $4 || $5 != 0 || $6 != 0) exit 1; seen[$2]=1; n++ }
   END { if (n != 40 || !seen[0] || !seen[1] || !seen[2] || !seen[3]) exit 1 }
-' "$work/searchlight_parallel.confusion.tsv"
+' "$work/searchlight_parallel.confusion.1D"
 
 test "$(awk '!/^#/ && $1 != "UnitType" {n++} END {print n+0}' \
-  "$work/searchlight_parallel.predictions.tsv")" = 16
+  "$work/searchlight_parallel.predictions.1D")" = 16
 test "$(awk '!/^#/ && $1 != "UnitType" {n++} END {print n+0}' \
-  "$work/searchlight_parallel.folds.tsv")" = 8
+  "$work/searchlight_parallel.folds.1D")" = 8
 
-if "$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
+if "$mvpa" -mode classify -dataTable "@$work/direct.1D" \
   -target_column Condition -cv_column Run -mask "$work/dset_mask+orig" \
   -searchlight 1 -roi_sel 1 -prefix "$work/invalid_result" \
   > "$work/invalid.audit.txt" 2>&1; then
@@ -220,7 +270,7 @@ if "$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
 fi
 grep -q -- '-roi_sel cannot be combined with -searchlight' "$work/invalid.audit.txt"
 
-if "$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
+if "$mvpa" -mode classify -dataTable "@$work/direct.1D" \
   -target_column Condition -cv_column Run -mask "$work/dset_mask+orig" \
   -nperm 10 -prefix "$work/no_block" > "$work/no_block.txt" 2>&1; then
   echo "FAIL 3dMVPA accepted permutation inference without exchangeability blocks" >&2
@@ -228,7 +278,7 @@ if "$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
 fi
 grep -q -- '-nperm requires -permute_within' "$work/no_block.txt"
 
-if "$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
+if "$mvpa" -mode classify -dataTable "@$work/direct.1D" \
   -target_column Condition -cv_column Run -mask "$work/dset_mask+orig" \
   -nperm 99 -permute_within Subj -prefix "$work/cross_fold_block" \
   > "$work/cross_fold_block.txt" 2>&1; then
@@ -237,7 +287,7 @@ if "$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
 fi
 grep -q 'violates CV class coverage' "$work/cross_fold_block.txt"
 
-if "$mvpa" -mode classify -dataTable "@$work/direct.tsv" \
+if "$mvpa" -mode classify -dataTable "@$work/direct.1D" \
   -target_column Condition -cv_column Run -mask "$work/dset_mask+orig" \
   -nperm 10 -permute_within Sample -prefix "$work/identity_only" \
   > "$work/identity_only.txt" 2>&1; then

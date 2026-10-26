@@ -26,7 +26,7 @@ static char *srm_options[] = {
    "-prefix", "-nfeatures", "-algorithm", "-niter", "-tol", "-seed", "-nstart",
    "-mask", "-run_column", "-group_column", "-zscore",
    "-censor", "-zcensor", "-zcensor_warn",
-   "-axis", "-item_column", "-repeated_stimulus", "-time_labels",
+   "-axis", "-lss", "-item_column", "-repeated_stimulus", "-time_labels",
    "-model_in", "-update_S", "-run_coupling", "-cv_adapt", "-apply_W", "-score_by", "-cv_fit", "-balance", "-reliability", "-compress", "-no_compress",
    "-nsplit", "-nperm", "-cv", "-cv_blocks", "-cv_metrics", "-match_window", "-loso_iter",
    "-save_W", "-save_recon", "-save_r2", "-proj_format", "-no_projected",
@@ -310,6 +310,80 @@ static void usage_3dSRM(void)
 "  each trial's condition and order, not which stimulus it was: trial items\n"
 "  match across subjects only if everyone had the same order; otherwise list\n"
 "  the items in the table yourself.\n"
+"  LSS trial betas and explicit stimulus identities:\n"
+"  -lss                With -axis item, InputFile is an existing 3dLSS output\n"
+"                      dataset, Xmat is the design used by 3dLSS, and Events\n"
+"                      names an event-to-item table. This reads LSS betas; it\n"
+"                      does not run 3dLSS or fit a GLM to raw BOLD data.\n"
+"\n"
+"  The subject table has Subj Xmat Events InputFile, plus optional subject\n"
+"  metadata (Group, Mask, covariates). Each Events file has a header with:\n"
+"    Trial Item [Condition Repeat Run other_metadata ...]\n"
+"  Trial is the ZERO-BASED LSS volume index, not a TR, onset, original Xmat\n"
+"  column, or one-based trial number. Map every volume exactly once. Rows and\n"
+"  columns may be reordered; all Events files must have the same columns.\n"
+"  Item is the actual shared stimulus identity, not its presentation order.\n"
+"  -item_column and -repeat_column select alternative metadata column names.\n"
+"  Repeated items need matching repeats across subjects, as described below.\n"
+"  Condition, if wanted, comes from Events: one IM regressor family can hold\n"
+"  several experimental categories. Additional columns can define folds or\n"
+"  score groups. Subject and event column names must not overlap. All paths\n"
+"  are relative to the working directory, not the table's directory.\n"
+"\n"
+"  The Xmat must describe exactly one -stim_times_IM family, as for 3dLSS.\n"
+"  Its IM column count and the dataset's ordered LABEL#000, LABEL#001, ...\n"
+"  labels must agree. Use the original, unselected LSS dataset. Renamed or\n"
+"  selected datasets can instead use the explicit item-table method below.\n"
+"  -xmat_stims is not used with -lss. Xmat summary covariates are retained.\n"
+"  If neither table supplies Run (or -run_column's name), it is inferred as\n"
+"  1, 2, ... only when every IM regressor lies wholly in one run, accounting\n"
+"  for GoodList censoring. Otherwise supply Run explicitly for run CV.\n"
+"  For separate per-run LSS datasets, supply the actual Run on each subject\n"
+"  row (or in Events); each separate Xmat otherwise starts its runs at 1.\n"
+"  Use -zscore run for separate run fits. No censor vector is applied to\n"
+"  beta volumes. Trial mappings must be complete; use an explicit item table\n"
+"  to analyze a common subset, keeping the same item/repeat keys for everyone.\n"
+"\n"
+"  New way (s01.events.txt and s02.events.txt can have different trial orders):\n"
+"    # lss_subjects.txt\n"
+"    Subj Xmat          Events          InputFile\n"
+"    s01  s01.X.xmat.1D  s01.events.txt  s01.LSS+tlrc\n"
+"    s02  s02.X.xmat.1D  s02.events.txt  s02.LSS+tlrc\n"
+"\n"
+"    # s01.events.txt\n"
+"    Trial Item      Condition\n"
+"    0     face_017  face\n"
+"    1     house_042 house\n"
+"\n"
+"    # s02.events.txt\n"
+"    Trial Item      Condition\n"
+"    0     house_042 house\n"
+"    1     face_017  face\n"
+"    # ...one row per remaining trial in EACH file...\n"
+"\n"
+"    3dSRM -axis item -lss -dataTableFile lss_subjects.txt -show_table\n"
+"    3dSRM -prefix task -axis item -lss -nfeatures 5 -cv run \\\n"
+"          -mask roi_mask+tlrc -dataTableFile lss_subjects.txt\n"
+"\n"
+"  Old way (still supported; no -lss, Xmat, or Events columns):\n"
+"    # explicit_items.txt\n"
+"    Subj Item      Condition Run InputFile\n"
+"    s01  face_017  face      1   s01.LSS+tlrc[0]\n"
+"    s01  house_042 house     1   s01.LSS+tlrc[1]\n"
+"    s02  house_042 house     1   s02.LSS+tlrc[0]\n"
+"    s02  face_017  face      1   s02.LSS+tlrc[1]\n"
+"    # ...one row per remaining item/repeat for every subject...\n"
+"\n"
+"    3dSRM -prefix task -axis item -nfeatures 5 -cv run \\\n"
+"          -mask roi_mask+tlrc -dataTableFile explicit_items.txt\n"
+"\n"
+"  These commands assume a full table with multiple runs and enough training\n"
+"  items/voxels for 5 features; the two displayed trials only illustrate the\n"
+"  mapping. Use held-out runs/items to evaluate alignment. LSS estimates may\n"
+"  mix neighboring trial responses, so run-wise validation is a useful start.\n"
+"  Identical Item labels must mean the same stimulus across people; neither\n"
+"  the Xmat nor matching LSS volume numbers establishes stimulus identity.\n"
+"\n"
 "  -xmat_stims LIST     Comma list of the stimulus labels to use [all].\n"
 "  -repeat_column NAME  Repeat-label column [Repeat], used if present: it names\n"
 "                       an item's repeats (1, 2, ... or early, late).\n"
@@ -982,6 +1056,7 @@ typedef struct {
    int     zcensor ; float zcensor_warn ; int zcensor_warn_given ;
    int     cenmode ; int cenmode_given ;  /* SRM_CEN_*: what a subject's own censored time points become */
    int     axis_item ; char *item_col ; int item_col_given ; char *repeat_col ;
+   int     lss ;                    /* LSS beta datasets plus Events and Xmat */
    char   *xmat_stims ;              /* -xmat_stims: the conditions an Xmat table expands to (all) */
    double  xmat_label_frac ;         /* -xmat_label_frac: a TR is a condition's at this fraction of its peak */
    int     repeated_stimulus ;
@@ -4958,6 +5033,7 @@ int main( int argc , char **argv )
      else if( IS("-mask") ){ NEEDARG("a dataset") ; o.maskname=argv[nopt++] ; o.given_mask=1 ; }
      else if( IS("-xmat_label_frac") ){ NEEDARG("a fraction") ; o.xmat_label_frac=atof(argv[nopt++]) ;
        if( !(o.xmat_label_frac>0.0 && o.xmat_label_frac<=1.0) ) ERROR_exit("-xmat_label_frac must be in (0,1]") ; }
+     else if( IS("-lss") ){ o.lss=1 ; nopt++ ; }
      else if( IS("-xmat_stims") ){ NEEDARG("a comma list of stimulus labels") ; o.xmat_stims=argv[nopt++] ; }
      else if( IS("-concat") ){ NEEDARG("a 1D list of run starts") ; o.concat=argv[nopt++] ; }
      else if( IS("-run_column") ){ NEEDARG("a name") ; free(o.run_col) ; o.run_col=strdup(argv[nopt++]) ; }
@@ -5074,9 +5150,18 @@ int main( int argc , char **argv )
    }
    if( nopt<argc ) ERROR_exit("unexpected argument '%s'",argv[nopt]) ;
    if( tab==NULL ) ERROR_exit("a data table is required: -dataTable or -dataTableFile") ;
+   if( o.lss && (!o.axis_item || o.xmat_stims!=NULL) )
+     ERROR_exit("-lss needs -axis item and cannot be combined with -xmat_stims") ;
+   if( !o.lss && THD_datatable_column(tab,"Events")>=0 )
+     ERROR_exit("an Events column requires -lss -axis item") ;
    if( THD_datatable_column(tab,"Xmat")>=0 && !(o.axis_item && THD_datatable_column(tab,o.item_col)>=0) )
      tab=THD_datatable_add_xmat_columns(tab,"Xmat") ;   /* Xmat.TR, Xmat.ncensored, ...: covariates in scores.txt */
-   if( o.axis_item && THD_datatable_column(tab,"Xmat")>=0 && THD_datatable_column(tab,o.item_col)<0 )
+   if( o.lss ){
+     THD_datatable *expanded=THD_datatable_expand_lss_items(tab,o.item_col,o.run_col) ;
+     THD_free_datatable(tab) ; tab=expanded ;
+     if( !o.quiet ) INFO_message("LSS event-to-item expansion: %d rows; -show_table prints the item table",tab->nrow) ;
+   }
+   else if( o.axis_item && THD_datatable_column(tab,"Xmat")>=0 && THD_datatable_column(tab,o.item_col)<0 )
      tab=srm_xmat_items(&o,tab) ;                        /* one row per subject -> one per item */
    else if( o.xmat_stims!=NULL ) ERROR_exit("-xmat_stims needs -axis item and an Xmat column (with no '%s' column)",o.item_col) ;
    if( o.show_table ){ THD_datatable_print(tab,stdout) ; return 0 ; }

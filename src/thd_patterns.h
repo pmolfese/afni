@@ -233,6 +233,16 @@ extern int          THD_runset_load_store_row( THD_runset *rs, int row, int resi
 /*! Extract a row's beta/residual patterns for an ROI from either representation. */
 extern void         THD_runset_roi_pattern( THD_runset *rs, int row, int residual,
                                             intvec *vox, float *out ) ;
+
+/*! Extract one run's beta patterns in canonical condition order, averaging
+    repeated labels. pat holds ncond*vox->nar floats. For mapped runs, raw
+    is separate caller-owned scratch of nbrick[row]*vox->nar floats; otherwise
+    it may be NULL. Requires a valid loaded run and ROI, as roi_pattern does.
+    Missing mapped conditions remain zero; callers requiring complete repeats
+    must check nrep[row][condition] before using this helper. */
+extern void THD_runset_roi_condition_pattern( THD_runset *rs, int row,
+                                               intvec *vox, float *pat,
+                                               float *raw ) ;
 extern void         THD_runset_free ( THD_runset *rs ) ;
 extern void         THD_runset_print( THD_runset *rs , FILE *fp ) ;
 

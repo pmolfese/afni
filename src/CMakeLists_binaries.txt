@@ -294,6 +294,10 @@ target_compile_definitions(
     "$<IF:$<TARGET_EXISTS:OpenMP::OpenMP_C>,USE_OMP,>"
 )
 
+# Design-matrix operations share the reader, run extraction and writer API.
+add_afni_executable(1dXmatTool 1dXmatTool.c thd_xmat.c thd_datatable.c)
+target_link_libraries(1dXmatTool PRIVATE AFNI::mri NIFTI::nifti2 NIFTI::nifticdf m)
+
 # Multivariate prediction. Input adapters and AFNI spatial extraction remain
 # separate from the dataset-independent fold and estimator code.
 add_afni_executable(
@@ -330,6 +334,7 @@ add_afni_executable(
   3dInSync
   3dInSync.c
   thd_insync.c
+  thd_xmat.c
   thd_datatable.c
   thd_simmatrix.c
   thd_permute.c

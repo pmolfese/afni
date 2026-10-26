@@ -334,6 +334,17 @@ extern void THD_perm_shuffle_r( int *arr, int n, unsigned short xs[3] ) ;
 extern PERM_glm * THD_perm_glm_setup( matrix X, matrix Z, matrix *Ct ) ;
 extern void       THD_perm_glm_free ( PERM_glm *glm ) ;
 
+/*! Fit one observation vector using a prepared GLM. y has nobs entries;
+    beta receives npar coefficients in full-design order (X, then Z) and
+    must not alias y. sse receives the residual sum of squares. Optional
+    centered_ss receives sum((y-mean(y))^2). All storage is caller-owned.
+    Returns 0 for invalid arguments or nonfinite data/results; outputs must
+    then be ignored. A finite exact or constant fit succeeds: callers choose
+    their residual-variance threshold and contrast/inference policy. */
+extern int THD_perm_glm_fit( const PERM_glm *glm, const double *y,
+                              double *beta, double *sse,
+                              double *centered_ss ) ;
+
 /*! Split a full design M and contrast Ct into effect-of-interest and
     nuisance partitions, so that testing Ct in M is equivalent to testing all
     of X in [X Z].  This is the partitioning of Beckmann et al. as used by

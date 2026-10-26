@@ -101,6 +101,49 @@ int main( int argc , char **argv )
    CHECK(it==NULL && n==0,"overlapping manually constructed stimulus ranges are rejected") ;
    THD_xmat_free(xm) ;
 
+   /* Run extraction API, failure ownership, float-exact serialization and
+      direct/inverse provenance. Keep the reader fixtures above independent. */
+   { THD_xmat *part,*back; THD_xmat_run_map *map=NULL;
+     char out[600],rows[600],cols[600]; int c;
+     xm=THD_xmat_read(fn,err,sizeof(err)); CHECK(xm!=NULL,err);
+     part=THD_xmat_extract_run(xm,NULL,0,THD_XMAT_SPLIT_TOL,&map,err,sizeof(err));
+     CHECK(!part && !map && strstr(err,"cross-run"),"reject cross-run IM; no partial map returned");
+     xm->mat[4*15+10]=0; /* face#2 now belongs only to run 2 */
+     xm->mat[0]=nextafterf(1.0f,2.0f); /* serialization needs more than 7 digits */
+     part=THD_xmat_extract_run(xm,NULL,0,THD_XMAT_SPLIT_TOL,&map,err,sizeof(err));
+     CHECK(part && map,err);
+     CHECK(part->nrow==4 && part->nfull==6 && part->ncol==4 && part->nrun==1,
+           "local run dimensions include censored trailing rows");
+     CHECK(map->columns[3]==5 && map->inverse[5]==3 && map->inverse[3]==-1,
+           "column provenance includes dropped columns");
+     CHECK(part->stim[0].bot==2 && part->stim[0].top==2 && part->stim[1].bot==3,
+           "stimulus ranges rebuilt");
+     for(c=0;c<part->ncol;c++) for(r=0;r<part->nrow;r++)
+        CHECK(part->mat[c*part->nrow+r]==xm->mat[map->columns[c]*xm->nrow+map->rows[r]],
+              "extraction preserves every selected value");
+     snprintf(out,sizeof(out),"%s.split",fn); snprintf(rows,sizeof(rows),"%s.rows",fn);
+     snprintf(cols,sizeof(cols),"%s.cols",fn);
+     CHECK(THD_xmat_write(part,out,err,sizeof(err)),err);
+     CHECK(!THD_xmat_write(part,out,err,sizeof(err)),"writer refuses overwrite");
+     back=THD_xmat_read(out,err,sizeof(err)); CHECK(back,err);
+     CHECK(back->nrow==part->nrow && back->ncol==part->ncol &&
+           !memcmp(back->mat,part->mat,sizeof(float)*part->nrow*part->ncol),"float-exact round trip");
+     CHECK(!strcmp(THD_xmat_attr(back,"BasisColumns_000001"),"2:2"),"basis range serialized");
+     CHECK(THD_xmat_write_run_map(xm,part,map,rows,cols,err,sizeof(err)),err);
+     CHECK(!THD_xmat_write_run_map(xm,part,map,rows,cols,err,sizeof(err)),"map writer refuses overwrite");
+     remove(rows);
+     CHECK(!THD_xmat_write_run_map(xm,part,map,rows,cols,err,sizeof(err)),"second-map collision fails");
+     CHECK(access(rows,F_OK)!=0 && access(cols,F_OK)==0,"partial map rolled back; existing file preserved");
+     map->rows[0]=-1;
+     CHECK(!THD_xmat_write_run_map(xm,part,map,rows,cols,err,sizeof(err)) &&
+           strstr(err,"row mapping"),"map writer validates caller indices before file creation");
+     map->rows[0]=0;
+     part->good[0]=-1;
+     CHECK(!THD_xmat_write(part,rows,err,sizeof(err)),"writer validates caller timeline");
+     THD_xmat_free(back);THD_xmat_free(part);THD_xmat_run_map_free(map);THD_xmat_free(xm);
+     remove(out);remove(cols);
+   }
+
    /* summaries as table columns */
    { char *tok[]={ "Subj","Group","Xmat","InputFile" , "s1","ctl",fn,"a+orig" , "s2","pat",fn,"b+orig" } ;
      THD_datatable *dt=THD_parse_datatable(tok,12,"a test") , *dx ;

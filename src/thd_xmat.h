@@ -98,6 +98,54 @@ extern int * THD_xmat_condition_labels( const THD_xmat *xm , double frac , const
 extern THD_xmat_item * THD_xmat_items( const THD_xmat *xm , const unsigned char *wanted , int *nitem ) ;
 extern void THD_xmat_items_free( THD_xmat_item *it , int nitem ) ;
 
+/* Run extraction never refits or rescales the matrix. All API indices are
+   zero-based and refer to the immediate input (not an earlier ancestor).
+   rows/columns map output indices to input indices; inverse maps input
+   columns to output columns, or -1 for a dropped column. */
+typedef struct {
+   int run, start, length, nrow, ncol, source_ncol;
+   int *rows, *columns, *inverse;
+} THD_xmat_run_map;
+
+#define THD_XMAT_SPLIT_TOL 1.e-6
+
+/* Requires explicit RunStart, GoodList and NRowFull. Optional uncensored
+   must be the matching full-row matrix; it is used to determine support.
+   Columns with peak in a run <= zero_tol * global peak are dropped.
+   IM columns must have support in exactly one run and survive censoring.
+   GLTs and ColumnMasks are removed; indexed stimulus metadata is rebuilt.
+   Caller owns both returned matrix and map. The new matrix has fname=NULL
+   until written and reread. NULL on error. */
+extern THD_xmat *THD_xmat_extract_run(const THD_xmat *source,
+   const THD_xmat *uncensored, int run, double zero_tol,
+   THD_xmat_run_map **map, char *err, int nerr);
+extern void THD_xmat_run_map_free(THD_xmat_run_map *map);
+
+/* Write a complete, 3dDeconvolve/3dLSS-compatible NIML-comment matrix.
+   Preserves float values exactly on reread (the existing reader uses float).
+   Existing paths are never overwritten. Returns 1 on success, 0 on error. */
+extern int THD_xmat_write(const THD_xmat *xm, const char *fname,
+                          char *err, int nerr);
+/* Write numeric AFNI 1D provenance tables with # Columns: headers.
+   Labels are # comments; dropped columns have Column=-1 and Kept=0. */
+extern int THD_xmat_write_run_map(const THD_xmat *source,
+   const THD_xmat *result, const THD_xmat_run_map *map,
+   const char *rows_file, const char *cols_file, char *err, int nerr);
+
+/* Selection preserves all rows/run boundaries and original column order.
+   map->run=-1 denotes a full-timeline column selection. GLTs require explicit
+   drop_glts consent; they are never silently projected. */
+extern THD_xmat *THD_xmat_select_columns(const THD_xmat *,const unsigned char *,
+   int drop_glts,THD_xmat_run_map **,char *,int);
+typedef struct {
+   int rank,residual_df,zero_columns,duplicate_pairs;
+   double condition,max_abs_cosine;
+} THD_xmat_diagnostic;
+/* SVD of unit-norm columns; rank cutoff is tol*largest singular value.
+   DuplicatePairs counts equal/opposite normalized directions within tol. */
+extern int THD_xmat_diagnostics(const THD_xmat *,double,
+                               THD_xmat_diagnostic *,char *,int);
+
 /*--- tables with an Xmat column (each row names its X.xmat.1D) -------------*/
 
 /*! Explicit trial manifest: one row per beta, InputFile is an unselected
@@ -108,6 +156,15 @@ extern void THD_xmat_items_free( THD_xmat_item *it , int nitem ) ;
     Returns a new canonical table with InputFile selectors; errors are fatal.
     The input table is not changed. */
 extern THD_datatable * THD_datatable_trial_manifest( THD_datatable *dt ) ;
+
+/*! Expand LSS beta datasets: Subj, Xmat, Events, InputFile; Events files
+    map each zero-based Trial to item_col and optional metadata. Validates
+    the single IM design range, LSS labels/counts, and complete trial mapping.
+    Carries subject/event metadata (no overlapping columns), adds run_col
+    only if absent and every regressor belongs to one run. Paths are relative
+    to the working directory. Input tables are unchanged; errors are fatal. */
+extern THD_datatable * THD_datatable_expand_lss_items( THD_datatable *dt ,
+                                                       const char *item_col , const char *run_col ) ;
 
 /*! One row per subject (Subj, Xmat, InputFile = the stats bucket of that
     regression, other columns) becomes one row per item: the subject's other

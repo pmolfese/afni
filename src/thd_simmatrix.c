@@ -68,6 +68,25 @@ void THD_rank_avg( int n , float *x , float *rk )
 /*  Construction                                                              */
 /*============================================================================*/
 
+/* Keep feature inputs and matrix storage as float, but accumulate Pearson in
+   double. Float accumulation can split exact +/-1 ties for collinear patterns;
+   subsequent rank comparisons then magnify those rounding errors. Rounding
+   only the final correlation to float preserves these ties without imposing
+   an approximate-tie threshold on genuinely different correlations. */
+static float simmat_pearson_corr( int n, const float *x, const float *y )
+{
+   double xm=0.0,ym=0.0,xx=0.0,yy=0.0,xy=0.0 ; int ii ;
+   if( n<2 ) return 0.0f ;
+   for( ii=0 ; ii<n ; ii++ ){ xm+=x[ii] ; ym+=y[ii] ; }
+   xm/=n ; ym/=n ;
+   for( ii=0 ; ii<n ; ii++ ){
+     double a=(double)x[ii]-xm,b=(double)y[ii]-ym ;
+     xx+=a*a ; yy+=b*b ; xy+=a*b ;
+   }
+   if( xx<=0.0 || yy<=0.0 ) return 0.0f ;
+   return (float)(xy/sqrt(xx*yy)) ;
+}
+
 int THD_simmat_fill_from_features( THD_simmat *sm, int nfeat, float *F,
                                     int metric, float *sc1, float *sc2 )
 {
@@ -99,7 +118,7 @@ int THD_simmat_fill_from_features( THD_simmat *sm, int nfeat, float *F,
 
        switch( metric ){
          case SIM_PEARSON:
-           val = THD_pearson_corr( nfeat , a , b ) ;
+           val = simmat_pearson_corr( nfeat , a , b ) ;
          break ;
 
          case SIM_SPEARMAN:
@@ -176,7 +195,8 @@ THD_simmat * THD_simmat_from_features_zcensor( int nit, int nfeat, float *F,
        if( metric==SIM_SPEARMAN ){
          THD_rank_avg(nuse,sc1,sc1) ; THD_rank_avg(nuse,sc2,sc2) ;
        }
-       val=THD_pearson_corr(nuse,sc1,sc2) ;
+       val=(metric==SIM_PEARSON) ? simmat_pearson_corr(nuse,sc1,sc2)
+                                : THD_pearson_corr(nuse,sc1,sc2) ;
        if( !isfinite(val) ) goto bad ;
        sm->mat[ii*nit+jj]=sm->mat[jj*nit+ii]=val ;
      }
@@ -207,18 +227,44 @@ int THD_simmat_lag_table( int nit, int nfeat, float *F, int metric,
    ntot=(size_t)nit*(size_t)nfeat ;
    for( qq=0 ; qq<ntot ; qq++ ) if( !isfinite(F[qq]) ) return 1 ;
 
+   /* Match simmat_pearson_corr for the temporal null as well as the observed
+      matrix. Centering into float prep[] would already lose precision before
+      a double dot product. Keep pair means and SS in double, reuse them over
+      all requested lags, and round only the final correlations to float. */
+   if( metric == SIM_PEARSON ){
+     for( ii=0 ; ii<nit ; ii++ ) for( jj=ii+1 ; jj<nit ; jj++,pair++ ){
+       double xm=0.0,ym=0.0,xx=0.0,yy=0.0,den ;
+       x=F+(size_t)ii*nfeat ; y=F+(size_t)jj*nfeat ;
+       for( kk=0 ; kk<nfeat ; kk++ ){ xm+=x[kk] ; ym+=y[kk] ; }
+       xm/=nfeat ; ym/=nfeat ;
+       for( kk=0 ; kk<nfeat ; kk++ ){
+         double a=(double)x[kk]-xm,b=(double)y[kk]-ym ;
+         xx+=a*a ; yy+=b*b ;
+       }
+       den=sqrt(xx*yy) ;
+       for( ll=0 ; ll<nfeat ; ll++ ){
+         double xy=0.0 ; float val ;
+         if( need != NULL && !need[(size_t)pair*nfeat+ll] ) continue ;
+         for( kk=0,ky=ll ; kk<nfeat ; kk++ ){
+           xy+=((double)x[kk]-xm)*((double)y[ky]-ym) ;
+           if( ++ky == nfeat ) ky=0 ;
+         }
+         val=(xx>0.0 && yy>0.0) ? (float)(xy/den) : 0.0f ;
+         if( !isfinite(val) ) return 1 ;
+         table[(size_t)pair*nfeat+ll]=val ;
+       }
+     }
+     return 0 ;
+   }
+
    /* Prepare each subject once.  Circular rotation preserves ranks, means,
       sums of squares, and norms, so only the pairwise cross-product varies. */
    for( ii=0 ; ii < nit ; ii++ ){
      x=prep+(size_t)ii*nfeat ;
      memcpy(x,F+(size_t)ii*nfeat,sizeof(float)*nfeat) ;
      if( metric == SIM_SPEARMAN ) rank_order_float(nfeat,x) ;
-     if( metric == SIM_PEARSON || metric == SIM_SPEARMAN ){
-       if( metric == SIM_SPEARMAN ) mean=0.5f*(nfeat-1) ;
-       else {
-         for( mean=0.0f,kk=0 ; kk < nfeat ; kk++ ) mean += x[kk] ;
-         mean /= (float)nfeat ;
-       }
+     if( metric == SIM_SPEARMAN ){
+       mean=0.5f*(nfeat-1) ;
        for( kk=0 ; kk < nfeat ; kk++ ) x[kk] -= mean ;
      }
      for( ss=0.0f,kk=0 ; kk < nfeat ; kk++ ) ss += x[kk]*x[kk] ;
@@ -580,29 +626,33 @@ static int dbl_cmp_asc( const void *a , const void *b )
 
 /*! Univariate (diagonal) noise normalization.  See the header. */
 
-void THD_noise_wdiag( int nvox , int nresid , float *R , float *w )
+int THD_noise_wdiag( int nvox , int nresid , float *R , float *w )
 {
    int v , t , m=0 ; double *var , *pos , med ;
 
-   if( nvox < 1 || nresid < 1 || R == NULL || w == NULL ) return ;
+   if( nvox < 1 || nresid < 1 || R == NULL || w == NULL )
+     return THD_NOISE_BAD_INPUT ;
 
    var = (double *)malloc(sizeof(double)*nvox) ;
    pos = (double *)malloc(sizeof(double)*nvox) ;
    if( var==NULL || pos==NULL ){
-     free(var) ; free(pos) ; for( v=0 ; v<nvox ; v++ ) w[v]=1.0f ; return ;
+     free(var) ; free(pos) ; return THD_NOISE_ALLOC ;
    }
    for( v=0 ; v < nvox ; v++ ){
      double s=0.0 ;
      for( t=0 ; t < nresid ; t++ ){
        double x = R[(size_t)t*nvox+v] ;
-       if( !isfinite(x) ){ free(var) ; free(pos) ;
-         for( v=0 ; v<nvox ; v++ ) w[v]=1.0f ; return ; }
+       if( !isfinite(x) ){
+         free(var) ; free(pos) ; return THD_NOISE_NONFINITE ; }
        s += x*x ;
      }
      var[v] = s / nresid ;
+     if( !isfinite(var[v]) ){
+       free(var) ; free(pos) ; return THD_NOISE_NONFINITE ; }
      if( var[v] > 0.0 ) pos[m++] = var[v] ;
    }
-   if( m == 0 ){ for( v=0 ; v < nvox ; v++ ) w[v] = 1.0f ; free(var) ; free(pos) ; return ; }
+   if( m == 0 ){
+     free(var) ; free(pos) ; return THD_NOISE_ZERO_VARIANCE ; }
    qsort( pos , m , sizeof(double) , dbl_cmp_asc ) ;
    med = pos[m/2] ;
    /* floor variances to the median positive variance: a voxel quieter than
@@ -610,8 +660,11 @@ void THD_noise_wdiag( int nvox , int nresid , float *R , float *w )
    for( v=0 ; v < nvox ; v++ ){
      double vv = (var[v] > med) ? var[v] : med ;
      w[v] = (float)( 1.0 / sqrt(vv) ) ;
+     if( !isfinite(w[v]) || w[v] <= 0.0f ){
+       free(var) ; free(pos) ; return THD_NOISE_NONFINITE ; }
    }
    free(var) ; free(pos) ;
+   return THD_NOISE_OK ;
 }
 
 /*! Multivariate noise normalization matrix Sigma^{-1/2}.  See the header. */
@@ -622,13 +675,14 @@ int THD_noise_whalf( int nvox , int nresid , float *R , float *Whalf ,
    int p = nvox , k , l , t , j ; double *S , *V , *ev , mu , delta ;
    double sum_norm4=0.0 ;
 
-   if( p < 1 || nresid < 1 || R == NULL || Whalf == NULL ) return 1 ;
+   if( p < 1 || nresid < 1 || R == NULL || Whalf == NULL )
+     return THD_NOISE_BAD_INPUT ;
 
    S  = (double *)calloc((size_t)p*p,sizeof(double)) ;
    V  = (double *)malloc(sizeof(double)*(size_t)p*p) ;
    ev = (double *)malloc(sizeof(double)*p) ;
    if( S==NULL || V==NULL || ev==NULL ){
-     free(S) ; free(V) ; free(ev) ; return 1 ;
+     free(S) ; free(V) ; free(ev) ; return THD_NOISE_ALLOC ;
    }
 
    /* Sigma = R'R / nresid (R already demeaned per run).  Accumulate by
@@ -638,7 +692,8 @@ int THD_noise_whalf( int nvox , int nresid , float *R , float *Whalf ,
      float *rt=R+(size_t)t*p ; double norm2=0.0 ;
      for( k=0 ; k < p ; k++ ){
        double x=rt[k] ;
-       if( !isfinite(x) ){ free(S) ; free(V) ; free(ev) ; return 1 ; }
+       if( !isfinite(x) ){
+         free(S) ; free(V) ; free(ev) ; return THD_NOISE_NONFINITE ; }
        norm2 += x*x ;
      }
      sum_norm4 += norm2*norm2 ;
@@ -654,6 +709,10 @@ int THD_noise_whalf( int nvox , int nresid , float *R , float *Whalf ,
      }
 
    mu = 0.0 ; for( k=0 ; k < p ; k++ ) mu += S[k+(size_t)p*k] ; mu /= p ;
+   if( !isfinite(mu) || !isfinite(sum_norm4) ){
+     free(S) ; free(V) ; free(ev) ; return THD_NOISE_NONFINITE ; }
+   if( mu <= 0.0 ){
+     free(S) ; free(V) ; free(ev) ; return THD_NOISE_ZERO_VARIANCE ; }
 
    /* Ledoit-Wolf shrinkage of Sigma toward mu*I */
    { double d2=0.0 , ss2=0.0 , bbar , b2 , bnum ;
@@ -668,6 +727,8 @@ int THD_noise_whalf( int nvox , int nresid , float *R , float *Whalf ,
         This is algebraically the former T*p*p loop, reduced to the row norms
         accumulated above plus one p*p norm.  Clamp roundoff at zero. */
      bnum = sum_norm4-(double)nresid*ss2 ;
+     if( !isfinite(bnum) || !isfinite(d2) ){
+       free(S) ; free(V) ; free(ev) ; return THD_NOISE_NONFINITE ; }
      if( bnum < 0.0 ) bnum=0.0 ;
      bbar = bnum/((double)nresid*nresid) ;
      b2 = (bbar < d2) ? bbar : d2 ;
@@ -677,10 +738,16 @@ int THD_noise_whalf( int nvox , int nresid , float *R , float *Whalf ,
        for( l=0 ; l < p ; l++ )
          S[k+(size_t)p*l] = (1.0-delta)*S[k+(size_t)p*l] + ((k==l)?delta*mu:0.0) ;
    }
-   if( shrink != NULL ) *shrink = (float)delta ;
-
    memcpy( V , S , sizeof(double)*(size_t)p*p ) ;
    symeig_double( p , V , ev ) ;              /* V[k+p*j] = comp k of eigvec j */
+   for( j=0 ; j<p ; j++ ){
+     if( !isfinite(ev[j]) ){
+       free(S) ; free(V) ; free(ev) ; return THD_NOISE_NONFINITE ; }
+     for( k=0 ; k<p ; k++ ) if( !isfinite(V[k+(size_t)p*j]) ){
+       free(S) ; free(V) ; free(ev) ; return THD_NOISE_NONFINITE ; }
+   }
+   if( ev[p-1] <= 0.0 ){
+     free(S) ; free(V) ; free(ev) ; return THD_NOISE_NONFINITE ; }
    { double emax = ev[p-1] , floorv = (emax>0.0) ? 1.0e-8*emax : 1.0e-12 ;
      int er=0 ;
      for( j=0 ; j < p ; j++ ) if( ev[j] > 1.0e-2*((emax>0.0)?emax:1.0) ) er++ ;
@@ -695,8 +762,12 @@ int THD_noise_whalf( int nvox , int nresid , float *R , float *Whalf ,
      }
    }
 
+   for( k=0 ; k<p ; k++ )
+     for( l=0 ; l<p ; l++ ) if( !isfinite(Whalf[(size_t)k*p+l]) ){
+       free(S) ; free(V) ; free(ev) ; return THD_NOISE_NONFINITE ; }
+   if( shrink != NULL ) *shrink = (float)delta ;
    free(S) ; free(V) ; free(ev) ;
-   return 0 ;
+   return THD_NOISE_OK ;
 }
 
 /*============================================================================*/
@@ -1384,6 +1455,9 @@ THD_permstat THD_mantel_corr_cached( THD_simmat *neural, THD_simmat *model,
      float rp=(mc->cmp==CMP_RHOA)
        ? mantel_prepared_rhoa(m,mc->prep+ix*m,ws->rprep)
        : mantel_prepared_corr(m,mc->prep+ix*m,mc->ss[ix],ws->rprep,nss) ;
+     /* Slot zero is the identity. Cached centering must not round its value
+        below the separately computed observed statistic and lose that draw. */
+     if( pk==0 ) rp=robs ;
      if( fabsf(rp) >= fabsf(robs) ) nge++ ;
      if( permnull != NULL ) permnull[pk]=fabsf(rp) ;
    }
@@ -1499,6 +1573,7 @@ THD_permstat THD_mantel_contrast_cached( THD_simmat *neural,
        ? mantel_prepared_rhoa(m,mc->prep+bix*m,ws->rprep)
        : mantel_prepared_corr(m,mc->prep+bix*m,mc->ss[bix],ws->rprep,nss) ;
      float dp=rap-rbp ;
+     if( pk==0 ) dp=dobs ;  /* exact identity, as in the uncached path */
      if( fabsf(dp) >= fabsf(dobs) ) nge++ ;
      if( permnull != NULL ) permnull[pk]=fabsf(dp) ;
    }

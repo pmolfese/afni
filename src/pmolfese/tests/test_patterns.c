@@ -372,10 +372,34 @@ done:
    return fail ;
 }
 
+static int run_condition_pattern_test( void )
+{
+   THD_runset rs; THD_3dim_dataset *ds=sample_pattern_dset(0,NULL);
+   int vv[2]={3,1},nbrick=2,cond[2]={1,0},nrep[2]={1,1};
+   int *cond_rows[1]={cond},*rep_rows[1]={nrep},i,fail=0;
+   intvec vox; float pat[4],raw[4],want[4]={20,10,4,2};
+   memset(&rs,0,sizeof(rs)); memset(&vox,0,sizeof(vox));
+   vox.nar=2; vox.ar=vv;
+   rs.nrow=1; rs.ncond=2; rs.betas=&ds; rs.nbrick=&nbrick;
+   rs.has_condmap=1; rs.cond_of=cond_rows; rs.nrep=rep_rows;
+   THD_runset_roi_condition_pattern(&rs,0,&vox,pat,raw);
+   for(i=0;i<4;i++) if(pat[i]!=want[i]) fail=1;
+   /* Both bricks now contribute to condition 0; condition 1 is missing. */
+   cond[0]=0; nrep[0]=2; nrep[1]=0;
+   THD_runset_roi_condition_pattern(&rs,0,&vox,pat,raw);
+   if(pat[0]!=12 || pat[1]!=6 || pat[2]!=0 || pat[3]!=0) fail=1;
+   rs.has_condmap=0;
+   THD_runset_roi_condition_pattern(&rs,0,&vox,pat,NULL);
+   if(pat[0]!=4 || pat[1]!=2 || pat[2]!=20 || pat[3]!=10) fail=1;
+   DSET_delete(ds);
+   if(fail) fprintf(stderr,"FAIL canonical run-condition extraction/averaging\n");
+   return fail;
+}
+
 int main( void )
 {
    int fail=parser_test()+paint_test()+sample_extraction_test()+surface_domain_test()
-           +xmat_runset_test() ;
+           +xmat_runset_test()+run_condition_pattern_test() ;
    if( fail ) return 1 ;
    puts("PASS thd_patterns geometry, domains, samples, and Xmat runwise inputs") ;
    return 0 ;

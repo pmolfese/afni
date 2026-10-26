@@ -87,6 +87,27 @@ if(TARGET 3dInSync)
   endif()
 endif()
 
+if(TARGET 1dXmatTool AND TARGET 3dDeconvolve AND TARGET 3dLSS)
+  add_test(NAME 1dXmatTool:split-runs
+    COMMAND ${Python_EXECUTABLE}
+      ${CMAKE_SOURCE_DIR}/tests/scripts/check_1dXmatTool.py
+      --tool $<TARGET_FILE:1dXmatTool>
+      --deconvolve $<TARGET_FILE:3dDeconvolve>
+      --lss $<TARGET_FILE:3dLSS>
+      --workdir ${CMAKE_CURRENT_BINARY_DIR}/xmat_split_check)
+  set_tests_properties(1dXmatTool:split-runs PROPERTIES
+    LABELS "1dXmatTool;3dLSS;numeric;integration;xmat"
+    ENVIRONMENT "OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1;VECLIB_MAXIMUM_THREADS=1")
+endif()
+
+if(TARGET 1dXmatTool AND TARGET 1dcat AND TARGET 3dMVPA)
+  add_test(NAME 1dXmatTool:features
+    COMMAND ${Python_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/scripts/check_1dXmatTool_features.py
+      --tool $<TARGET_FILE:1dXmatTool> --cat $<TARGET_FILE:1dcat> --mvpa $<TARGET_FILE:3dMVPA>)
+  set_tests_properties(1dXmatTool:features PROPERTIES LABELS "1dXmatTool;3dMVPA;numeric;integration;xmat"
+    ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1;VECLIB_MAXIMUM_THREADS=1")
+endif()
+
 if(TARGET 3dSRM)
   # The library driver: the same thd_srm.c with no dataset or table code, used
   # by check_3dSRM.py as the independent reference for the fit.
@@ -94,6 +115,17 @@ if(TARGET 3dSRM)
   target_include_directories(srm_cli PRIVATE ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(srm_cli PRIVATE $<TARGET_NAME_IF_EXISTS:OpenMP::OpenMP_C> m)
   target_compile_definitions(srm_cli PRIVATE "$<IF:$<TARGET_EXISTS:OpenMP::OpenMP_C>,USE_OMP,>")
+
+  if(TARGET 3dLSS AND TARGET 3dDeconvolve)
+    add_test(NAME 3dSRM:lss-items
+      COMMAND ${Python_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/tests/scripts/check_3dSRM_lss.py
+        --prog $<TARGET_FILE:3dSRM>
+        --deconvolve $<TARGET_FILE:3dDeconvolve>
+        --lss $<TARGET_FILE:3dLSS>
+        --workdir ${CMAKE_CURRENT_BINARY_DIR}/srm_lss_check)
+    set_tests_properties(3dSRM:lss-items PROPERTIES LABELS "3dSRM;numeric;integration;xmat")
+  endif()
 
   # End-to-end checks of 3dSRM (fit, CV, -model_in, -update_S, -apply_W) against
   # numpy and the driver, once with the default kernel and once with the fit
@@ -135,6 +167,13 @@ if(TARGET 3dRSA)
       --require-deps
   )
   set_tests_properties(3dRSA:numeric PROPERTIES LABELS "3dRSA;numeric")
+  add_test(
+    NAME 3dRSA:subject-regression
+    COMMAND ${Python_EXECUTABLE}
+      ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_rsa_subject.py
+      --bin $<TARGET_FILE:3dRSA>
+  )
+  set_tests_properties(3dRSA:subject-regression PROPERTIES LABELS "3dRSA;numeric")
 endif()
 
 if(TARGET 3dMVPA AND TARGET 3dUndump AND TARGET 3dbucket
@@ -186,6 +225,22 @@ if(TARGET 3dMVPA AND TARGET 3dUndump AND TARGET 3dbucket
         $<TARGET_FILE:3dMVPA> $<TARGET_FILE:3dUndump>
     )
     set_tests_properties(3dMVPA:classification-audits PROPERTIES
+                         LABELS "3dMVPA;numeric;integration")
+    add_test(
+      NAME 3dMVPA:validate-only
+      COMMAND ${Python_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_validate.py
+        $<TARGET_FILE:3dMVPA>
+    )
+    set_tests_properties(3dMVPA:validate-only PROPERTIES
+                         LABELS "3dMVPA;numeric;integration")
+    add_test(
+      NAME 3dMVPA:fixed-partitions
+      COMMAND ${Python_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_partitions.py
+        $<TARGET_FILE:3dMVPA>
+    )
+    set_tests_properties(3dMVPA:fixed-partitions PROPERTIES
                          LABELS "3dMVPA;numeric;integration")
   endif()
 endif()

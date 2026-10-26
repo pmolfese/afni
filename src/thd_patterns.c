@@ -1606,6 +1606,18 @@ void THD_runset_roi_pattern( THD_runset *rs, int row, int residual,
    }
 }
 
+void THD_runset_roi_condition_pattern(THD_runset *rs,int row,intvec *vox,float *pat,float *raw)
+{
+   int b,c,v,nv=vox->nar;
+   if(!rs->has_condmap) { THD_runset_roi_pattern(rs,row,0,vox,pat); return; }
+   THD_runset_roi_pattern(rs,row,0,vox,raw);
+   memset(pat,0,sizeof(float)*(size_t)rs->ncond*nv);
+   for(b=0;b<rs->nbrick[row];b++) {
+     c=rs->cond_of[row][b];
+     for(v=0;v<nv;v++) pat[(size_t)c*nv+v]+=raw[(size_t)b*nv+v]/rs->nrep[row][c];
+   }
+}
+
 void THD_runset_free( THD_runset *rs )
 {
    int i , s ;

@@ -1,6 +1,7 @@
 #include "thd_rsa.h"
 
 #include <limits.h>
+#include <float.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdarg.h>
@@ -233,4 +234,61 @@ THD_simmat * THD_rsa_mean_subject_rdms( int nsubject, int ncondition,
    }
    THD_tri_to_simmat(ncondition,mean,out) ; out->is_dist=!!is_distance ;
    free(mean) ; return out ;
+}
+
+/* Undefined RDM correlations are missing outcomes, never artificial zero fits.
+   Fisher clipping is fixed for all subjects and is reported in provenance. */
+float THD_rsa_fisher_corr(int m, float *a, float *b, int metric,
+                                 float *sc1, float *sc2)
+{
+   int i; float amin=FLT_MAX,amax=-FLT_MAX,bmin=FLT_MAX,bmax=-FLT_MAX,r;
+   if(m<2 || !a || !b || !sc1 || !sc2 ||
+      (metric!=CMP_PEARSON && metric!=CMP_SPEARMAN)) return NAN;
+   for(i=0;i<m;i++) {
+     if(!isfinite(a[i]) || !isfinite(b[i])) return NAN;
+     if(a[i]<amin) amin=a[i]; if(a[i]>amax) amax=a[i];
+     if(b[i]<bmin) bmin=b[i]; if(b[i]>bmax) bmax=b[i];
+   }
+   if(!(amax>amin) || !(bmax>bmin)) return NAN;
+   r=THD_tri_corr(m,a,b,metric,sc1,sc2);
+   if(!isfinite(r)) return NAN;
+   if(r>0.999999f) r=0.999999f;
+   if(r< -0.999999f) r= -0.999999f;
+   return atanhf(r);
+}
+
+/* Check the condition patterns themselves, since angle metrics otherwise
+   turn a constant/zero-norm pattern into finite, misleading RDM entries. */
+THD_simmat *THD_rsa_condition_rdm_checked(int nc,int nv,float *pat,int metric,int center)
+{
+   int c,v;
+   if(nc<2 || nv<2 || !pat || metric<SIM_PEARSON || metric>SIM_EUCLID) return NULL;
+   if(center && metric!=SIM_EUCLID &&
+      !THD_rsa_center_condition_patterns(nc,nv,pat,NULL,0)) return NULL;
+   for(c=0;c<nc;c++) {
+     float lo=FLT_MAX,hi=-FLT_MAX; double norm=0.0;
+     for(v=0;v<nv;v++) {
+       float x=pat[(size_t)c*nv+v];
+       if(!isfinite(x)) return NULL;
+       if(x<lo) lo=x; if(x>hi) hi=x; norm+=(double)x*x;
+     }
+     if((metric==SIM_PEARSON || metric==SIM_SPEARMAN) && !(hi>lo)) return NULL;
+     if(metric==SIM_COSINE && !(norm>0.0)) return NULL;
+   }
+   return THD_rsa_condition_rdm(nc,nv,pat,metric,0,NULL,0);
+}
+
+/* Equal-weight mean over unordered repeat pairs, in Fisher-z units. */
+float THD_rsa_repeat_stability( int nrepeat, int ntriangle, float *triangles,
+                                int metric, float *sc1, float *sc2 )
+{
+   double sum=0.0; size_t npair=0; int a,b;
+   if(nrepeat<2 || ntriangle<2 || !triangles) return NAN;
+   for(a=0;a<nrepeat;a++) for(b=a+1;b<nrepeat;b++) {
+     float z=THD_rsa_fisher_corr(ntriangle,triangles+(size_t)a*ntriangle,
+                               triangles+(size_t)b*ntriangle,metric,sc1,sc2);
+     if(!isfinite(z)) return NAN;
+     sum+=z; npair++;
+   }
+   return (float)(sum/npair);
 }

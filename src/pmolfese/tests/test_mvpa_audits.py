@@ -24,7 +24,7 @@ def run(args, fail=None):
 
 def read(path):
     with open(path) as f:
-        return list(csv.DictReader((line for line in f if not line.startswith('#')), delimiter='\t'))
+        return list(csv.DictReader((line[11:] if line.startswith('# Columns: ') else line for line in f if not line.startswith('#') or line.startswith('# Columns: ')), delimiter='\t'))
 
 
 def near(actual, expected):
@@ -35,11 +35,11 @@ def near(actual, expected):
 
 
 def verify(prefix):
-    predictions = read(str(prefix) + '.pred.tsv')
-    summaries = read(str(prefix) + '.summary.tsv')
-    confusion = read(str(prefix) + '.conf.tsv')
+    predictions = read(str(prefix) + '.pred.1D')
+    summaries = read(str(prefix) + '.summary.1D')
+    confusion = read(str(prefix) + '.conf.1D')
     labels = {}
-    with open(str(prefix) + '.conf.tsv') as f:
+    with open(str(prefix) + '.conf.1D') as f:
         for line in f:
             if line.startswith('# Class\t'):
                 _, idx, label = line.rstrip('\n').split('\t')
@@ -124,15 +124,15 @@ with tempfile.TemporaryDirectory(prefix='thd_mvpa_audits.') as temp:
                 dset = label.lower() if subject == 's01' else 'a'
                 records.append(f'{subject} r{r} {subject}_r{r} {subject}_r{r}_{label} {label} {work / dset}+orig\n')
     records.append(f's02 r3 s02_r3 s02_r3_A A {work / "a"}+orig\n')
-    table = work / 'samples.tsv'
+    table = work / 'samples.1D'
     table.write_text(header + ''.join(records))
     base = [mvpa, '-mode', 'classify', '-dataTableFile', table, '-target_column', 'Condition',
             '-cv_column', 'Run', '-within_column', 'Subj', '-mask', str(work / 'mask') + '+orig', '-quiet']
 
     def analyze(name, extra=(), args=None):
         prefix = work / name
-        run((base if args is None else args) + ['-prefix', prefix, '-save_predictions', str(prefix) + '.pred.tsv',
-            '-save_confusion', str(prefix) + '.conf.tsv', '-save_summary_scores', str(prefix) + '.summary.tsv'] + list(extra))
+        run((base if args is None else args) + ['-prefix', prefix, '-save_predictions', str(prefix) + '.pred.1D',
+            '-save_confusion', str(prefix) + '.conf.1D', '-save_summary_scores', str(prefix) + '.summary.1D'] + list(extra))
         return prefix, verify(prefix)
 
     prefix, scores = analyze('centroid')
@@ -142,7 +142,7 @@ with tempfile.TemporaryDirectory(prefix='thd_mvpa_audits.') as temp:
     near(equal['ACC'], (1 + 3/7)/2); near(equal['BACC'], (1 + 1/3)/2)
     # Each subject summary agrees with the independently fitted within-subject run.
     for subject in ['s01', 's02']:
-        subtable = work / (subject + '.tsv')
+        subtable = work / (subject + '.1D')
         subtable.write_text(header + ''.join(r for r in records if r.startswith(subject + ' ')))
         subbase = base.copy(); subbase[subbase.index('-dataTableFile') + 1] = subtable
         _, subscores = analyze(subject, args=subbase)
@@ -157,18 +157,18 @@ with tempfile.TemporaryDirectory(prefix='thd_mvpa_audits.') as temp:
     analyze('all_stratum', args=unstratified)
     # Audits must describe restored observed predictions after blocked null fitting.
     perm, _ = analyze('permuted', ['-nperm', '5', '-permute_within', 'Block', '-seed', '42'])
-    for suffix in ['.conf.tsv', '.summary.tsv']:
+    for suffix in ['.conf.1D', '.summary.1D']:
         assert Path(str(prefix) + suffix).read_bytes() == Path(str(perm) + suffix).read_bytes()
     # Opting in cannot change the existing held-out result.
     run(base + ['-prefix', work / 'plain'])
-    assert (work / 'plain.roi.tsv').read_bytes() == Path(str(prefix) + '.roi.tsv').read_bytes()
+    assert (work / 'plain.roi.1D').read_bytes() == Path(str(prefix) + '.roi.1D').read_bytes()
     # Each audit can be requested independently.
-    for option, suffix in [('-save_confusion', '.conf.tsv'), ('-save_summary_scores', '.summary.tsv')]:
+    for option, suffix in [('-save_confusion', '.conf.1D'), ('-save_summary_scores', '.summary.1D')]:
         output = work / ('only' + suffix)
-        run(base + ['-prefix', work / ('only' + suffix), option, output])
+        run(base + ['-prefix', work / ('only' + suffix + '.result'), option, output])
         assert output.read_bytes() == Path(str(prefix) + suffix).read_bytes()
     # Slash-containing labels produce identical display names for distinct folds.
-    collision = work / 'fold_names.tsv'
+    collision = work / 'fold_names.1D'
     collision.write_text('Subj Run Sample Condition InputFile\n' + ''.join(
         f'{subject} {run_name} sample{i}_{label} {label} {work / label.lower()}+orig\n'
         for i, (subject, run_name) in enumerate([
@@ -181,11 +181,11 @@ with tempfile.TemporaryDirectory(prefix='thd_mvpa_audits.') as temp:
     assert len(fold_rows) == 4 and len({r['Group'] for r in fold_rows}) == 2
     assert len({r['CVFoldID'] for r in fold_rows}) == 4
     assert len({(r['Group'], r['CVStratum']) for r in fold_rows}) == 4
-    fold_conf = [r for r in read(str(collision_prefix) + '.conf.tsv') if r['Scope'] == 'Fold']
+    fold_conf = [r for r in read(str(collision_prefix) + '.conf.1D') if r['Scope'] == 'Fold']
     assert len({(r['CVFoldID'], r['TrueClassID']) for r in fold_conf}) == 12
 
     # Exact enumeration must accept nonascending, repeated labels in each block.
-    unsorted = work / 'unsorted.tsv'
+    unsorted = work / 'unsorted.1D'
     unsorted.write_text('Subj Run Sample Condition InputFile\n' + ''.join(
         f's1 r{run_id} item{run_id}_{j} {label} {work / label.lower()}+orig\n'
         for run_id, order in enumerate(['ABAC', 'CBAC']) for j, label in enumerate(order)))
@@ -195,12 +195,12 @@ with tempfile.TemporaryDirectory(prefix='thd_mvpa_audits.') as temp:
         ref = work / ('unsorted_' + method)
         perm = work / ('unsorted_perm_' + method)
         run(unsorted_base + ['-method', method, '-prefix', ref,
-                            '-save_predictions', str(ref) + '.pred.tsv'])
+                            '-save_predictions', str(ref) + '.pred.1D'])
         run(unsorted_base + ['-method', method, '-prefix', perm, '-nperm', '999',
-                            '-permute_within', 'Run', '-save_predictions', str(perm) + '.pred.tsv'])
-        assert Path(str(ref) + '.pred.tsv').read_bytes() == Path(str(perm) + '.pred.tsv').read_bytes()
-        assert '# Label permutations: 144;' in Path(str(perm) + '.roi.tsv').read_text()
-        for row in read(str(perm) + '.roi.tsv'):
+                            '-permute_within', 'Run', '-save_predictions', str(perm) + '.pred.1D'])
+        assert Path(str(ref) + '.pred.1D').read_bytes() == Path(str(perm) + '.pred.1D').read_bytes()
+        assert '# Label permutations: 144;' in Path(str(perm) + '.roi.1D').read_text()
+        for row in read(str(perm) + '.roi.1D'):
             assert 0 < float(row['PVAL']) <= float(row['PFWE']) <= 1
 
     # A malformed X-matrix must fail in the adapter before any mode expands items.
@@ -208,7 +208,7 @@ with tempfile.TemporaryDirectory(prefix='thd_mvpa_audits.') as temp:
     bad_xmat.write_text('# <matrix\n# ni_type = "2*double"\n# ni_dimen = "2"\n'
                         '# StimLabels = "A ; B"\n# StimBots = "0,0"\n# StimTops = "1,1"\n'
                         '# >\n1 0\n0 1\n# </matrix>\n')
-    bad_table = work / 'overlap.tsv'
+    bad_table = work / 'overlap.1D'
     bad_table.write_text(f'Subj Xmat InputFile\ns1 {bad_xmat} {work / "a"}+orig\n')
     for mode, role, column in [('classify', '-target_column', 'Condition'),
                                ('decode', '-target_column', 'Y'), ('encode', '-design_columns', 'X')]:
@@ -216,16 +216,18 @@ with tempfile.TemporaryDirectory(prefix='thd_mvpa_audits.') as temp:
              '-cv_column', 'Item', '-mask', str(work / 'mask') + '+orig'], fail='ranges overlap')
 
     # Reject collisions before truncating the requested files, even with overwrite enabled.
-    sentinel = work / 'sentinel.tsv'; sentinel.write_text('keep me\n')
+    sentinel = work / 'sentinel.1D'; sentinel.write_text('keep me\n')
+    run(base + ['-prefix', sentinel, '-save_confusion', sentinel], fail='cannot replace score output prefix')
+    assert sentinel.read_text() == 'keep me\n'
     for option in ['-save_predictions', '-save_fold_scores', '-save_summary_scores']:
         run(base + ['-save_confusion', sentinel, option, sentinel], fail='different files')
         assert sentinel.read_text() == 'keep me\n'
-    run(base + ['-prefix', work / 'roi_collision', '-save_summary_scores', work / 'roi_collision.roi.tsv'], fail='cannot replace ROI')
+    run(base + ['-prefix', work / 'roi_collision', '-save_summary_scores', work / 'roi_collision.roi.1D'], fail='cannot replace ROI')
     run(base + ['-method', 'ridge', '-lambda', 'auto', '-prefix', work / 'tuned',
-                '-save_confusion', work / 'tuned.tuning.tsv'], fail='filenames must differ')
+                '-save_confusion', work / 'tuned.tuning.1D'], fail='filenames must differ')
     run(base + ['-method', 'ridge', '-save_coefficients', work / 'coef',
-                '-save_confusion', work / 'coef.coefficients.tsv'], fail='filenames must differ')
+                '-save_confusion', work / 'coef.coefficients.1D'], fail='filenames must differ')
     continuous = base.copy(); continuous[continuous.index('-mode') + 1] = 'decode'
-    run(continuous + ['-save_summary_scores', work / 'invalid.tsv'], fail='require -mode classify')
+    run(continuous + ['-save_summary_scores', work / 'invalid.1D'], fail='require -mode classify')
     run(base + ['-save_confusion', ''], fail='nonempty filenames')
     print('PASS confusion/recall, unequal subject weighting, independent subject runs, all classifiers, and null restoration')
