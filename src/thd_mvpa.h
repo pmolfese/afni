@@ -36,6 +36,7 @@
 
 typedef struct THD_lda_model THD_lda_model;
 typedef struct THD_svm_model THD_svm_model;
+typedef struct THD_nuisance THD_nuisance;
 
 /* Native one-vs-rest linear squared-hinge SVM. Each binary problem minimizes
    .5*(||weight||^2+intercept^2) + C*sum(max(0,1-y*decision)^2).
@@ -78,7 +79,25 @@ typedef struct {
    double *center ;         /* [nfeature] or [ngroup][nfeature]             */
    double *scale ;          /* [nfeature], feature_zscore only              */
    unsigned char *constant ;/* [nfeature], zero-variance training features  */
+   THD_nuisance *nuisance ; /* optional predictor adjustment before scaling */
 } THD_preprocessor ;
+
+/* Configure predictor-side OLS adjustment before the next fit. Covariates
+   are borrowed [nsample][ncovariate] floats and must outlive p. Fits include
+   an intercept and require full rank and ntrain > ncovariate+1 in every
+   outer/inner training split. Covariate centering/scaling and slopes use
+   training rows only. Numeric dummy columns are needed for categorical data;
+   do not supply an intercept or all levels of a dummy-coded factor.
+   No buffers are allocated during repeated fitting/application. Configure
+   each active workspace's prep (ridge_cv->prep for ridge classification).
+   Passing NULL covariates with ncovariate==0 disables adjustment. */
+extern int THD_preprocess_set_nuisance(THD_preprocessor *p,
+   const float *covariates,int nsample,int ncovariate,char *err,int nerr);
+/* Validate rank/sample size in every outer and optional inner training fold.
+   No neural data or outcomes enter this check. */
+extern int THD_mvpa_check_nuisance(const THD_foldplan *plan,
+   const THD_nested_foldplan *nested,const float *covariates,int ncovariate,
+   char *err,int nerr);
 
 typedef struct {
    int nsample , nclass , ncorrect , nclass_present ;

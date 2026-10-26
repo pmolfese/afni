@@ -1,5 +1,64 @@
 # 3dMVPA Design and Implementation Plan
 
+## Item 22 complete: fold-local predictor nuisance adjustment — 2026-10-26
+
+`-nuisance_columns C1,C2,...` enables predictor-side OLS before the selected
+`-scale` transform. It adjusts neural predictors in classification/decoding
+and design predictors in encoding. Targets, prediction audits, training-mean
+baselines and score units remain unchanged. The scientific quantity is
+held-out prediction from nuisance-adjusted predictors; this is not response
+residualization, incremental explained variance or a causal effect estimate.
+Covariates must be known for training and application/test samples. Numeric
+dummy columns can represent categorical factors; omit one level and do not
+supply an intercept column. Target/design columns cannot also be nuisances.
+
+The shared `thd_mvpa` preprocessor fits an intercept, nuisance column means and
+scales, and predictor slopes using only the current training rows. It uses
+reorthogonalized QR, then applies the fitted adjustment before scaling.
+No buffers are allocated during repeated fits. All outer and inner training
+splits must have a full-rank design and more rows than nuisance columns plus
+intercept. Constant/redundant or ill-conditioned designs fail with fold context;
+normalized QR diagonals at or below 1e-10 times sqrt(ntrain) are rejected.
+Roundoff-sized residuals (64 double epsilons relative to fitted/input magnitude)
+are zeroed before scaling so exactly explained features do not become noise.
+
+All five classifiers, ridge decoding, voxel/pattern encoding, fixed splits,
+two-table inputs, grouped CV, nested tuning, ROI/volume/sparse-surface runners
+use the same preprocessing path. Validation checks every outer/inner nuisance
+design before spatial fitting and reports rank and outer residual degrees of
+freedom. Result/audit headers record the adjustment contract; dataset history
+retains the command. Nuisance configuration owns its work buffers and borrows
+an immutable sample-ordered covariate matrix.
+
+Permutation contract: raw labels (classification), target rows (decoding) or
+design rows (encoding) may be relabeled only within blocks with identical
+numeric nuisance vectors. The complete block design is checked before drawing
+permutations, including in `-validate_only`; numerical runners also reject
+individual permutations that change nuisance rows. Every supported null fit
+repeats nuisance fitting, scaling, tuning and model fitting. Exchangeability
+within those blocks remains a scientific assumption. No Freedman–Lane,
+general residual-permutation, temporal or population-inference claim is made.
+The rationale for treating nuisance/exchangeability as an explicit contract,
+rather than automatically permuting residuals, follows the distinctions in
+[Winkler et al. (2014)](https://pmc.ncbi.nlm.nih.gov/articles/PMC4010955/).
+The particular predictor-only CV contract here is our implementation choice.
+
+`-save_coefficients` is explicitly rejected with nuisance adjustment because
+its current export does not preserve nuisance-fit parameters. Response-side
+adjustment, broader nuisance-aware nulls and persistence of the full fitted
+pipeline remain future work; they are not implied by this milestone.
+
+Validation: all 15 focused gates pass (nine MVPA integration tests and six
+shared-library units). Independent OLS inputs reproduce all five classifiers;
+independent ridge solutions verify decoding, voxel/pattern encoding and nested
+loss/penalty selection. A confound-only fixture falls from ACC=1 to ACC=0.5;
+independent signal survives. Held-out perturbations preserve training fits,
+other test predictions and tuning. Exhaustive 256-slot nulls match independent
+classification, decoding and encoding calculations. Sparse-surface tuning/null
+maps and audits match across one/two workers, retaining original node IDs.
+Rank, sample-size, role, nonfinite and permutation rejection contracts are
+covered. Evidence: `validation_20261026/mvpa_nuisance/`. Item 23 is next.
+
 ## Item 22 groundwork complete: shared numeric-column extraction — 2026-10-26
 
 `THD_datatable_numeric_columns()` now resolves requested column names,
@@ -20,7 +79,7 @@ values now identify both output/sample position and metadata-table row.
 
 These helpers provide the numeric covariate input needed by item 22 without
 centering, scaling, imputation or fitting. Fold-local nuisance adjustment and
-its inference contract remain to be implemented; item 22 is not complete.
+its inference contract were implemented subsequently; see the completed item 22 above.
 
 Validation: build and all 14 focused CTest gates pass (eight MVPA integration
 tests and six shared-library unit tests). New coverage checks requested column
@@ -501,10 +560,10 @@ or completion state change.
    or separate `-dataTable`/`-testTable` inputs expose fixed splits with
    training-only fitting/tuning, test-only scores, NA training-row audits,
    source-table provenance and partition-confined permutations.
-22. **Fold-Local Nuisance Adjustment (Proposed; Next, awaiting user direction)** -- define and implement
-   training-only covariate adjustment, with an explicit scientific target and
-   compatible inference contract.
-23. **Fold-Local Feature Selection (Proposed)** -- select informative features
+22. **Fold-Local Nuisance Adjustment (Complete)** -- predictor-side OLS before
+   scaling, fitted in every outer/inner/null training split; full-rank numeric
+   covariates and nuisance-constant permutation blocks are required.
+23. **Fold-Local Feature Selection (Proposed; Next, awaiting user direction)** -- select informative features
    inside training splits, audit their original IDs, and tune feature counts
    within grouped inner CV.
 24. **Fold-Local PCA (Proposed)** -- fit and apply training-only projections,
@@ -561,10 +620,10 @@ or completion state change.
    extend item 29's L2 baseline with sparse L1/L2 classification penalties,
    nested strength/mixing selection and audited convergence.
 
-Items 22–40 are proposed scope, not implemented capabilities. Adding them to
+Items 23–40 are proposed scope, not implemented capabilities. Adding them to
 this roadmap does not authorize implementation; obtain user direction before
-starting item 22 and before advancing to each subsequent item.
-Existing item numbers are preserved; item 22 is next. Numbers
+starting item 23 and before advancing to each subsequent item.
+Existing item numbers are preserved; item 23 is next. Numbers
 identify proposals, not permission to skip dependencies: item 33 should provide
 shared tuning infrastructure for later estimators, and item 34 should precede
 the multi-penalty encoding work in item 35.
@@ -608,6 +667,7 @@ Status as of 2026-10-18:
 | Native linear SVM | Complete | `THD_svm_model` and `-method svm` provide deterministic squared-hinge classification with a penalized intercept, fixed/grouped nested C selection, explicit convergence diagnostics, shared ROI/volume/surface audits and fully refitted blocked label nulls |
 | Classification and subject-summary audits | Complete | `-save_confusion` exports truth-row matrices and per-class recall; `-save_summary_scores` exports pooled/fold/subject/stratum ACC/BACC plus equal-subject/stratum means from original held-out predictions, with explicit missing-class and weighting contracts |
 | Explicit train/test partitions | Complete | Single-table `-partition_column` or separate `-testTable` inputs, source-table/row provenance, explicit grouped inner tuning, training-only class order, test-only scores and NA audits; fixed-split permutation blocks cannot cross the split; full-data coefficient refits are rejected |
+| Fold-local nuisance adjustment | Complete | Predictor-side OLS before scaling in outer/inner/null fits; numeric covariates, rank validation, nuisance-constant exchangeability blocks; no response adjustment or coefficient export |
 
 ## Purpose
 
@@ -1506,7 +1566,7 @@ coefficient exports and saved-model application are outside this slice.
 Validation: all six MVPA gates pass (`thd_mvpa:unit`, classification, ridge,
 coefficient, SVM and surface integration). Both CMake and Make continue to
 compile the existing `thd_mvpa` source; no new build dependency is introduced.
-Roadmap items 1–21 are complete. Items 22–40 are proposed expansions; item 22
+Roadmap items 1–22 are complete. Items 23–40 are proposed expansions; item 23
 is next pending user direction. Further implementation follows the development
 cadence recorded at the top of this plan.
 
@@ -2052,8 +2112,8 @@ Current Phase 2 progress:
 ### Phase 5: audit and workflow expansion (items 20–27)
 
 The user approved adding the following proposals on 2026-10-15 and authorized
-item 20 implementation on 2026-10-18 and item 21 on 2026-10-26. Items 20–21
-are complete; items 22–27 remain proposals. Each slice must preserve existing CV/inference behavior,
+item 20 implementation on 2026-10-18 and item 21 on 2026-10-26. Items 20–22
+are complete; items 23–27 remain proposals. Each slice must preserve existing CV/inference behavior,
 record its validation evidence, and conclude with what fMRI users can now do
 and how it helps their analyses. Prompt the user before the next slice.
 
@@ -2214,7 +2274,7 @@ prediction maps do not provide a dedicated population-inference workflow.
 
 ### Phase 6: proposed estimator expansion (items 28–32)
 
-The user approved adding these model proposals on 2026-10-15. Item 22 is now
+The user approved adding these model proposals on 2026-10-15. Item 23 is now
 next; this phase does not reorder or start implementation. Huber regression
 has its own item so its scientific scope and validation can be approved
 separately from linear SVR. All implementations remain native and use the
@@ -2292,7 +2352,7 @@ existing AFNI sample, spatial, grouped CV and inference infrastructure.
 
 Added on 2026-10-15 after reconciling the model/capability discussion against
 the existing roadmap. Existing proposals 20–32 and completed items 18–19 are
-retained, not duplicated or restarted. Items 20–21 are now complete; item 22 is
+retained, not duplicated or restarted. Items 20–22 are now complete; item 23 is
 next pending user direction. These additions authorize planning only, not
 implementation.
 
@@ -2500,7 +2560,7 @@ ridge or classifier is numerically inferior. [BrainIAK module index](https://bra
 | Area | Current limitation in 3dMVPA | Comparison and planned response |
 |---|---|---|
 | Estimator breadth | No logistic/probability model, elastic net, PLS, SVR, Huber or nonlinear kernels yet | PyMVPA exposes additional learners and external estimator adapters, including sparse multinomial logistic regression. Existing proposals 28–32, 36–37 and 40 cover selected expansions, not blanket estimator compatibility. [Examples](https://www.pymvpa.org/examples.html), [sparse logistic model](https://www.pymvpa.org/generated/mvpa2.clfs.smlr.SMLR.html). |
-| Pipeline composition | No CLI fold-local feature selection, PCA/PCR or nuisance adjustment; arbitrary user-defined measures cannot simply be plugged into the command | PyMVPA composes mappers and meta-classifiers within CV, and documents training-only feature selection. Items 22–24 and 33 are higher-value gaps than adding many nearly equivalent classifiers. [Meta-classifiers](https://www.pymvpa.org/tutorial_meta_classifiers.html), [training-only selection](https://www.pymvpa.org/tutorial_sensitivity.html). |
+| Pipeline composition | Predictor-side fold-local nuisance OLS is implemented; no CLI fold-local feature selection or PCA/PCR; arbitrary user-defined measures cannot simply be plugged into the command | PyMVPA composes mappers and meta-classifiers within CV, and documents training-only feature selection. Items 22–24 and 33 are higher-value gaps than adding many nearly equivalent classifiers. [Meta-classifiers](https://www.pymvpa.org/tutorial_meta_classifiers.html), [training-only selection](https://www.pymvpa.org/tutorial_sensitivity.html). |
 | Training/application workflow | CLI fixed independent partitions are implemented; frozen model reload/application and cross-condition transfer remain proposed | PyMVPA has reusable fitted learners/mappers and HDF5 object storage. Our coefficient exports are not complete reusable model files. Items 27 and 38 need explicit feature/preprocessing contracts. [Object storage](https://www.pymvpa.org/generated/mvpa2.base.hdf5.html), [mapper composition](https://www.pymvpa.org/tutorial_meta_classifiers.html). |
 | Functional alignment | No fold-local SRM or hyperalignment stage inside 3dMVPA | PyMVPA documents ROI/searchlight hyperalignment; BrainIAK offers SRM variants. The separate 3dSRM work does not establish leakage-safe integration with this classifier pipeline. Any integration needs its own training/application and held-out-subject contract; do not silently add it to current scope. [Hyperalignment](https://www.pymvpa.org/examples/hyperalignment.html), [functional alignment](https://brainiak.org/docs/brainiak.funcalign.html). |
 | Specialized encoding/reconstruction | Ridge prediction of neural responses is not an inverted encoding model or circular stimulus reconstruction | BrainIAK documents 1D/2D basis-channel reconstruction. Items 34–37 improve predictive encoding but do not supply that distinct analysis; circular reconstruction would need a separate scientific proposal. [Inverted encoding models](https://brainiak.org/docs/brainiak.reconstruct.html). |
@@ -2581,9 +2641,9 @@ For a reproducible comparison, record exact installed versions and:
    out of program code and runtime requirements. Nice Python runs and cap their
    numerical-library/core use at five cores, as requested.
 
-With items 20–21's reporting and explicit independent partitions complete,
-the next gap closure is item 22's training-only nuisance adjustment, followed by
-feature selection/PCA,
+With items 20–22's reporting, explicit independent partitions and predictor
+nuisance adjustment complete, the next gap closure is item 23's fold-local
+feature selection, followed by PCA,
 generalized tuning/logistic classification, model application and the encoding
 extensions already proposed. This comparison does not reorder the active
 roadmap or authorize additional implementation.

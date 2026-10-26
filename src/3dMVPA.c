@@ -34,7 +34,7 @@ static char *mvpa_options[]={
    "-mode","-dataTable","-dataTableFile","-trial_manifest","-xmat_stims",
    "-testTable","-testTableFile",
    "-target_column","-target_columns","-design_columns","-lambda","-score",
-   "-lambda_grid","-inner_cv_column","-inner_cv_k",
+   "-lambda_grid","-inner_cv_column","-inner_cv_k","-nuisance_columns",
    "-shrinkage","-class_prior","-variance_floor",
    "-svm_c","-svm_c_grid","-svm_tol","-svm_max_iter",
    "-cv_column","-cv","-cv_k","-within_column",
@@ -224,6 +224,25 @@ static void usage_3dMVPA( void )
 "                         PREFIX.tuning.1D records all candidate losses;\n"
 "                         fold audits append selected penalties and losses.\n"
 "  -distance D            Centroid only: euclidean [default], correlation, cosine.\n"
+"  -nuisance_columns C1,C2,... Numeric covariates for predictor-side OLS.\n"
+"                         Fits intercept and slopes using training rows only,\n"
+"                         subtracts their prediction, then applies -scale.\n"
+"                         Repeats inside every inner/outer split and null fit.\n"
+"                         Adjusts neural predictors in classify/decode; design\n"
+"                         predictors in encode. Targets and scores retain their\n"
+"                         original units; this is not target residualization,\n"
+"                         incremental R2, or a causal/conditional effect test.\n"
+"                         Covariates must be known for training AND test rows.\n"
+"                         Supply numeric dummy columns for factors, omit one\n"
+"                         level and do not add an intercept column. Each training\n"
+"                         design must have full rank and ntrain > ncovariates+1.\n"
+"                         Cannot reuse target/design columns as nuisances.\n"
+"                         With -nperm, all covariate values must be identical\n"
+"                         within each -permute_within block. Exchangeability\n"
+"                         within those blocks remains the user's assumption.\n"
+"                         General residual permutations are not implemented.\n"
+"                         -save_coefficients is unavailable with this option\n"
+"                         because that export lacks nuisance-fit parameters.\n"
 "  -scale S               feature_zscore [default], sample_center, run_center,\n"
 "                         or none. All learned values are training-fold only.\n"
 "                         run_center requires a run role and cannot be applied\n"
@@ -483,6 +502,11 @@ static float mvpa_parse_positive_float( const char *opt, const char *arg )
 }
 #endif
 
+static void mvpa_nuisance_header(FILE *fp,const char *columns)
+{
+   if(fp && columns)fprintf(fp,"# Nuisance: predictors_only_OLS; columns=%s; intercept=yes; fit=each_training_split; order=nuisance_then_scale; targets=original_units\n# Nuisance permutation contract: covariates fixed within exchangeability blocks; no residual-permutation or causal interpretation.\n",columns);
+}
+
 static void mvpa_write_roi_table( const char *fname, const THD_roilist *rl,
                                   const float *score, const float *acc,
                                   const float *bacc, const float *nfeat,
@@ -490,13 +514,14 @@ static void mvpa_write_roi_table( const char *fname, const THD_roilist *rl,
                                   const char *target, char **class_label,
                                   int nclass, const PERM_result *pr,
                                   const float *qval,
-                                  const char *permute_within )
+                                  const char *permute_within,const char *nuisance_columns )
 {
    FILE *fp ; int rr,cc ;
    if( THD_deathcon() && THD_is_file((char *)fname) )
      ERROR_exit(PROGRAM_NAME ": ROI table '%s' already exists",fname) ;
    fp=fopen(fname,"w") ;
    if( fp==NULL ) ERROR_exit(PROGRAM_NAME ": cannot write ROI table '%s'",fname) ;
+   mvpa_nuisance_header(fp,nuisance_columns);
    fprintf(fp,"# 3dMVPA ROI classification; target=%s; primary_metric=%s\n",target,metric) ;
    fprintf(fp,"# Classes:") ;
    for( cc=0 ; cc<nclass ; cc++ ) fprintf(fp," %d=%s",cc,class_label[cc]) ;
@@ -844,6 +869,24 @@ static float *mvpa_numeric_columns(const THD_sampleset *ss,const char *list,
    *count=n;return v;
 }
 
+static void mvpa_nuisance_blocks(const THD_sampleset *ss,const float *z,int k,const char *column)
+{
+   int *code=NULL,*first,nlevel=1,i,j;char **labels=NULL,err[512];
+   if(strcasecmp(column,"none")){
+      if(!THD_sampleset_encode_column(ss,column,&code,&labels,&nlevel,err,sizeof(err)))ERROR_exit(PROGRAM_NAME ": %s",err);
+   }else code=calloc((size_t)ss->nsample,sizeof(int));
+   first=malloc(sizeof(int)*(size_t)nlevel);
+   if(!code || !first)ERROR_exit(PROGRAM_NAME ": cannot validate nuisance permutation blocks");
+   for(i=0;i<nlevel;i++)first[i]=-1;
+   for(i=0;i<ss->nsample;i++){
+      int b=code[i];
+      if(first[b]<0)first[b]=i;
+      for(j=0;j<k;j++)if(z[(size_t)i*k+j]!=z[(size_t)first[b]*k+j])
+         ERROR_exit(PROGRAM_NAME ": nuisance values vary within permutation block '%s'; use nuisance-constant exchangeability blocks or omit -nperm (general residual permutations are unsupported)",labels?labels[b]:"none");
+   }
+   free(first);free(code);THD_sampleset_free_levels(labels,nlevel);
+}
+
 static THD_roilist *mvpa_voxel_units(THD_3dim_dataset *mask)
 {
    THD_roilist *atlas=THD_roilist_from_dset(mask,NULL),*units;
@@ -890,6 +933,7 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
  const char *predfile,const char *foldfile,int nworker,int quiet,
  const THD_nested_foldplan *nested,const double *grid,int nl,const char *inner_column,
  const PERM_set *pset,const char *permute_within,
+ const float *nuisance,int nnuisance,const char *nuisance_columns,
  int two_tables,int argc,char **argv)
 {
    char **names=NULL,err[1024],label[256],*tablefile,runerr[1024]="";
@@ -932,6 +976,8 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
                                                preprocess,err,sizeof(err));
       patterns[i]=malloc(sizeof(float)*(size_t)ss->nsample*maxvox);
       if(!workers[i] || !patterns[i])ERROR_exit(PROGRAM_NAME ": cannot allocate ridge worker: %s",err);
+      if(nuisance && !THD_preprocess_set_nuisance(workers[i]->prep,nuisance,ss->nsample,nnuisance,err,sizeof(err)))
+         ERROR_exit(PROGRAM_NAME ": %s",err);
       if(nested && !THD_mvpa_ridge_set_tuning(workers[i],nested,grid,nl,err,sizeof(err)))
          ERROR_exit(PROGRAM_NAME ": %s",err);
       if(pset){
@@ -952,7 +998,7 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
    sprintf(tablefile,"%s.continuous.1D",prefix);
    if((predfile && !strcmp(predfile,tablefile)) || (foldfile && !strcmp(foldfile,tablefile)))
       ERROR_exit(PROGRAM_NAME ": continuous result and audit filenames must differ");
-   table=mvpa_open_audit(tablefile,"continuous results");
+   table=mvpa_open_audit(tablefile,"continuous results");mvpa_nuisance_header(table,nuisance_columns);
    fprintf(table,"# 3dMVPA %s; lambda=%s; scale=%s; primary_metric=%s\n",
            encoding?"encode":"decode",nested?"nested":"fixed",THD_preprocess_name(preprocess),THD_mvpa_metric_name(metric));
    if(!nested)fprintf(table,"# fixed lambda=%.17g\n",lambda);
@@ -961,13 +1007,13 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
    if(pset)fprintf(table,"# Inference in PREFIX.inference.1D: %d identity-inclusive row permutations within %s; one spatial family per decoding target (one for encoding).\n",np,permute_within);
    fprintf(table,"# Columns: Unit\tResponse\tNResponse\tNValid\tSCORE\tPEARSON\tSPEARMAN\tCVR2\tMAE\tRMSE\n");
    if(predfile){
-      pred=mvpa_open_audit(predfile,"continuous predictions");
+      pred=mvpa_open_audit(predfile,"continuous predictions");mvpa_nuisance_header(pred,nuisance_columns);
       fprintf(pred,"# Columns: Unit\tResponse\tTableRow\tSample\tSubject\tRun\tCVFold\tObserved\tPredicted\tTrainingMean\tItem\tInputFold\tCVStratum");
       if(two_tables)mvpa_source_fields(pred,ss,-1);
       fputc('\n',pred);
    }
    if(foldfile){
-      fold=mvpa_open_audit(foldfile,"continuous fold scores");
+      fold=mvpa_open_audit(foldfile,"continuous fold scores");mvpa_nuisance_header(fold,nuisance_columns);
       fprintf(fold,"# Columns: Unit\tResponse\tCVFold\tCVStratum\tNTrain\tNTest\tPEARSON\tSPEARMAN\tCVR2\tMAE\tRMSE\tLambda\tInnerNFold\tInnerNValid\tInnerLoss\n");
    }
    if(nested){
@@ -975,7 +1021,7 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
       sprintf(tunefile,"%s.tuning.1D",prefix);
       if((predfile && !strcmp(predfile,tunefile)) || (foldfile && !strcmp(foldfile,tunefile)))
          ERROR_exit(PROGRAM_NAME ": tuning result and prediction/fold filenames must differ");
-      tuning=mvpa_open_audit(tunefile,"lambda tuning audit");
+      tuning=mvpa_open_audit(tunefile,"lambda tuning audit");mvpa_nuisance_header(tuning,nuisance_columns);
       fprintf(tuning,"# inner_group=%s; objective=mean_response_SSE_over_training_mean_baseline_SSE; ties_or_no_valid_responses=largest_lambda\n",inner_column);
       fprintf(tuning,"# Columns: Unit\tCVFold\tCVStratum\tInnerNFold\tInnerNValid\tLambda\tInnerLoss\tSelected\n");
    }
@@ -1096,7 +1142,7 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
       sprintf(fname,"%s.inference.1D",prefix);
       if((predfile && !strcmp(predfile,fname)) || (foldfile && !strcmp(foldfile,fname)))
          ERROR_exit(PROGRAM_NAME ": inference audit and prediction/fold filenames must differ");
-      fp=mvpa_open_audit(fname,"continuous inference audit");
+      fp=mvpa_open_audit(fname,"continuous inference audit");mvpa_nuisance_header(fp,nuisance_columns);
       fprintf(fp,"# null=%s_rows_within_%s; nperm=%d; exact=%d; tail=%s; correction_family=spatial_per_response\n",
               encoding?"design":"target",permute_within,np,pset->is_exact,direction>0?"upper":"lower");
       fprintf(fp,"# All preprocessing/tuning/models refitted per relabeling. Undefined observed metrics have p=q=pfwe=1 and z=0.\n");
@@ -1570,6 +1616,7 @@ int main( int argc, char **argv )
    int trial_manifest=0,validate_only=0,two_tables=0 ;
    char *maskname=NULL,*roi_sel=NULL,*searchlight=NULL,*surf_file=NULL ;
    char *prefix="MVPA",*method=NULL,*design_columns=NULL,*score_mode=NULL ;
+   char *nuisance_columns=NULL;char **nuisance_names=NULL;float *nuisance=NULL;int nnuisance=0;
    char *coef_prefix=NULL;double coef_lambda=0;int coef_lambda_given=0;
    int svm_class=0,svm_tune=0,svm_numeric=0,svm_options=0,svm_ngrid=0,svm_max_iter=10000;
    double svm_cost=1,svm_tolerance=1e-6,*svm_grid=NULL;char *svm_grid_text=NULL;
@@ -1700,6 +1747,11 @@ int main( int argc, char **argv )
      }
      else if( IS("-method") ){ NEEDARG("centroid, ridge, svm, lda_diag, or lda_shrinkage") ; method=argv[nopt++] ; }
      else if( IS("-distance") ){ NEEDARG("euclidean, correlation, or cosine") ; distance_name=argv[nopt++] ;distance_given=1; }
+     else if(IS("-nuisance_columns")){
+       NEEDARG("comma-separated numeric nuisance columns");
+       if(nuisance_columns)ERROR_exit(PROGRAM_NAME ": -nuisance_columns was specified twice");
+       nuisance_columns=argv[nopt++];
+     }
      else if( IS("-scale") ){ NEEDARG("none, feature_zscore, sample_center, or run_center") ; scale_name=argv[nopt++] ; }
      else if( IS("-metric") ){ NEEDARG("a prediction metric") ; metric_name=argv[nopt++] ; }
      else if( IS("-nperm") ){ NEEDARG("a nonnegative count") ; nperm=(int)mvpa_parse_long("-nperm",argv[nopt++],0,INT_MAX) ; }
@@ -1782,6 +1834,8 @@ int main( int argc, char **argv )
    if(!tune && !svm_tune && (inner_column || inner_k))ERROR_exit(PROGRAM_NAME ": inner-CV options require tuned ridge or SVM penalties");
    if(tune)lambda_grid=mvpa_penalty_grid(grid_text?grid_text:"0.01,0.1,1,10,100",&nlambda,"lambda");
    if(svm_tune)svm_grid=mvpa_penalty_grid(svm_grid_text?svm_grid_text:"0.01,0.1,1,10,100",&svm_ngrid,"SVM C");
+   if(nuisance_columns && coef_prefix)
+     ERROR_exit(PROGRAM_NAME ": -save_coefficients cannot yet export nuisance-adjusted preprocessing; omit it with -nuisance_columns");
    if(coef_lambda_given && !coef_prefix)ERROR_exit(PROGRAM_NAME ": -coef_lambda requires -save_coefficients");
    if(coef_prefix){
      if(strcasecmp(method,"ridge"))ERROR_exit(PROGRAM_NAME ": -save_coefficients requires -method ridge");
@@ -1929,6 +1983,24 @@ int main( int argc, char **argv )
      if(!quiet)INFO_message(PROGRAM_NAME ": nested %s selection over %d penalties; inner groups from %s",svm_class?"SVM C":"ridge",svm_class?svm_ngrid:nlambda,inner_column);
    }
 
+   if(nuisance_columns){
+     int j;
+     nuisance=mvpa_numeric_columns(ss,nuisance_columns,&nuisance_names,&nnuisance);
+     /* Explicit targets/design predictors must not also be adjustment columns. */
+     { char *copy=strdup(encoding?design_columns:target_column),*cur=copy,*next;
+       if(!copy)ERROR_exit(PROGRAM_NAME ": cannot check nuisance column roles");
+       while(cur){next=strchr(cur,',');if(next)*next++='\0';
+         for(j=0;j<nnuisance;j++)if(!strcasecmp(cur,nuisance_names[j]))
+           ERROR_exit(PROGRAM_NAME ": nuisance column '%s' also appears in the target/design columns",cur);
+         cur=next;
+       }free(copy);
+     }
+     if(!THD_mvpa_check_nuisance(plan,nested,nuisance,nnuisance,err,sizeof(err)))
+       ERROR_exit(PROGRAM_NAME ": %s",err);
+     if(nperm>0)mvpa_nuisance_blocks(ss,nuisance,nnuisance,permute_within);
+     if(!quiet)INFO_message(PROGRAM_NAME ": predictor nuisance OLS: %s + intercept, fitted in every training split before scaling",nuisance_columns);
+   }
+
    if( nperm>0 && !validate_only ){
      int ip,*check_class ; long long group_size ;
      perm_scheme=THD_perm_scheme_new(ss->nsample) ;
@@ -2049,12 +2121,19 @@ int main( int argc, char **argv )
        ERROR_exit(PROGRAM_NAME ": mask has no selected positive-valued ROIs") ;
    }
    if(validate_only){
+     if(nuisance){
+       int f;
+       printf("# NuisanceColumns\t%s\n# NuisanceAdjustment\tpredictors_only_OLS_before_scaling\n# NuisanceDesign\tintercept_plus_%d_numeric_columns\n",nuisance_columns,nnuisance);
+       printf("# NuisanceTrainingRank\t%d\n# NuisanceOuterAndInnerRanks\tPASS\n",nnuisance+1);
+       for(f=0;f<plan->nfold;f++)printf("# NuisanceOuterResidualDF\t%s\t%d\n",plan->name[f],plan->ntrain[f]-nnuisance-1);
+       if(nperm)printf("# NuisancePermutation\trows_within_nuisance_constant_blocks\n");
+     }
      mvpa_validate_report(ss,plan,nested,rl,DSET_HEADNAME(mset),mode,method,encoding?design_columns:target_column,
                           continuous,class_id,class_label,nclass,group_id,lda_mode>=0,
                           nperm,permute_within);
      DSET_delete(mset);THD_roilist_free(rl);THD_nested_foldplan_free(nested);THD_foldplan_free(plan);
      THD_sampleset_free_levels(class_label,nclass);free(class_id);free(group_id);
-     free(lambda_grid);free(svm_grid);THD_sampleset_free(ss);
+     free(lambda_grid);free(svm_grid);THD_sampleset_free(ss);free(nuisance);THD_sampleset_free_levels(nuisance_names,nnuisance);
      return 0;
    }
    { const char *audit[]={save_predictions,save_fold_scores,save_confusion,save_summary_scores};int ai;
@@ -2108,14 +2187,14 @@ int main( int argc, char **argv )
    if(continuous){
      mvpa_continuous_analysis(ss,plan,mset,rl,encoding,encoding?design_columns:target_column,
        preprocess,group_id,lambda,metric,prefix,save_predictions,save_fold_scores,
-       nworker,quiet,nested,lambda_grid,nlambda,inner_column,perm_set,permute_within,two_tables,argc,argv);
+       nworker,quiet,nested,lambda_grid,nlambda,inner_column,perm_set,permute_within,nuisance,nnuisance,nuisance_columns,two_tables,argc,argv);
      if(coef_prefix)mvpa_descriptive_coefficients(ss,mset,rl,encoding,searchlight!=NULL,
        encoding?design_columns:target_column,NULL,NULL,0,preprocess,group_id,coef_lambda,
        coef_prefix,quiet,argc,argv);
      DSET_delete(mset);THD_roilist_free(rl);THD_nested_foldplan_free(nested);THD_foldplan_free(plan);
      free(lambda_grid);
      THD_perm_set_free(perm_set);
-     THD_sampleset_free(ss);free(group_id);return 0;
+     THD_sampleset_free(ss);free(nuisance);THD_sampleset_free_levels(nuisance_names,nnuisance);free(group_id);return 0;
    }
 
    x=(float **)calloc((size_t)nworker,sizeof(float *)) ;
@@ -2155,6 +2234,8 @@ int main( int argc, char **argv )
        svm_max_iter,metric,nested,svm_grid,svm_ngrid,err,sizeof(err)))ERROR_exit(PROGRAM_NAME ": %s",err);
      if(lda_mode>=0 && !THD_mvpa_classification_set_lda(workspace[ii],lda_mode,shrinkage,
                           variance_floor,empirical_prior,err,sizeof(err)))ERROR_exit(PROGRAM_NAME ": %s",err);
+     if(nuisance && !THD_preprocess_set_nuisance(ridge_class?workspace[ii]->ridge_cv->prep:workspace[ii]->prep,
+                          nuisance,ss->nsample,nnuisance,err,sizeof(err)))ERROR_exit(PROGRAM_NAME ": %s",err);
      if( perm_set!=NULL ){
        perm_class[ii]=(int *)malloc(sizeof(int)*(size_t)ss->nsample) ;
        perm_score[ii]=(float *)malloc(sizeof(float)*(size_t)perm_set->nperm) ;
@@ -2195,7 +2276,7 @@ int main( int argc, char **argv )
      if(!class_audit.truth || !class_audit.prediction || !class_audit.confusion || !class_audit.recall)
        ERROR_exit(PROGRAM_NAME ": cannot allocate classification audit scratch");
      if(save_confusion){
-       confusion_fp=mvpa_open_audit(save_confusion,"classification confusion audit");
+       confusion_fp=mvpa_open_audit(save_confusion,"classification confusion audit");mvpa_nuisance_header(confusion_fp,nuisance_columns);
        mvpa_write_audit_header(confusion_fp,"held-out classification confusion and recall",
                               target_column,class_label,nclass,searchlight!=NULL,surf_file!=NULL);
        fputs("# Descriptive only; original held-out predictions, no refits or population inference.\n"
@@ -2208,7 +2289,7 @@ int main( int argc, char **argv )
        fputs("\tCVFoldID\tCVStratum\n",confusion_fp);
      }
      if(save_summary_scores){
-       summary_fp=mvpa_open_audit(save_summary_scores,"classification summary audit");
+       summary_fp=mvpa_open_audit(save_summary_scores,"classification summary audit");mvpa_nuisance_header(summary_fp,nuisance_columns);
        mvpa_write_audit_header(summary_fp,"held-out classification summaries",
                               target_column,class_label,nclass,searchlight!=NULL,surf_file!=NULL);
        fputs("# Descriptive only; original held-out predictions, no refits or population inference.\n"
@@ -2223,6 +2304,7 @@ int main( int argc, char **argv )
    }
    if( save_predictions!=NULL ){
      prediction_fp=mvpa_open_audit(save_predictions,"prediction audit") ;
+     mvpa_nuisance_header(prediction_fp,nuisance_columns);
      mvpa_write_audit_header(prediction_fp,"row-level held-out predictions",
                              target_column,class_label,nclass,searchlight!=NULL,
                              surf_file!=NULL) ;
@@ -2237,6 +2319,7 @@ int main( int argc, char **argv )
    }
    if( save_fold_scores!=NULL ){
      fold_fp=mvpa_open_audit(save_fold_scores,"fold-score audit") ;
+     mvpa_nuisance_header(fold_fp,nuisance_columns);
      mvpa_write_audit_header(fold_fp,"per-fold classification scores",
                              target_column,class_label,nclass,searchlight!=NULL,
                              surf_file!=NULL) ;
@@ -2250,7 +2333,7 @@ int main( int argc, char **argv )
      fputc('\n',fold_fp);
    }
    if((ridge_class || svm_class) && nested){
-     class_tuning=mvpa_open_audit(class_tunefile,"classification tuning audit");
+     class_tuning=mvpa_open_audit(class_tunefile,"classification tuning audit");mvpa_nuisance_header(class_tuning,nuisance_columns);
      if(svm_class){
        fprintf(class_tuning,"# method=svm; inner_group=%s; objective=1-%s; ties=smallest_C; intercept_penalized=1\n",inner_column,THD_mvpa_metric_name(metric));
        fputs("# Columns: Unit\tCVFold\tCVStratum\tInnerNFold\tC\tInnerLoss\tSelected\n",class_tuning);
@@ -2388,7 +2471,7 @@ int main( int argc, char **argv )
    if( searchlight==NULL ){
      mvpa_write_roi_table(table_name,rl,score,acc,bacc,nfeat,nfold,
                           THD_mvpa_metric_name(metric),target_column,class_label,nclass,
-                          perm_result,qval,permute_within) ;
+                          perm_result,qval,permute_within,nuisance_columns) ;
    }
    if( DSET_write(oset)!=True ) ERROR_exit(PROGRAM_NAME ": failed writing output dataset") ;
    if( !quiet ){
@@ -2422,7 +2505,7 @@ int main( int argc, char **argv )
    free(perm_class) ; free(perm_score) ; free(perm_max) ;
    THD_perm_result_free(perm_result) ; THD_perm_set_free(perm_set) ;
    THD_sampleset_free_levels(class_label,nclass) ; free(class_id) ; free(group_id) ;
-   THD_sampleset_free(ss) ; free(score) ; free(acc) ; free(bacc) ;
+   THD_sampleset_free(ss) ; free(nuisance);THD_sampleset_free_levels(nuisance_names,nnuisance); free(score) ; free(acc) ; free(bacc) ;
    free(nfeat) ; free(nfold) ; free(qval) ; free(table_name) ;
    free(lambda_grid);free(svm_grid);free(class_tunefile);
    return 0 ;

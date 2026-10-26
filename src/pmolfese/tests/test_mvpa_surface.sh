@@ -459,3 +459,39 @@ for mode in classify decode encode; do
 done
 
 echo "PASS 3dMVPA sparse geodesic surface searchlights, fixed partitions and domain validation"
+
+# Nuisance adjustment on sparse surfaces: outer/inner fits and synchronized
+# permutations must agree across worker counts and retain original node IDs.
+awk 'BEGIN {for(v=0;v<4;v++){for(i=0;i<16;i++){
+  z=(i%4<2?-1:1);s=(i%2?-1:1);
+  printf "%s%.6f",(i?" ":""),(v<2?10+4*z+(v+1)*s+int(i/4)*.1:5+2*z);
+}printf "\n"}}' > "$work/nuis_values.1D"
+"$convertdset" -o_niml -input "$work/nuis_values.1D" \
+  -node_index_1D "$work/nodes.1D" -prefix "$work/nuis.niml.dset"
+awk -v file="$work/nuis.niml.dset" 'BEGIN {
+ print "Run Split Block Condition Y X Z InputFile";
+ for(i=0;i<16;i++){z=(i%4<2?-1:1);s=(i%2?-1:1);
+ printf "r%d %s b%d %s %.6f %.6f %d %s[%d]\n",int(i/4),(i<12?"train":"test"),int(i/2),(s<0?"A":"B"),3+2*s+.2*z,s+2*z,z,file,i;
+ }}' > "$work/nuis_table.1D"
+for mode in classify decode encode; do
+  role=(-target_column Condition)
+  if test "$mode" = decode; then role=(-target_column Y); fi
+  if test "$mode" = encode; then role=(-design_columns X -score pattern); fi
+  for workers in 1 2; do
+    OMP_NUM_THREADS=$workers "$mvpa" -mode "$mode" -method ridge \
+      -dataTableFile "$work/nuis_table.1D" -partition_column Split "${role[@]}" \
+      -nuisance_columns Z -lambda_grid 1,10 -inner_cv_column Run \
+      -nperm 9 -permute_within Block -seed 11 \
+      -mask "$work/mask.niml.dset" -surf "$work/mesh.gii" -searchlight 100 \
+      -prefix "$work/nuis_${mode}_${workers}.niml.dset" \
+      -save_predictions "$work/nuis_${mode}_${workers}.pred.1D"
+    "$convertdset" -o_1Dp_stdout -input "$work/nuis_${mode}_${workers}.niml.dset" \
+      -prepend_node_index_1D > "$work/nuis_${mode}_${workers}.1D"
+    awk 'BEGIN{id[1]=0;id[2]=2;id[3]=5;id[4]=9}
+         NF{n++;if($1!=id[n])exit 1} END{if(n!=4)exit 1}' "$work/nuis_${mode}_${workers}.1D"
+  done
+  for suffix in .1D .pred.1D .niml.dset.tuning.1D; do
+    cmp "$work/nuis_${mode}_1$suffix" "$work/nuis_${mode}_2$suffix"
+  done
+done
+echo "PASS 3dMVPA nuisance-adjusted sparse surface tuning and permutations"

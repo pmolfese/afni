@@ -33,6 +33,52 @@ static void paired_three_fold_plan( THD_foldplan *p )
    p->train=tr ; p->test=te ; p->sample_test_fold=sample_fold ;
 }
 
+static int nuisance_test(void)
+{
+   THD_foldplan plan;THD_mvpa_workspace *w=NULL;THD_nested_foldplan *nested=NULL;
+   int tr[]={0,1,2,3,4,5,6,7},te[]={8,9},sf[]={-1,-1,-1,-1,-1,-1,-1,-1,0,0};
+   int classes[]={0,0,0,0,1,1,1,1,0,1},groups[]={0,1,2,3,0,1,2,3,4,4};
+   float z[20],x[20],saved[4],nulls[2];int i,j,perm[20],scratch[10],fail=0;char err[1024];
+   signed char sign[20];PERM_set ps={0};
+   fixed_plan(&plan,10,tr,8,te,2,sf);
+   for(i=0;i<10;i++){
+      z[2*i]=i<8?(i%4<2?-1:1):(i==8?2:-2);z[2*i+1]=i%2?1:-1;
+      x[2*i]=5+3*z[2*i]-2*z[2*i+1]+(classes[i]?1:-1);
+      x[2*i+1]=9+7*z[2*i];
+   }
+   CHECK(THD_mvpa_check_nuisance(&plan,NULL,z,2,err,sizeof(err)),err);
+   nested=THD_nested_foldplan_grouped(&plan,groups,0,err,sizeof(err));CHECK(nested,err);
+   CHECK(THD_mvpa_check_nuisance(&plan,nested,z,2,err,sizeof(err)),"inner rank validation uses global training indices");
+   w=THD_mvpa_workspace_alloc(&plan,2,2,THD_PREP_FEATURE_ZSCORE,NULL,err,sizeof(err));CHECK(w,err);
+   CHECK(THD_preprocess_set_nuisance(w->prep,z,10,2,err,sizeof(err)),err);
+   CHECK(THD_mvpa_run_classification_cv(&plan,0,x,2,classes,NULL,w,err,sizeof(err)),err);
+   CHECK(w->prediction[8]==0 && w->prediction[9]==1,"genuine signal survives removal of two nuisance effects");
+   for(i=0;i<8;i++)CHECK(CLOSE(w->train_x[2*i],classes[i]?1:-1) && w->train_x[2*i+1]==0,
+      "OLS removes confound-only feature before scaling, retaining orthogonal signal");
+   for(i=0;i<4;i++)saved[i]=w->test_x[i];
+   x[18]+=10000;z[18]+=100;
+   CHECK(THD_mvpa_run_classification_cv(&plan,0,x,2,classes,NULL,w,err,sizeof(err)),err);
+   CHECK(CLOSE(w->test_x[0],saved[0]) && CLOSE(w->test_x[1],saved[1]),"held-out perturbations cannot change another test prediction or fitted scaling");
+   for(i=0;i<8;i++)CHECK(CLOSE(w->train_x[2*i],classes[i]?1:-1) && w->train_x[2*i+1]==0,"held-out perturbations leave training adjustment unchanged");
+   x[18]-=10000;z[18]-=100;
+   ps.nobs=10;ps.nperm=2;ps.perm=perm;ps.sign=sign;
+   for(i=0;i<20;i++){perm[i]=i%10;sign[i]=1;}perm[10]=4;perm[14]=0;
+   CHECK(THD_mvpa_run_classification_permutations(&plan,0,x,2,classes,NULL,THD_METRIC_ACCURACY,&ps,scratch,nulls,w,err,sizeof(err)),err);
+   CHECK(w->prediction[8]==0 && w->prediction[9]==1 && nulls[0]==1,"nuisance-preserving permutations restore observed fit");
+   perm[10]=1;perm[11]=4;
+   CHECK(!THD_mvpa_run_classification_permutations(&plan,0,x,2,classes,NULL,THD_METRIC_ACCURACY,&ps,scratch,nulls,w,err,sizeof(err)) && strstr(err,"preserve every covariate"),"library rejects nuisance-changing permutations");
+   CHECK(THD_preprocess_set_nuisance(w->prep,z,9,2,err,sizeof(err)),err);
+   CHECK(!THD_mvpa_run_classification_permutations(&plan,0,x,2,classes,NULL,THD_METRIC_ACCURACY,&ps,scratch,nulls,w,err,sizeof(err)) && strstr(err,"dimensions"),"nuisance permutation dimensions checked before row access");
+   for(i=0;i<10;i++)z[2*i+1]=2*z[2*i];
+   CHECK(!THD_mvpa_check_nuisance(&plan,NULL,z,2,err,sizeof(err)) && strstr(err,"rank deficient"),"redundant covariates rejected");
+   for(i=0;i<10;i++)for(j=0;j<2;j++)z[2*i+j]=1;
+   CHECK(!THD_mvpa_check_nuisance(&plan,NULL,z,2,err,sizeof(err)) && strstr(err,"constant"),"constant nuisance column rejected");
+   CHECK(THD_preprocess_set_nuisance(w->prep,NULL,0,0,err,sizeof(err)),"disable nuisance adjustment");
+   CHECK(!THD_preprocess_apply(w->prep,x,10,2,te,2,NULL,saved,err,sizeof(err)),"configuration change invalidates previous fit");
+done:
+   THD_nested_foldplan_free(nested);THD_mvpa_workspace_free(w);return fail;
+}
+
 static int svm_test(void)
 {
    int fail=0,i,j,pred[6],classes[]={0,1},majority[]={0,0,1};char err[1024];
@@ -693,6 +739,6 @@ done:
    THD_mvpa_workspace_free(ws) ;
    THD_centroid_free(cm) ;
    THD_preprocess_free(p) ;
-   if( fail || svm_test() || ridge_test() || nested_ridge_test() || ridge_permutation_test() || ridge_classification_test() || lda_test() ) return 1 ;
+   if( fail || nuisance_test() || svm_test() || ridge_test() || nested_ridge_test() || ridge_permutation_test() || ridge_classification_test() || lda_test() ) return 1 ;
    puts("PASS thd_mvpa preprocessing, metrics, classifiers, CV, and permutation runner") ; return 0 ;
 }

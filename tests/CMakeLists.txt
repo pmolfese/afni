@@ -242,6 +242,14 @@ if(TARGET 3dMVPA AND TARGET 3dUndump AND TARGET 3dbucket
     )
     set_tests_properties(3dMVPA:fixed-partitions PROPERTIES
                          LABELS "3dMVPA;numeric;integration")
+    add_test(
+      NAME 3dMVPA:nuisance
+      COMMAND ${Python_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_nuisance.py
+        $<TARGET_FILE:3dMVPA>
+    )
+    set_tests_properties(3dMVPA:nuisance PROPERTIES
+                         LABELS "3dMVPA;numeric;integration")
   endif()
 endif()
 

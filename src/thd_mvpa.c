@@ -361,12 +361,125 @@ int THD_mvpa_score_continuous( const float *truth, const float *prediction,
    return 1 ;
 }
 
+/* Training-only OLS in a centered/scaled nuisance design. Twice-reorthogonalized
+   modified Gram-Schmidt avoids forming the normal equations. */
+struct THD_nuisance {
+   const float *z;
+   int n,k,pmax,pfit;
+   double *mean,*scale,*q,*r,*beta,*xmean;
+   float *residual;
+};
+
+static void nuisance_free(THD_nuisance *a)
+{
+   if(!a)return;
+   free(a->mean);free(a->scale);free(a->q);free(a->r);
+   free(a->beta);free(a->xmean);free(a->residual);free(a);
+}
+
+int THD_preprocess_set_nuisance(THD_preprocessor *p,const float *z,
+   int n,int k,char *err,int nerr)
+{
+   THD_nuisance *a;size_t i;
+   if(err && nerr>0)err[0]='\0';
+   if(!p)return pp_error(err,nerr,"nuisance adjustment needs a preprocessor");
+   if(!z && k==0){nuisance_free(p->nuisance);p->nuisance=NULL;p->nfit=0;return 1;}
+   if(!z || n<1 || k<1 || k>=n || p->nfeature_alloc<1 ||
+      (size_t)n>SIZE_MAX/sizeof(double)/(size_t)k ||
+      (size_t)k>SIZE_MAX/sizeof(double)/(size_t)p->nfeature_alloc ||
+      (size_t)n>SIZE_MAX/sizeof(float)/(size_t)p->nfeature_alloc)
+      return pp_error(err,nerr,"invalid or excessive nuisance dimensions");
+   for(i=0;i<(size_t)n*k;i++)if(!isfinite(z[i]))
+      return pp_error(err,nerr,"nuisance covariates must be finite");
+   a=calloc(1,sizeof(*a));if(!a)return pp_error(err,nerr,"cannot allocate nuisance adjustment");
+   a->z=z;a->n=n;a->k=k;a->pmax=p->nfeature_alloc;
+   a->mean=malloc(sizeof(double)*(size_t)k);a->scale=malloc(sizeof(double)*(size_t)k);
+   a->q=malloc(sizeof(double)*(size_t)n*k);a->r=malloc(sizeof(double)*(size_t)k*k);
+   a->beta=malloc(sizeof(double)*(size_t)k*a->pmax);a->xmean=malloc(sizeof(double)*(size_t)a->pmax);
+   a->residual=malloc(sizeof(float)*(size_t)n*a->pmax);
+   if(!a->mean || !a->scale || !a->q || !a->r || !a->beta || !a->xmean || !a->residual){
+      nuisance_free(a);return pp_error(err,nerr,"cannot allocate nuisance buffers");
+   }
+   nuisance_free(p->nuisance);p->nuisance=a;p->nfit=0;return 1;
+}
+
+static double nuisance_value(const THD_nuisance *a,const float *x,int p,int row,int col)
+{
+   double raw=x[(size_t)row*p+col],fit=a->xmean[col],magnitude=fabs(raw)+fabs(fit);int j;
+   for(j=0;j<a->k;j++){
+      double term=((double)a->z[(size_t)row*a->k+j]-a->mean[j])/a->scale[j]*a->beta[(size_t)j*p+col];
+      fit+=term;magnitude+=fabs(term);
+   }
+   /* Suppress roundoff remnants of exactly explained signals before zscoring. */
+   return fabs(raw-fit)<=64*DBL_EPSILON*fmax(1.0,magnitude)?0.0:raw-fit;
+}
+
+static int nuisance_refit(THD_nuisance *a,const float *x,int n,int p,
+   const int *rows,int nt,char *err,int nerr)
+{
+   int i,j,l,f,pass,k=a->k;
+   a->pfit=0;
+   if(n!=a->n || p>a->pmax || nt<=k+1)
+      return pp_error(err,nerr,"nuisance adjustment needs more training rows than covariates plus intercept (%d rows, %d covariates)",nt,k);
+   memset(a->r,0,sizeof(double)*(size_t)k*k);
+   for(i=0;i<nt;i++)if(rows[i]<0 || rows[i]>=n)
+      return pp_error(err,nerr,"invalid nuisance training row");
+   for(j=0;j<k;j++){
+      double mean=0,ss=0;
+      for(i=0;i<nt;i++)mean+=a->z[(size_t)rows[i]*k+j];mean/=nt;a->mean[j]=mean;
+      for(i=0;i<nt;i++){double v=(double)a->z[(size_t)rows[i]*k+j]-mean;ss+=v*v;}
+      a->scale[j]=sqrt(ss/nt);
+      if(!isfinite(a->scale[j]) || a->scale[j]<=DBL_EPSILON*fmax(1.0,fabs(mean)))
+         return pp_error(err,nerr,"nuisance design is rank deficient: column %d is constant in training",j+1);
+      for(i=0;i<nt;i++)a->q[(size_t)i*k+j]=((double)a->z[(size_t)rows[i]*k+j]-mean)/a->scale[j];
+      for(pass=0;pass<2;pass++)for(l=0;l<j;l++){
+         double dot=0;for(i=0;i<nt;i++)dot+=a->q[(size_t)i*k+l]*a->q[(size_t)i*k+j];
+         a->r[(size_t)l*k+j]+=dot;
+         for(i=0;i<nt;i++)a->q[(size_t)i*k+j]-=dot*a->q[(size_t)i*k+l];
+      }
+      ss=0;for(i=0;i<nt;i++){double v=a->q[(size_t)i*k+j];ss+=v*v;}
+      a->r[(size_t)j*k+j]=sqrt(ss);
+      if(!isfinite(ss) || sqrt(ss)<=1e-10*sqrt((double)nt))
+         return pp_error(err,nerr,"nuisance design is rank deficient or ill-conditioned at column %d",j+1);
+      for(i=0;i<nt;i++)a->q[(size_t)i*k+j]/=sqrt(ss);
+   }
+   for(f=0;f<p;f++){
+      double mean=0;for(i=0;i<nt;i++)mean+=x[(size_t)rows[i]*p+f];mean/=nt;a->xmean[f]=mean;
+      for(j=0;j<k;j++){
+         double dot=0;for(i=0;i<nt;i++)dot+=a->q[(size_t)i*k+j]*((double)x[(size_t)rows[i]*p+f]-mean);
+         a->beta[(size_t)j*p+f]=dot;
+      }
+      for(j=k-1;j>=0;j--){
+         double b=a->beta[(size_t)j*p+f];
+         for(l=j+1;l<k;l++)b-=a->r[(size_t)j*k+l]*a->beta[(size_t)l*p+f];
+         a->beta[(size_t)j*p+f]=b/a->r[(size_t)j*k+j];
+      }
+   }
+   for(i=0;i<nt;i++)for(f=0;f<p;f++){
+      double value=nuisance_value(a,x,p,rows[i],f);
+      if(!isfinite(value) || fabs(value)>FLT_MAX)return pp_error(err,nerr,"nuisance residual is outside the float range");
+      a->residual[(size_t)rows[i]*p+f]=(float)value;
+   }
+   a->pfit=p;return 1;
+}
+
+static int nuisance_permutation(const THD_preprocessor *p,const int *perm,int n,char *err,int nerr)
+{
+   const THD_nuisance *a=p->nuisance;int i,j;
+   if(!a)return 1;
+   if(a->n!=n)return pp_error(err,nerr,"nuisance permutation dimensions do not match the sample set");
+   for(i=0;i<a->n;i++)for(j=0;j<a->k;j++)
+      if(a->z[(size_t)i*a->k+j]!=a->z[(size_t)perm[i]*a->k+j])
+         return pp_error(err,nerr,"nuisance permutation must preserve every covariate row; use nuisance-constant exchangeability blocks");
+   return 1;
+}
+
 void THD_preprocess_free( THD_preprocessor *p )
 {
    if( p==NULL ) return ;
    free(p->group_value) ; free(p->group_count) ;
    free(p->center) ; free(p->scale) ;
-   free(p->constant) ; free(p) ;
+   free(p->constant) ; nuisance_free(p->nuisance) ; free(p) ;
 }
 
 const char * THD_preprocess_name( int method )
@@ -458,6 +571,11 @@ static int pp_refit( THD_preprocessor *p, int method, const float *x,
      return 0 ;
    if( method==THD_PREP_RUN_CENTER && group_id==NULL )
      return pp_error(err,nerr,"run_center needs one group ID per sample") ;
+   p->nfit=0;
+   if(p->nuisance){
+      if(!nuisance_refit(p->nuisance,x,nsample,nfeature,fit_index,nfit,err,nerr))return 0;
+      x=p->nuisance->residual;
+   }
    p->method=method ; p->nfeature=nfeature ; p->nfit=nfit ;
    p->ngroup=0 ; p->nconstant=0 ;
    if( method==THD_PREP_NONE || method==THD_PREP_SAMPLE_CENTER ) return 1 ;
@@ -510,6 +628,37 @@ static int pp_refit( THD_preprocessor *p, int method, const float *x,
    return 1 ;
 }
 
+int THD_mvpa_check_nuisance(const THD_foldplan *plan,
+   const THD_nested_foldplan *nested,const float *z,int k,char *err,int nerr)
+{
+   THD_preprocessor *p=NULL;float *dummy=NULL;int *rows=NULL,f,g,i,ok=0;char why[512];
+   if(!THD_foldplan_validate(plan,err,nerr))return 0;
+   if(nested && (nested->outer!=plan || !nested->inner))return pp_error(err,nerr,"nuisance nested plan does not match outer plan");
+   p=pp_alloc(1,1,err,nerr);if(!p)return 0;
+   dummy=calloc((size_t)plan->nsample,sizeof(float));rows=malloc(sizeof(int)*(size_t)plan->nsample);
+   if(!dummy || !rows){pp_error(err,nerr,"cannot allocate nuisance fold validation");goto done;}
+   if(!THD_preprocess_set_nuisance(p,z,plan->nsample,k,err,nerr))goto done;
+   for(f=0;f<plan->nfold;f++){
+      if(!pp_refit(p,THD_PREP_NONE,dummy,plan->nsample,1,plan->train[f],plan->ntrain[f],NULL,0,why,sizeof(why))){
+         pp_error(err,nerr,"outer fold %s: %s",plan->name[f],why);goto done;
+      }
+      if(nested){
+         const THD_foldplan *in=nested->inner[f];
+         if(!THD_foldplan_validate(in,err,nerr))goto done;
+         if(in->nsample!=plan->ntrain[f]){pp_error(err,nerr,"nuisance inner fold size mismatch");goto done;}
+         for(g=0;g<in->nfold;g++){
+            for(i=0;i<in->ntrain[g];i++)rows[i]=plan->train[f][in->train[g][i]];
+            if(!pp_refit(p,THD_PREP_NONE,dummy,plan->nsample,1,rows,in->ntrain[g],NULL,0,why,sizeof(why))){
+               pp_error(err,nerr,"outer fold %s, inner fold %s: %s",plan->name[f],in->name[g],why);goto done;
+            }
+         }
+      }
+   }
+   ok=1;
+done:
+   free(rows);free(dummy);THD_preprocess_free(p);return ok;
+}
+
 THD_preprocessor * THD_preprocess_fit( int method, const float *x,
                                         int nsample, int nfeature,
                                         const int *fit_index, int nfit,
@@ -553,7 +702,8 @@ static int pp_apply( const THD_preprocessor *p, const float *x,
                      int check_rows, char *err, int nerr )
 {
    int ii,jj ;
-   if( p==NULL || out==NULL || p->nfeature!=nfeature )
+   if( p==NULL || out==NULL || p->nfit<1 || p->nfeature!=nfeature ||
+       (p->nuisance && (p->nuisance->n!=nsample || p->nuisance->pfit!=nfeature)) )
      return pp_error(err,nerr,"invalid fitted preprocessing object or output shape") ;
    if( out==x ) return pp_error(err,nerr,"preprocessing output must not alias its input matrix") ;
    if( p->method==THD_PREP_RUN_CENTER && group_id==NULL )
@@ -563,6 +713,14 @@ static int pp_apply( const THD_preprocessor *p, const float *x,
    for( ii=0 ; ii<napply ; ii++ ){
      int ss=apply_index[ii],gg=-1 ; const float *row=x+(size_t)ss*nfeature ;
      float *dest=out+(size_t)ii*nfeature ; double rowmean=0.0 ;
+     if(p->nuisance){
+       for(jj=0;jj<nfeature;jj++){
+         double v=nuisance_value(p->nuisance,x,nfeature,ss,jj);
+         if(!isfinite(v) || fabs(v)>FLT_MAX)return pp_error(err,nerr,"nuisance residual is outside the float range at sample %d",ss+1);
+         dest[jj]=(float)v;
+       }
+       row=dest;
+     }
      if( p->method==THD_PREP_RUN_CENTER ){
        gg=pp_group_index(p,group_id[ss]) ;
        if( gg<0 ) return pp_error(err,nerr,"sample %d has run/group %d, which was not present in training",ss+1,group_id[ss]) ;
@@ -1110,6 +1268,7 @@ int THD_mvpa_run_ridge_permutations(THD_mvpa_ridge_workspace *w,
          w->index_scratch[src]=1;
          memcpy(permuted+(size_t)i*width,attr+(size_t)src*width,sizeof(float)*(size_t)width);
       }
+      if(!nuisance_permutation(w->prep,perm,n,err,nerr))return 0;
       if(!THD_mvpa_run_ridge_cv(w,shuffle_predictors?permuted:x,p,
             shuffle_predictors?y:permuted,q,group,lambda,why,sizeof(why)))
          return pp_error(err,nerr,"continuous row relabeling %d: %s",ip+1,why);
@@ -1649,6 +1808,7 @@ int THD_mvpa_run_classification_permutations(
        w->prediction[src]=1;
        permuted_class[ii]=class_id[src] ;
      }
+     if(!nuisance_permutation(w->ridge_cv?w->ridge_cv->prep:w->prep,perm,pset->nobs,err,nerr))return 0;
      if( !THD_mvpa_run_classification_cv(plan,distance,x,nfeature,permuted_class,
                                     group_id,w,why,sizeof(why)) )
        return pp_error(err,nerr,"label relabeling %d: %s",ip+1,why) ;
