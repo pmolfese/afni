@@ -1,0 +1,7 @@
+# Synthetic regression fixture; not experimental findings.
+# models   : joint regression
+# metric   : correlation neural, Pearson comparison
+#ROI label nvox A_b A_pr A_p A_q A_dualLo A_dualHi B_b B_pr B_p B_q B_dualLo B_dualHi reliability
+9 Region_C 90 1.4 0.6 0.01 0.03 0.8 1.8 -0.4 -0.2 0.40 0.55 -0.8 0.1 0.70
+2 Region_A 100 -0.2 -0.1 0.6 0.75 -0.5 0.4 0.9 0.5 0.02 0.04 0.3 1.3 0.65
+5 Region_B 110 0.7 0.4 0.03 0.06 0.2 1.1 0.5 0.3 0.06 0.12 0.1 1.0 0.80

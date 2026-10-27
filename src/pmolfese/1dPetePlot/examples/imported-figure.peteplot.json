@@ -1,0 +1,196 @@
+{
+  "format": "1dPetePlot",
+  "version": 2,
+  "origin": {
+    "arguments": [],
+    "sources": [],
+    "imports": [
+      {
+        "id": 0,
+        "origin": {
+          "arguments": [
+            "-infiles",
+            "import-demo.tsv[2,3]",
+            "-one",
+            "-legend_on",
+            "-legend_labels",
+            "model_A",
+            "model_B",
+            "-xfile",
+            "import-demo.tsv[1]"
+          ],
+          "sources": [
+            {
+              "argument": 1,
+              "fingerprint": "fnv1a64:257:dfd494f95aa2ed2e"
+            },
+            {
+              "argument": 8,
+              "fingerprint": "fnv1a64:257:dfd494f95aa2ed2e"
+            }
+          ]
+        },
+        "roles": {
+          "columns": [
+            "label",
+            "time",
+            "model_A",
+            "model_B"
+          ],
+          "x": 1,
+          "y": [
+            2,
+            3
+          ],
+          "kind": "Lines",
+          "missing": "error"
+        }
+      },
+      {
+        "id": 1,
+        "origin": {
+          "arguments": [
+            "-infiles",
+            "import-demo.tsv[2,3]",
+            "-one",
+            "-legend_on",
+            "-legend_labels",
+            "model_A",
+            "model_B",
+            "-histogram",
+            "-histbin",
+            "6"
+          ],
+          "sources": [
+            {
+              "argument": 1,
+              "fingerprint": "fnv1a64:257:dfd494f95aa2ed2e"
+            }
+          ]
+        },
+        "roles": {
+          "columns": [
+            "label",
+            "time",
+            "model_A",
+            "model_B"
+          ],
+          "x": null,
+          "y": [
+            2,
+            3
+          ],
+          "kind": "Distribution",
+          "missing": "error"
+        }
+      },
+      {
+        "id": 2,
+        "origin": {
+          "arguments": [
+            "-infiles",
+            "import-demo.tsv[3]",
+            "-one",
+            "-legend_on",
+            "-legend_labels",
+            "model_B",
+            "-scatter",
+            "-diagonal",
+            "-xfile",
+            "import-demo.tsv[2]"
+          ],
+          "sources": [
+            {
+              "argument": 1,
+              "fingerprint": "fnv1a64:257:dfd494f95aa2ed2e"
+            },
+            {
+              "argument": 9,
+              "fingerprint": "fnv1a64:257:dfd494f95aa2ed2e"
+            }
+          ]
+        },
+        "roles": {
+          "columns": [
+            "label",
+            "time",
+            "model_A",
+            "model_B"
+          ],
+          "x": 2,
+          "y": [
+            3
+          ],
+          "kind": "Scatter",
+          "missing": "error"
+        }
+      }
+    ]
+  },
+  "state": {
+    "presentation": {
+      "title": "One table, three perspectives",
+      "subtitle": "Synthetic import example \u00b7 independent graph recipes",
+      "caption": "Each graph retains its source, column mapping, and editable presentation.",
+      "columns": 2,
+      "panels": [
+        {
+          "id": 0,
+          "title": "Two curves from one table",
+          "caption": "Select time as X and both model columns as Y.",
+          "xlabel": "Time",
+          "ylabel": "Effect"
+        },
+        {
+          "id": 1,
+          "title": "Distributions of the same observations",
+          "caption": "Histogram counts use every selected observation.",
+          "xlabel": "Effect",
+          "ylabel": "Count"
+        },
+        {
+          "id": 2,
+          "title": "Paired model values",
+          "caption": "Choose model_A as X and model_B as Y.",
+          "xlabel": "Model A",
+          "ylabel": "Model B"
+        }
+      ]
+    },
+    "views": [
+      {
+        "x": [
+          0,
+          7
+        ],
+        "y": [
+          0,
+          0.7
+        ]
+      },
+      {
+        "x": [
+          0,
+          0.7
+        ],
+        "y": [
+          0,
+          4
+        ]
+      },
+      {
+        "x": [
+          0,
+          0.7
+        ],
+        "y": [
+          0,
+          0.7
+        ]
+      }
+    ],
+    "width": 1500,
+    "height": 1100,
+    "full_plot": true
+  }
+}

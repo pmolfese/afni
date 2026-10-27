@@ -1,0 +1,37 @@
+[package]
+name = "afni-peteplot"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Native and headless RSA plotting prototype for AFNI"
+publish = false
+
+[[bin]]
+name = "1dPetePlot"
+path = "src/main.rs"
+
+[features]
+default = ["gui"]
+gui = ["dep:eframe", "dep:wgpu", "dep:rfd", "dep:arboard", "dep:muda"]
+
+[dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Already used by the renderer; reuse its font metrics for caption layout.
+ttf-parser = "0.25.1"
+resvg = { version = "=0.45.1", default-features = false, features = ["text"] }
+tempfile = "3.27"
+eframe = { version = "=0.36.2", optional = true, default-features = false, features = ["default_fonts", "wgpu_no_default_features", "wayland"] }
+wgpu = { version = "30.0", optional = true, default-features = false, features = ["std", "wgsl", "metal", "vulkan"] }
+
+rfd = { version = "=0.17.2", optional = true }
+arboard = { version = "=3.7.0", optional = true, default-features = false, features = ["image-data", "wayland-data-control"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "=0.21.2", optional = true, default-features = false }
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"
+

@@ -1,0 +1,28 @@
+{
+  "format": "1dPetePlot",
+  "version": 1,
+  "origin": {
+    "arguments": ["-demo", "line"],
+    "sources": []
+  },
+  "state": {
+    "presentation": {
+      "title": "Model evidence through time",
+      "caption": "Figure 1. Two illustrative model time courses. These are synthetic data; the shaded band illustrates uncertainty and is not an inferential result.",
+      "columns": 1,
+      "panels": [
+        {
+          "id": 0,
+          "title": "Comparing the time courses",
+          "caption": "Model A peaks earlier than Model B in this synthetic example.",
+          "xlabel": "Time (s)",
+          "ylabel": "Association (r)"
+        }
+      ]
+    },
+    "views": [{"x": [0, 119], "y": [0, 0.8]}],
+    "width": 1500,
+    "height": 1000,
+    "full_plot": false
+  }
+}

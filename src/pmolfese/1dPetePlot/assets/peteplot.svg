@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#163c51"/><stop offset="1" stop-color="#126c7c"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="url(#tile)"/>
+  <path d="M48 62V207H211" fill="none" stroke="#a0d2d7" stroke-width="5" stroke-linecap="round" opacity=".55"/>
+  <path d="M49 107H210M49 155H210M99 62V207M151 62V207M202 62V207" fill="none" stroke="#a0d2d7" stroke-width="2" opacity=".12"/>
+  <path d="M60 178L92 149L119 165L149 126L177 141L210 100" fill="none" stroke="#f3b46a" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M91 178V58H138C167 58 183 72 183 96C183 121 166 136 138 136H115V178ZM115 80V114H137C151 114 159 108 159 97C159 86 152 80 137 80Z" fill="#092f42" opacity=".3" transform="translate(0 4)"/>
+  <path d="M91 178V58H138C167 58 183 72 183 96C183 121 166 136 138 136H115V178ZM115 80V114H137C151 114 159 108 159 97C159 86 152 80 137 80Z" fill="#f7fcfc" fill-rule="evenodd"/>
+  <circle cx="210" cy="100" r="7" fill="#ffce8b"/>
+</svg>

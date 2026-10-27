@@ -1,0 +1,10 @@
+# Synthetic values for trying Open Data / drop-to-preview. Not experimental findings.
+label	time	model_A	model_B
+ROI_A	0	0.10	0.14
+ROI_B	1	0.24	0.19
+ROI_C	2	0.18	0.28
+ROI_D	3	0.43	0.36
+ROI_E	4	0.31	0.39
+ROI_F	5	0.58	0.48
+ROI_G	6	0.42	0.52
+ROI_H	7	0.66	0.61

@@ -1,0 +1,7 @@
+/target/
+/gallery/
+
+# AFNI's root ignores Makefiles and .1D data; these are source fixtures.
+!/Makefile
+!/examples/*.1D
+!/examples/rsa/*.1D
