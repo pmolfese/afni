@@ -53,6 +53,26 @@
 
 afni_history_struct rickr_history[] = {
 
+ { 27, Oct, 2026, RCR, "gen_ss_review_table.py", MINOR, TYPE_ENHANCE,
+   "add example using APQC out.ss_review.*.json files",
+   NULL
+ } ,
+
+ { 23, Oct, 2026, RCR, "make_random_timing.py", MINOR, TYPE_NEW_OPT,
+   "add option -post_elist_merge, to finally merge one condition into another",
+   "Added for C Walsh."
+ } ,
+
+ { 18, Oct, 2026, RCR, "install_bootcamp_data.tcsh", MICRO, TYPE_ENHANCE,
+   "when not downloading, allow install from above afni_boot_packages",
+   NULL
+ } ,
+
+ { 16, Oct, 2026, RCR, "afni_open", MINOR, TYPE_ENHANCE,
+   "also search pub/dist/edu/data/sample; make repeated tries more clear",
+   NULL
+ } ,
+
  {  9, Oct, 2026, RCR, "afni_proc.py", MINOR, TYPE_ENHANCE,
    "add and reorder rest examples under demo 2",
    "Add examples demo 2a: basic rest, 2b: ROI analysis, 2c: physio.\n"

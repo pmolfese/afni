@@ -260,7 +260,7 @@ int main( int argc , char * argv[] )
          }
          mask_bot = strtod( argv[++narg] , NULL ) ;
          mask_top = strtod( argv[++narg] , NULL ) ;
-         if( mask_top < mask_top ){
+         if( mask_top < mask_bot ){
             fprintf(stderr,"*** -mrange inputs are illegal!\n") ; exit(1) ;
          }
          narg++ ; continue ;
@@ -287,7 +287,7 @@ int main( int argc , char * argv[] )
          }
          data_bot = strtod( argv[++narg] , NULL ) ;
          data_top = strtod( argv[++narg] , NULL ) ;
-         if( data_top < data_top ){
+         if( data_top < data_bot ){
             fprintf(stderr,"*** -mrange inputs are illegal!\n") ; exit(1) ;
          }
          drange = 1 ;
@@ -336,7 +336,7 @@ int main( int argc , char * argv[] )
       }
 
       if( strncmp(argv[narg],"-perc",5) == 0 ){
-        if( narg+1 > argc ) ERROR_exit("need argument after '-perc'") ;
+        if( narg+1 >= argc ) ERROR_exit("need argument after '-perc'") ;
         perc = (float)strtod(argv[++narg],NULL) ;
         if( perc < 0.0f || perc > 100.0f )
           ERROR_exit("'-perc %s' is not legal [range is 0..100]",argv[narg]) ;
@@ -676,7 +676,9 @@ int main( int argc , char * argv[] )
               float *qar=(float *)malloc(sizeof(float)*mc) ; int iq ;
               memcpy(qar,exar,sizeof(float)*mc) ;
               qsort_float(mc,qar) ;
-              iq = (int)rintf(0.01f*perc*mc) ; sum = qar[iq] ; free(qar) ;
+              iq = (int)rintf(0.01f*perc*mc) ;
+              if( iq >= mc ) iq = mc-1 ;   /* -perc near 100 rounded to mc: OOB read */
+              sum = qar[iq] ; free(qar) ;
             }
 
             sum = mfac * sum ;
@@ -738,7 +740,9 @@ int main( int argc , char * argv[] )
               float *qar=(float *)malloc(sizeof(float)*mc) ; int iq ;
               memcpy(qar,exar,sizeof(float)*mc) ;
               qsort_float(mc,qar) ;
-              iq = (int)rintf(0.01f*perc*mc) ; sum = qar[iq] ; free(qar) ;
+              iq = (int)rintf(0.01f*perc*mc) ;
+              if( iq >= mc ) iq = mc-1 ;   /* -perc near 100 rounded to mc: OOB read */
+              sum = qar[iq] ; free(qar) ;
             }
             sum = mfac * sum ;
 
@@ -799,7 +803,9 @@ int main( int argc , char * argv[] )
               float *qar=(float *)malloc(sizeof(float)*mc) ; int iq ;
               memcpy(qar,exar,sizeof(float)*mc) ;
               qsort_float(mc,qar) ;
-              iq = (int)rintf(0.01f*perc*mc) ; sum = qar[iq] ; free(qar) ;
+              iq = (int)rintf(0.01f*perc*mc) ;
+              if( iq >= mc ) iq = mc-1 ;   /* -perc near 100 rounded to mc: OOB read */
+              sum = qar[iq] ; free(qar) ;
             }
             sum = mfac * sum ;
 
