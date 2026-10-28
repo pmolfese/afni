@@ -334,6 +334,7 @@ add_afni_executable(
   3dInSync
   3dInSync.c
   thd_insync.c
+  thd_insync_stats.c
   thd_xmat.c
   thd_datatable.c
   thd_simmatrix.c
