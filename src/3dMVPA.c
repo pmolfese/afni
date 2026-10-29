@@ -35,6 +35,7 @@ static char *mvpa_options[]={
    "-testTable","-testTableFile",
    "-target_column","-target_columns","-design_columns","-lambda","-score",
    "-lambda_grid","-inner_cv_column","-inner_cv_k","-nuisance_columns",
+   "-select_features","-select_features_grid",
    "-shrinkage","-class_prior","-variance_floor",
    "-svm_c","-svm_c_grid","-svm_tol","-svm_max_iter",
    "-cv_column","-cv","-cv_k","-within_column",
@@ -224,6 +225,38 @@ static void usage_3dMVPA( void )
 "                         PREFIX.tuning.1D records all candidate losses;\n"
 "                         fold audits append selected penalties and losses.\n"
 "  -distance D            Centroid only: euclidean [default], correlation, cosine.\n"
+"  -select_features K     Retain the top K predictors per training split.\n"
+"  -select_features_grid K1,K2,... Tune distinct positive counts in grouped\n"
+"                         inner CV, jointly with lambda/C when tuned. These\n"
+"                         options are mutually exclusive; default is all features.\n"
+"                         Counts are capped at each unit's available width.\n"
+"                         Every training split needs at least two samples.\n"
+"                         Classification: rank between-class / total variance\n"
+"                         (eta squared). Decode/encode: mean squared Pearson\n"
+"                         correlation over nonconstant response columns.\n"
+"                         Constant features score zero; exact ties use the lower\n"
+"                         original input-column index. Zero-score features can\n"
+"                         fill the requested count; scores are not significance.\n"
+"                         Order: nuisance OLS, scaling of ALL original columns,\n"
+"                         supervised selection, model fit. sample_center therefore\n"
+"                         centers the full pattern before selecting columns.\n"
+"                         Selection is refitted in every inner/outer split and\n"
+"                         permutation. Never select once before cross-validation.\n"
+"                         Ridge tunes normalized squared loss; other classifiers\n"
+"                         tune 1-ACC/BACC using -metric. Ties prefer smaller counts,\n"
+"                         then largest lambda / smallest C. With constant ridge\n"
+"                         responses, use the same tie rule (loss is NaN).\n"
+"                         Encoding selects design columns, shared across the\n"
+"                         current unit's responses; it does not select output voxels.\n"
+"                         Writes PREFIX.features.1D with observed outer-fold\n"
+"                         original voxel/node IDs or design names, ranks, scores,\n"
+"                         requested/effective counts. With inner CV, also writes\n"
+"                         PREFIX.feature_tuning.1D with all count/penalty losses.\n"
+"                         Existing tuning audits condition on the selected count.\n"
+"                         NFeat in existing maps/tables remains the input width.\n"
+"                         Fixed partitions need explicit -inner_cv_column for a\n"
+"                         count grid. Incompatible with -save_coefficients.\n"
+"\n"
 "  -nuisance_columns C1,C2,... Numeric covariates for predictor-side OLS.\n"
 "                         Fits intercept and slopes using training rows only,\n"
 "                         subtracts their prediction, then applies -scale.\n"
@@ -927,6 +960,71 @@ static double *mvpa_penalty_grid(const char *text,int *count,const char *what)
    free(copy);*count=n;return grid;
 }
 
+static void mvpa_neural_id(char *text,int size,THD_3dim_dataset *mset,int row);
+
+typedef struct { FILE *features,*tuning; } mvpa_selection_audit;
+static char *mvpa_selection_filename(const char *prefix,int tuning)
+{
+   char *name=malloc(strlen(prefix)+32);
+   if(!name)ERROR_exit(PROGRAM_NAME ": cannot name feature selection audit");
+   snprintf(name,strlen(prefix)+32,"%s.%s.1D",prefix,tuning?"feature_tuning":"features");return name;
+}
+static void mvpa_selection_open(mvpa_selection_audit *a,const char *prefix,
+ int continuous,int nested,int metric,const char *nuisance_columns,int ridge)
+{
+   int i;
+   for(i=0;i<(nested?2:1);i++){
+      char *name=mvpa_selection_filename(prefix,i);
+      FILE *fp=mvpa_open_audit(name,"feature selection audit");free(name);
+      mvpa_nuisance_header(fp,nuisance_columns);
+      fprintf(fp,"# Selection: %s; order=nuisance_then_scale_all_columns_then_select; fit=each_training_split; score_ties=original_column_index; constants=zero; counts=capped_at_input_width\n",
+              continuous?"mean_squared_Pearson_over_nonconstant_responses":"between_class_over_total_variance");
+      if(i){
+         fprintf(fp,"# objective=%s; ties=smallest_requested_count_then_%s; all count/penalty pairs; observed fits restored after permutations\n",
+                 ridge?"mean_response_SSE_over_training_mean_baseline_SSE":metric==THD_METRIC_ACCURACY?"1-ACC":"1-BACC",
+                 ridge?"largest_lambda":"smallest_C");
+         fputs("# Columns: Unit\tCVFold\tCVStratum\tInnerNFold\tRequestedCount\tEffectiveCount\tPenalty\tInnerLoss\tSelected\n",fp);a->tuning=fp;
+      }else{
+         fputs("# Observed outer-fold selection only; FeatureIndex is zero-based within the input pattern/design; Rank is one-based. Scores are descriptive, not p-values.\n",fp);
+         fputs("# Columns: Unit\tCVFold\tCVStratum\tNTrain\tInputNFeat\tRequestedCount\tEffectiveCount\tRank\tFeatureIndex\tFeature\tSelectionScore\n",fp);a->features=fp;
+      }
+   }
+}
+static void mvpa_selection_write(const mvpa_selection_audit *a,const THD_feature_selection *sel,
+ const THD_foldplan *plan,THD_3dim_dataset *mset,const THD_roilist *rl,int unit,
+ char **design_names,int p,const double *grid,const double *selected,double fixed)
+{
+   int f,j,c,l;char name[64];
+   if(!sel || !a->features)return;
+   for(f=0;f<plan->nfold;f++){
+      for(j=0;j<sel->count[f];j++){
+         size_t at=(size_t)f*sel->max_feature+j;int col=sel->indices[at];FILE *fp=a->features;
+         fprintf(fp,"%d\t",rl->val[unit]);mvpa_1D_text(fp,plan->name[f]);fputc('\t',fp);
+         mvpa_1D_text(fp,plan->stratum_label[plan->fold_stratum[f]]);
+         fprintf(fp,"\t%d\t%d\t%d\t%d\t%d\t%d\t",plan->ntrain[f],p,sel->grid[sel->chosen[f]],sel->count[f],j+1,col);
+         if(!design_names)mvpa_neural_id(name,sizeof(name),mset,rl->vox[unit].ar[col]);
+         mvpa_1D_text(fp,design_names?design_names[col]:name);
+         fprintf(fp,"\t%.17g\n",sel->scores[at]);
+      }
+      if(a->tuning)for(c=0;c<sel->ngrid;c++)for(l=0;l<sel->npenalty;l++){
+         FILE *fp=a->tuning;double penalty=grid?grid[l]:fixed;
+         fprintf(fp,"%d\t",rl->val[unit]);mvpa_1D_text(fp,plan->name[f]);fputc('\t',fp);
+         mvpa_1D_text(fp,plan->stratum_label[plan->fold_stratum[f]]);
+         fprintf(fp,"\t%d\t%d\t%d\t%.17g\t%.17g\t%d\n",sel->nested->inner[f]->nfold,
+                 sel->grid[c],sel->grid[c]<p?sel->grid[c]:p,penalty,
+                 sel->loss[((size_t)f*sel->ngrid+c)*sel->npenalty+l],
+                 c==sel->chosen[f] && (!selected || penalty==selected[f]));
+      }
+   }
+}
+static void mvpa_selection_close(mvpa_selection_audit *a)
+{
+   int failed=0;
+   if(a->features){if(ferror(a->features))failed=1;if(fclose(a->features))failed=1;}
+   if(a->tuning){if(ferror(a->tuning))failed=1;if(fclose(a->tuning))failed=1;}
+   if(failed)ERROR_exit(PROGRAM_NAME ": error writing feature selection audit");
+}
+
 static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
  THD_3dim_dataset *mset,THD_roilist *rl,int encoding,const char *columns,
  int preprocess,const int *groups,double lambda,int metric,const char *prefix,
@@ -934,6 +1032,7 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
  const THD_nested_foldplan *nested,const double *grid,int nl,const char *inner_column,
  const PERM_set *pset,const char *permute_within,
  const float *nuisance,int nnuisance,const char *nuisance_columns,
+ const int *feature_counts,int nfeature_counts,const mvpa_selection_audit *selection_audit,
  int two_tables,int argc,char **argv)
 {
    char **names=NULL,err[1024],label[256],*tablefile,runerr[1024]="";
@@ -980,6 +1079,8 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
          ERROR_exit(PROGRAM_NAME ": %s",err);
       if(nested && !THD_mvpa_ridge_set_tuning(workers[i],nested,grid,nl,err,sizeof(err)))
          ERROR_exit(PROGRAM_NAME ": %s",err);
+      if(nfeature_counts && !THD_mvpa_ridge_set_selection(workers[i],feature_counts,nfeature_counts,err,sizeof(err)))
+         ERROR_exit(PROGRAM_NAME ": %s",err);
       if(pset){
          size_t j;
          permuted[i]=malloc(sizeof(float)*(size_t)ss->nsample*na);
@@ -1022,6 +1123,7 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
       if((predfile && !strcmp(predfile,tunefile)) || (foldfile && !strcmp(foldfile,tunefile)))
          ERROR_exit(PROGRAM_NAME ": tuning result and prediction/fold filenames must differ");
       tuning=mvpa_open_audit(tunefile,"lambda tuning audit");mvpa_nuisance_header(tuning,nuisance_columns);
+      if(nfeature_counts)fputs("# Losses condition on the selected feature count; all pairs are in PREFIX.feature_tuning.1D.\n",tuning);
       fprintf(tuning,"# inner_group=%s; objective=mean_response_SSE_over_training_mean_baseline_SSE; ties_or_no_valid_responses=largest_lambda\n",inner_column);
       fprintf(tuning,"# Columns: Unit\tCVFold\tCVStratum\tInnerNFold\tInnerNValid\tLambda\tInnerLoss\tSelected\n");
    }
@@ -1065,6 +1167,8 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
          null_valid[(size_t)o*rl->nroi+r]=(float)count;
          pr->effect[r]=isfinite(obs) && count?(float)(direction*(obs-mean/count)):0;
       }
+      mvpa_selection_write(selection_audit,w->selection,plan,mset,rl,r,encoding?names:NULL,
+                           encoding?na:rl->vox[r].nar,grid,w->selected_lambda,lambda);
       if(tuning)for(f=0;f<plan->nfold;f++)for(i=0;i<nl;i++){
          fprintf(tuning,"%d\t",rl->val[r]);mvpa_1D_text(tuning,plan->name[f]);
          fputc('\t',tuning);mvpa_1D_text(tuning,plan->stratum_label[plan->fold_stratum[f]]);
@@ -1616,6 +1720,8 @@ int main( int argc, char **argv )
    int trial_manifest=0,validate_only=0,two_tables=0 ;
    char *maskname=NULL,*roi_sel=NULL,*searchlight=NULL,*surf_file=NULL ;
    char *prefix="MVPA",*method=NULL,*design_columns=NULL,*score_mode=NULL ;
+   char *feature_text=NULL;int feature_fixed=0,*feature_counts=NULL,nfeature_counts=0;
+   mvpa_selection_audit selection_audit={0};
    char *nuisance_columns=NULL;char **nuisance_names=NULL;float *nuisance=NULL;int nnuisance=0;
    char *coef_prefix=NULL;double coef_lambda=0;int coef_lambda_given=0;
    int svm_class=0,svm_tune=0,svm_numeric=0,svm_options=0,svm_ngrid=0,svm_max_iter=10000;
@@ -1747,6 +1853,11 @@ int main( int argc, char **argv )
      }
      else if( IS("-method") ){ NEEDARG("centroid, ridge, svm, lda_diag, or lda_shrinkage") ; method=argv[nopt++] ; }
      else if( IS("-distance") ){ NEEDARG("euclidean, correlation, or cosine") ; distance_name=argv[nopt++] ;distance_given=1; }
+     else if(IS("-select_features") || IS("-select_features_grid")){
+       int fixed=IS("-select_features");NEEDARG("positive feature count(s)");
+       if(feature_text)ERROR_exit(PROGRAM_NAME ": choose only one -select_features or -select_features_grid");
+       feature_text=argv[nopt++];feature_fixed=fixed;
+     }
      else if(IS("-nuisance_columns")){
        NEEDARG("comma-separated numeric nuisance columns");
        if(nuisance_columns)ERROR_exit(PROGRAM_NAME ": -nuisance_columns was specified twice");
@@ -1831,9 +1942,33 @@ int main( int argc, char **argv )
    if((tune || numeric_lambda) && !continuous && !ridge_class)
      ERROR_exit(PROGRAM_NAME ": ridge lambda and inner-CV options require -method ridge");
    if((ridge_class || svm_class || lda_mode>=0) && distance_given)ERROR_exit(PROGRAM_NAME ": -distance is only used by centroid classification");
-   if(!tune && !svm_tune && (inner_column || inner_k))ERROR_exit(PROGRAM_NAME ": inner-CV options require tuned ridge or SVM penalties");
+   if(feature_text){
+     char *copy=strdup(feature_text),*cur,*next;int i,j;
+     if(!copy)ERROR_exit(PROGRAM_NAME ": cannot parse feature counts");
+     nfeature_counts=1;for(cur=copy;*cur;cur++)if(*cur==',')nfeature_counts++;
+     if((feature_fixed && nfeature_counts!=1) || (!feature_fixed && nfeature_counts<2))
+       ERROR_exit(PROGRAM_NAME ": -select_features needs one count; -select_features_grid needs at least two");
+     feature_counts=malloc(sizeof(int)*(size_t)nfeature_counts);
+     if(!feature_counts)ERROR_exit(PROGRAM_NAME ": cannot allocate feature counts");
+     cur=copy;for(i=0;i<nfeature_counts;i++){
+       next=strchr(cur,',');if(next)*next++='\0';
+       feature_counts[i]=(int)mvpa_parse_long("feature count",cur,1,INT_MAX);
+       for(j=0;j<i;j++)if(feature_counts[i]==feature_counts[j])ERROR_exit(PROGRAM_NAME ": duplicate feature count");
+       cur=next;
+     }free(copy);
+     if(coef_prefix)ERROR_exit(PROGRAM_NAME ": -save_coefficients cannot yet export feature selection; omit it with -select_features/-select_features_grid");
+   }
+   if(!tune && !svm_tune && nfeature_counts<2 && (inner_column || inner_k))ERROR_exit(PROGRAM_NAME ": inner-CV options require a feature-count grid or tuned ridge/SVM penalties");
    if(tune)lambda_grid=mvpa_penalty_grid(grid_text?grid_text:"0.01,0.1,1,10,100",&nlambda,"lambda");
    if(svm_tune)svm_grid=mvpa_penalty_grid(svm_grid_text?svm_grid_text:"0.01,0.1,1,10,100",&svm_ngrid,"SVM C");
+   if(nfeature_counts>1 && (continuous || ridge_class) && !tune){
+     lambda_grid=malloc(sizeof(double));if(!lambda_grid)ERROR_exit(PROGRAM_NAME ": cannot allocate fixed lambda");
+     lambda_grid[0]=lambda;nlambda=1;
+   }
+   if(nfeature_counts>1 && svm_class && !svm_tune){
+     svm_grid=malloc(sizeof(double));if(!svm_grid)ERROR_exit(PROGRAM_NAME ": cannot allocate fixed C");
+     svm_grid[0]=svm_cost;svm_ngrid=1;
+   }
    if(nuisance_columns && coef_prefix)
      ERROR_exit(PROGRAM_NAME ": -save_coefficients cannot yet export nuisance-adjusted preprocessing; omit it with -nuisance_columns");
    if(coef_lambda_given && !coef_prefix)ERROR_exit(PROGRAM_NAME ": -coef_lambda requires -save_coefficients");
@@ -1867,7 +2002,7 @@ int main( int argc, char **argv )
    if(partition_column){
      if(cv_column || cv_k || within_column)
        ERROR_exit(PROGRAM_NAME ": -partition_column/-testTable cannot accompany -cv, -cv_column, -cv_k, or -within_column");
-     if((tune || svm_tune) && !inner_column)
+     if((tune || svm_tune || nfeature_counts>1) && !inner_column)
        ERROR_exit(PROGRAM_NAME ": tuned fixed partitions require an explicit -inner_cv_column using training groups");
      if(coef_prefix)
        ERROR_exit(PROGRAM_NAME ": -save_coefficients refits all rows and cannot accompany -partition_column/-testTable; keep the reserved test set out of refitting");
@@ -1971,7 +2106,7 @@ int main( int argc, char **argv )
      INFO_message(PROGRAM_NAME ": fixed partition %s: %d training (%s), %d test (%s); scores use test rows only",
                   partition_column,plan->ntrain[0],train_value,plan->ntest[0],test_value);
    if( show_folds ) THD_foldplan_print(plan,ss,stdout) ;
-   if(tune || svm_tune){
+   if(tune || svm_tune || nfeature_counts>1){
      int *inner_groups=NULL,ng=0;char **labels=NULL;
      if(!inner_column)inner_column=cv_column;
      if(!THD_sampleset_encode_column(ss,inner_column,&inner_groups,&labels,&ng,err,sizeof(err)))
@@ -1980,7 +2115,7 @@ int main( int argc, char **argv )
      free(inner_groups);THD_sampleset_free_levels(labels,ng);
      if(!nested)ERROR_exit(PROGRAM_NAME ": %s",err);
      if(show_folds)THD_nested_foldplan_print(nested,ss,stdout);
-     if(!quiet)INFO_message(PROGRAM_NAME ": nested %s selection over %d penalties; inner groups from %s",svm_class?"SVM C":"ridge",svm_class?svm_ngrid:nlambda,inner_column);
+     if(!quiet)INFO_message(PROGRAM_NAME ": nested tuning: %d feature-count candidates, %d penalty candidates; inner groups from %s",nfeature_counts?nfeature_counts:1,svm_class?svm_ngrid:nlambda?nlambda:1,inner_column);
    }
 
    if(nuisance_columns){
@@ -2120,7 +2255,26 @@ int main( int argc, char **argv )
      if( rl==NULL || rl->nroi<1 )
        ERROR_exit(PROGRAM_NAME ": mask has no selected positive-valued ROIs") ;
    }
+   if(nfeature_counts){
+     int f,j;const char *files[]={save_predictions,save_fold_scores,save_confusion,save_summary_scores};
+     for(f=0;f<(nested?2:1);f++){
+       char *name=mvpa_selection_filename(prefix,f);
+       for(j=0;j<4;j++)if(files[j] && !strcmp(name,files[j]))
+         ERROR_exit(PROGRAM_NAME ": feature selection and explicit audit filenames must differ");
+       free(name);
+     }
+     for(f=0;f<plan->nfold;f++){
+       if(plan->ntrain[f]<2)ERROR_exit(PROGRAM_NAME ": feature selection needs at least two training samples");
+       if(nested)for(j=0;j<nested->inner[f]->nfold;j++)if(nested->inner[f]->ntrain[j]<2)
+         ERROR_exit(PROGRAM_NAME ": feature selection needs at least two inner training samples");
+     }
+   }
    if(validate_only){
+     if(nfeature_counts){
+       int j;printf("# FeatureSelection\t%s\n# FeatureSelectionOrder\tnuisance_then_scale_all_columns_then_select\n# FeatureCounts",continuous?"mean_squared_Pearson":"eta_squared");
+       for(j=0;j<nfeature_counts;j++)printf("\t%d",feature_counts[j]);
+       printf("\n# FeatureCountsCappedAtInputWidth\tyes\n# FeatureSelectionFitted\tno_validation_only\n");
+     }
      if(nuisance){
        int f;
        printf("# NuisanceColumns\t%s\n# NuisanceAdjustment\tpredictors_only_OLS_before_scaling\n# NuisanceDesign\tintercept_plus_%d_numeric_columns\n",nuisance_columns,nnuisance);
@@ -2133,7 +2287,7 @@ int main( int argc, char **argv )
                           nperm,permute_within);
      DSET_delete(mset);THD_roilist_free(rl);THD_nested_foldplan_free(nested);THD_foldplan_free(plan);
      THD_sampleset_free_levels(class_label,nclass);free(class_id);free(group_id);
-     free(lambda_grid);free(svm_grid);THD_sampleset_free(ss);free(nuisance);THD_sampleset_free_levels(nuisance_names,nnuisance);
+     free(feature_counts);free(lambda_grid);free(svm_grid);THD_sampleset_free(ss);free(nuisance);THD_sampleset_free_levels(nuisance_names,nnuisance);
      return 0;
    }
    { const char *audit[]={save_predictions,save_fold_scores,save_confusion,save_summary_scores};int ai;
@@ -2184,14 +2338,16 @@ int main( int argc, char **argv )
        ERROR_exit(PROGRAM_NAME ": cannot load sample dataset '%s'",ss->dset_name[ii]) ;
    }
 
+   if(nfeature_counts)mvpa_selection_open(&selection_audit,prefix,continuous,nested!=NULL,metric,nuisance_columns,continuous || ridge_class);
    if(continuous){
      mvpa_continuous_analysis(ss,plan,mset,rl,encoding,encoding?design_columns:target_column,
        preprocess,group_id,lambda,metric,prefix,save_predictions,save_fold_scores,
-       nworker,quiet,nested,lambda_grid,nlambda,inner_column,perm_set,permute_within,nuisance,nnuisance,nuisance_columns,two_tables,argc,argv);
+       nworker,quiet,nested,lambda_grid,nlambda,inner_column,perm_set,permute_within,nuisance,nnuisance,nuisance_columns,feature_counts,nfeature_counts,&selection_audit,two_tables,argc,argv);
      if(coef_prefix)mvpa_descriptive_coefficients(ss,mset,rl,encoding,searchlight!=NULL,
        encoding?design_columns:target_column,NULL,NULL,0,preprocess,group_id,coef_lambda,
        coef_prefix,quiet,argc,argv);
      DSET_delete(mset);THD_roilist_free(rl);THD_nested_foldplan_free(nested);THD_foldplan_free(plan);
+     mvpa_selection_close(&selection_audit);free(feature_counts);
      free(lambda_grid);
      THD_perm_set_free(perm_set);
      THD_sampleset_free(ss);free(nuisance);THD_sampleset_free_levels(nuisance_names,nnuisance);free(group_id);return 0;
@@ -2236,6 +2392,8 @@ int main( int argc, char **argv )
                           variance_floor,empirical_prior,err,sizeof(err)))ERROR_exit(PROGRAM_NAME ": %s",err);
      if(nuisance && !THD_preprocess_set_nuisance(ridge_class?workspace[ii]->ridge_cv->prep:workspace[ii]->prep,
                           nuisance,ss->nsample,nnuisance,err,sizeof(err)))ERROR_exit(PROGRAM_NAME ": %s",err);
+     if(nfeature_counts && !THD_mvpa_classification_set_selection(workspace[ii],feature_counts,nfeature_counts,nested,metric,err,sizeof(err)))
+       ERROR_exit(PROGRAM_NAME ": %s",err);
      if( perm_set!=NULL ){
        perm_class[ii]=(int *)malloc(sizeof(int)*(size_t)ss->nsample) ;
        perm_score[ii]=(float *)malloc(sizeof(float)*(size_t)perm_set->nperm) ;
@@ -2334,6 +2492,7 @@ int main( int argc, char **argv )
    }
    if((ridge_class || svm_class) && nested){
      class_tuning=mvpa_open_audit(class_tunefile,"classification tuning audit");mvpa_nuisance_header(class_tuning,nuisance_columns);
+     if(nfeature_counts)fputs("# Losses condition on the selected feature count; all pairs are in PREFIX.feature_tuning.1D.\n",class_tuning);
      if(svm_class){
        fprintf(class_tuning,"# method=svm; inner_group=%s; objective=1-%s; ties=smallest_C; intercept_penalized=1\n",inner_column,THD_mvpa_metric_name(metric));
        fputs("# Columns: Unit\tCVFold\tCVStratum\tInnerNFold\tC\tInnerLoss\tSelected\n",class_tuning);
@@ -2411,6 +2570,12 @@ int main( int argc, char **argv )
          mvpa_write_class_audits(confusion_fp,summary_fp,mset,rl,rr,searchlight!=NULL,
                                 surf_file!=NULL,ss,plan,class_id,class_label,
                                 workspace[tid],&class_audit);
+       if(ok && nfeature_counts){
+         THD_mvpa_workspace *w=workspace[tid];THD_mvpa_ridge_workspace *rw=w->ridge_cv;
+         mvpa_selection_write(&selection_audit,rw?rw->selection:w->selection,plan,mset,rl,rr,NULL,rl->vox[rr].nar,
+                              rw?lambda_grid:svm_class?svm_grid:NULL,rw?rw->selected_lambda:svm_class?w->svm_selected:NULL,
+                              rw?lambda:svm_class?svm_cost:0);
+       }
        if(ok && class_tuning && svm_class){
          int f,l;const THD_mvpa_workspace *sw=workspace[tid];
          for(f=0;f<plan->nfold;f++)for(l=0;l<svm_ngrid;l++){
@@ -2507,6 +2672,7 @@ int main( int argc, char **argv )
    THD_sampleset_free_levels(class_label,nclass) ; free(class_id) ; free(group_id) ;
    THD_sampleset_free(ss) ; free(nuisance);THD_sampleset_free_levels(nuisance_names,nnuisance); free(score) ; free(acc) ; free(bacc) ;
    free(nfeat) ; free(nfold) ; free(qval) ; free(table_name) ;
+   mvpa_selection_close(&selection_audit);free(feature_counts);
    free(lambda_grid);free(svm_grid);free(class_tunefile);
    return 0 ;
 }
