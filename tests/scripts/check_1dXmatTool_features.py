@@ -126,6 +126,22 @@ with tempfile.TemporaryDirectory(prefix='xmat-features-') as tmp:
     assert all(r['Subj']=='subject with spaces' for r in rows)
     assert [r['Condition'] for r in rows]==['A','B','A','B','A']
     run(common+['-prefix','selected','-manifest_format','selected'])
+    # Validate selected-brick exports independently of downstream executables.
+    selected_text=(w/'selected.trials.1D').read_text().splitlines()
+    selected_fields=next(line[11:].split() for line in selected_text if line.startswith('# Columns: '))
+    selected_rows=[dict(zip(selected_fields,shlex.split(line),strict=True))
+                   for line in selected_text if not line.startswith('#')]
+    assert len(selected_rows)==5
+    assert [row['InputFile'] for row in selected_rows]==[
+        'run-01.nii.gz[0]','run-01.nii.gz[1]',
+        'run-02.nii.gz[0]','run-02.nii.gz[1]','run-02.nii.gz[2]']
+    assert [int(row['SourceColumn']) for row in selected_rows]==[2,3,4,5,6]
+    assert all(row['SourceXmat']=='X.1D' for row in selected_rows)
+    assert [row['Subj'] for row in selected_rows]==[row['Subj'] for row in rows]
+    assert [row['Condition'] for row in selected_rows]==[row['Condition'] for row in rows]
+    for field in ['Run','Item','Volume']:
+        assert [row[field] for row in selected_rows]==[row[field] for row in rows]
+    assert 'Xmat' not in selected_fields and 'XColumn' not in selected_fields
     # Create beta fixtures so the exported files can be read by 3dMVPA.
     import nibabel as nib
     nib.save(nib.Nifti1Image(np.ones((2,2,2),dtype='uint8'),np.eye(4)),w/'mask.nii.gz')

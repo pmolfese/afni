@@ -3317,7 +3317,7 @@ int SRM_zscore_segments( float *x , int nvox , int ntime , int nseg ,
    if( x==NULL || nvox<1 || ntime<1 || nseg<1 || seglen==NULL ) return SRM_ERR_ARG ;
    for( r=0 ; r<nseg ; r++ ){ if( seglen[r]<2 ) return SRM_ERR_ARG ; sum+=seglen[r] ; }
    if( sum!=ntime ) return SRM_ERR_ARG ;
-SRM_PRAGMA(omp parallel for schedule(static) reduction(+:nbad)) 
+SRM_PRAGMA(omp parallel for schedule(static) reduction(+:nbad))
    for( f=0 ; f<nvox ; f++ ){
      float *row=x+(size_t)f*ntime ; int c0=0 , isbad=0 , rr , t , nonfin=0 ;
      for( rr=0 ; rr<nseg ; rr++ ){
