@@ -133,10 +133,32 @@ extern int THD_ridge_coefficients(const THD_ridge_workspace *w,
    double *coef, double *intercept, char *err, int nerr);
 extern void THD_ridge_free(THD_ridge_workspace *w);
 
+/* Supervised selection follows nuisance adjustment and scaling of ALL input
+   columns. Classification ranks between-class/total centered sum of squares
+   (eta squared); continuous fits rank mean squared Pearson correlation over
+   nonconstant response columns. Constant predictors/responses score zero.
+   Ties use the smaller original input-column index. Counts are clipped to the
+   active pattern width (e.g., edge searchlights). Each fit refits selection.
+   Buffers are owned, nested plan borrowed. Audit indices are zero-based input
+   columns, in descending score order; callers map them to voxel/node IDs or
+   design-column names. Only observed outer-fold selections are retained. */
+typedef struct THD_feature_selection {
+   int max_feature, ngrid, npenalty, metric, nclass;
+   int *grid, *chosen, *count, *indices; /* grid; [fold]; [fold]; [fold][max_feature] */
+   double *scores, *loss; /* [fold][max_feature]; [fold][ngrid][npenalty] */
+   const THD_nested_foldplan *nested;
+   const int *classes; /* internal borrowed labels for ridge classification */
+   void *rank; /* private sorting scratch */
+   float *row;
+   double *sums;
+   int *counts, *train, *test;
+} THD_feature_selection;
+
 typedef struct {
    const THD_foldplan *plan;
    int max_feature, max_output, preprocess;
    THD_preprocessor *prep;
+   THD_feature_selection *selection;
    THD_ridge_workspace *ridge;
    float *train_x, *test_x, *train_y, *test_y;
    float *prediction, *baseline; /* [sample][active output]; NAN if untested */
@@ -165,6 +187,7 @@ extern int THD_mvpa_run_ridge_cv(THD_mvpa_ridge_workspace *w,
    const float *x, int p, const float *y, int q, const int *group_id,
    double lambda, char *err, int nerr);
 /* Enable nested tuning once per workspace. The nested plan must use w->plan.
+   A one-value grid supports joint feature-count tuning at a fixed penalty.
    Select one lambda per outer fold by mean response-wise SSE/baseline SSE
    over pooled inner held-out rows. Exact ties, or all-constant responses,
    select the largest lambda. The run's fixed lambda argument is then unused. */
@@ -203,6 +226,7 @@ typedef struct {
    double *test_decision ;
 
    THD_preprocessor *prep ;
+   THD_feature_selection *selection;
    THD_centroid_model *centroid ;
    THD_mvpa_ridge_workspace *ridge_cv ; /* NULL unless ridge configured */
    THD_lda_model *lda ; /* NULL unless LDA configured */
@@ -233,6 +257,19 @@ typedef struct {
    THD_mvpa_class_score score ;
 } THD_mvpa_workspace ;
 
+/* Configure once, after estimator/penalty tuning. One count is fixed; two or
+   more counts require a matching grouped nested plan. Ridge count tuning uses
+   the existing normalized squared loss jointly with lambda; configure ridge
+   tuning first (a one-value lambda grid is allowed for count-only tuning).
+   Other classifiers use 1-ACC/BACC, jointly with C when configured. Exact ties
+   prefer the smaller requested count, then largest lambda / smallest C.
+   A fixed count is still refitted inside any penalty-tuning folds. */
+extern int THD_mvpa_ridge_set_selection(THD_mvpa_ridge_workspace *w,
+   const int *counts,int ncount,char *err,int nerr);
+extern int THD_mvpa_classification_set_selection(THD_mvpa_workspace *w,
+   const int *counts,int ncount,const THD_nested_foldplan *nested,int metric,
+   char *err,int nerr);
+
 /*! Allocate buffers for repeated analyses with one fold plan.  max_feature is
     the largest pattern width that will be passed to the runner.  For
     run_center, group_id is borrowed and must also outlive the workspace. */
@@ -255,7 +292,8 @@ extern int THD_mvpa_classification_set_lda(THD_mvpa_workspace *w, int mode,
    double alpha, double variance_floor, int empirical_prior, char *err, int nerr);
 /* Optional grouped nested C selection minimizes 1-ACC/BACC over pooled inner
    held-out rows. Ties select smallest C. Every inner training set needs all
-   classes. Preprocessing/tuning/fits repeat under every label permutation. */
+   classes. A one-value C grid supports feature-count-only tuning.
+   Preprocessing/tuning/fits repeat under every label permutation. */
 extern int THD_mvpa_classification_set_svm(THD_mvpa_workspace *w,double cost,
    double tolerance,int max_iterations,int metric,
    const THD_nested_foldplan *nested,const double *grid,int ngrid,char *err,int nerr);

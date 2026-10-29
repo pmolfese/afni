@@ -33,6 +33,41 @@ static void paired_three_fold_plan( THD_foldplan *p )
    p->train=tr ; p->test=te ; p->sample_test_fold=sample_fold ;
 }
 
+static int selection_test(void)
+{
+   THD_foldplan plan;THD_nested_foldplan *nested=NULL;
+   THD_mvpa_workspace *w=NULL;THD_mvpa_ridge_workspace *rw=NULL;
+   int classes[]={0,1,0,1,0,1},groups[]={0,0,1,1,2,2};
+   int counts[]={2,1},duplicate[]={1,1},zero=0,one=1,wide=99;
+   float x[]={7,-1,-1, 7,1,1, 7,-1,-1, 7,1,1, 7,-1,-1, 7,1,1};
+   float y[]={3,3,3,3,3,3};double lambda[]={1,10};int fail=0,f;char err[1024];
+   paired_three_fold_plan(&plan);
+   nested=THD_nested_foldplan_grouped(&plan,groups,0,err,sizeof(err));CHECK(nested,err);
+   w=THD_mvpa_workspace_alloc(&plan,3,2,THD_PREP_FEATURE_ZSCORE,NULL,err,sizeof(err));CHECK(w,err);
+   CHECK(!THD_mvpa_classification_set_selection(w,&zero,1,NULL,THD_METRIC_ACCURACY,err,sizeof(err)),"reject zero selection count");
+   CHECK(!THD_mvpa_classification_set_selection(w,duplicate,2,nested,THD_METRIC_ACCURACY,err,sizeof(err)),"reject duplicate counts");
+   CHECK(!THD_mvpa_classification_set_selection(w,counts,2,NULL,THD_METRIC_ACCURACY,err,sizeof(err)),"count grid requires nested folds");
+   CHECK(THD_mvpa_classification_set_selection(w,counts,2,nested,THD_METRIC_BALANCED_ACCURACY,err,sizeof(err)),err);
+   CHECK(!THD_mvpa_classification_set_ridge(w,1,NULL,NULL,0,err,sizeof(err)),"selection must follow estimator configuration");
+   CHECK(THD_mvpa_run_classification_cv(&plan,0,x,3,classes,NULL,w,err,sizeof(err)),err);
+   for(f=0;f<3;f++){
+      CHECK(w->selection->count[f]==1 && w->selection->chosen[f]==1,"count ties select smaller requested count");
+      CHECK(w->selection->indices[3*f]==1 && CLOSE(w->selection->scores[3*f],1),"tied informative features retain lower original column ID");
+   }
+   CHECK(CLOSE(w->score.accuracy,1),"selected signal perfectly classifies held-out rows");
+   CHECK(!THD_mvpa_classification_set_selection(w,&one,1,NULL,THD_METRIC_ACCURACY,err,sizeof(err)),"configure selection only once");
+   rw=THD_mvpa_ridge_workspace_alloc(&plan,3,1,THD_PREP_FEATURE_ZSCORE,err,sizeof(err));CHECK(rw,err);
+   CHECK(THD_mvpa_ridge_set_selection(rw,&wide,1,err,sizeof(err)),err);
+   CHECK(!THD_mvpa_ridge_set_tuning(rw,nested,lambda,2,err,sizeof(err)),"selection must follow penalty tuning");
+   CHECK(THD_mvpa_run_ridge_cv(rw,x,3,y,1,NULL,1,err,sizeof(err)),err);
+   for(f=0;f<3;f++){
+      CHECK(rw->selection->count[f]==3 && rw->selection->indices[3*f]==0,"clip count and break zero-score ties by original index");
+      CHECK(CLOSE(rw->selection->scores[3*f],0),"constant responses produce zero selection scores");
+   }
+done:
+   THD_mvpa_workspace_free(w);THD_mvpa_ridge_workspace_free(rw);THD_nested_foldplan_free(nested);return fail;
+}
+
 static int nuisance_test(void)
 {
    THD_foldplan plan;THD_mvpa_workspace *w=NULL;THD_nested_foldplan *nested=NULL;
@@ -739,6 +774,6 @@ done:
    THD_mvpa_workspace_free(ws) ;
    THD_centroid_free(cm) ;
    THD_preprocess_free(p) ;
-   if( fail || nuisance_test() || svm_test() || ridge_test() || nested_ridge_test() || ridge_permutation_test() || ridge_classification_test() || lda_test() ) return 1 ;
+   if( fail || selection_test() || nuisance_test() || svm_test() || ridge_test() || nested_ridge_test() || ridge_permutation_test() || ridge_classification_test() || lda_test() ) return 1 ;
    puts("PASS thd_mvpa preprocessing, metrics, classifiers, CV, and permutation runner") ; return 0 ;
 }

@@ -495,3 +495,51 @@ for mode in classify decode encode; do
   done
 done
 echo "PASS 3dMVPA nuisance-adjusted sparse surface tuning and permutations"
+
+# Fold-local feature selection must retain sparse mesh node IDs, not row IDs.
+for workers in 1 2; do
+  OMP_NUM_THREADS=$workers "$mvpa" -mode classify -method ridge \
+    -dataTableFile "$work/ridge_class.1D" -target_column Condition -cv_column Run \
+    -mask "$work/mask.niml.dset" -surf "$work/mesh.gii" -searchlight 100 \
+    -select_features_grid 2,1 -lambda_grid 10,1 \
+    -nperm 99 -permute_within Run -seed 42 \
+    -prefix "$work/selection_$workers.niml.dset" \
+    -save_predictions "$work/selection_$workers.pred.1D" \
+    -save_fold_scores "$work/selection_$workers.fold.1D"
+done
+for suffix in features.1D feature_tuning.1D tuning.1D; do
+  cmp "$work/selection_1.niml.dset.$suffix" "$work/selection_2.niml.dset.$suffix"
+done
+cmp "$work/selection_1.pred.1D" "$work/selection_2.pred.1D"
+cmp "$work/selection_1.fold.1D" "$work/selection_2.fold.1D"
+awk -F '\t' '
+  /^#/ { next }
+  {
+    n++
+    if ($2 == "" || $4 != 4 || $5 != 4 || $7 < 1 || $7 > 2) exit 1
+    if ($10 != "node_0" && $10 != "node_2") exit 1
+    if ($9 < 0 || $9 > 3 || $11 < .98 || $11 > 1) exit 1
+    seen[$1 SUBSEP $2 SUBSEP $10]++
+    if (seen[$1 SUBSEP $2 SUBSEP $10] != 1) exit 1
+  }
+  END { if (n != 24) exit 1 }
+' "$work/selection_1.niml.dset.features.1D"
+# Continuous surface selection uses the same audited node mapping.
+OMP_NUM_THREADS=2 "$mvpa" -mode decode -method ridge \
+  -dataTableFile "$work/continuous.1D" -target_column Rating -cv_column Run \
+  -mask "$work/mask.niml.dset" -surf "$work/mesh.gii" -searchlight 100 \
+  -select_features 1 -prefix "$work/selection_decode.niml.dset"
+awk -F '\t' '
+  /^#/ { next }
+  { n++; if (($10 != "node_0" && $10 != "node_2") || $7 != 1 || $11 < .99999) exit 1 }
+  END { if(n != 8) exit 1 }
+' "$work/selection_decode.niml.dset.features.1D"
+OMP_NUM_THREADS=2 "$mvpa" -mode encode -method ridge \
+  -dataTableFile "$work/continuous.1D" -design_columns Rating -cv_column Run \
+  -mask "$work/mask.niml.dset" -surf "$work/mesh.gii" -searchlight 100 -score pattern \
+  -select_features 2 -prefix "$work/selection_encode.niml.dset"
+awk -F '\t' '
+  /^#/ { next }
+  { n++; if ($6 != 2 || $7 != 1 || $9 != 0 || $10 != "Rating" || $11 < .99999) exit 1 }
+  END { if(n != 8) exit 1 }
+' "$work/selection_encode.niml.dset.features.1D"
