@@ -1,7 +1,8 @@
 # 3dPicard: voxelwise penalized regression and the 1dXmatMaker roadmap
 
-Created 2026-10-29. Status: design proposal; no implementation authorized by
-this plan. The program name is settled: **3dPicard**, a reference to Jean-Luc
+Created 2026-10-29; library-boundary review updated 2026-10-30.
+Status: design proposal; no implementation authorized by this plan.
+The program name is settled: **3dPicard**, a reference to Jean-Luc
 Picard and a tribute to Patrick Stewart. Library names should describe their
 numerical responsibilities rather than require a PICARD acronym.
 
@@ -17,11 +18,12 @@ come first below. The [1dXmatMaker roadmap](#1dxmatmaker-independent-design-gene
 defines the independent generator and its later integration. All milestones
 are planned; naming and documenting them does not authorize implementation.
 
-This records the initial proposal and a source-informed refactoring assessment.
-The user is actively developing elastic-net support for 3dMVPA. References below
-describe the working tree inspected on this date, including unfinished changes;
-they do not certify those changes as completed or validated. Recheck the settled
-MVPA implementation before any extraction. This planning change touches no code.
+The user reports the 3dMVPA libraries complete, and its roadmap records elastic
+net (#28), banded ridge (#35), PLS (#30), and SVR (#31) as completed. The
+2026-10-30 source review below identifies concrete extraction boundaries in
+`thd_mvpa.[ch]`; completion of those estimators does not mean they have already
+been split into standalone libraries. This update changes the plan only and
+does not rerun or recertify the MVPA validation results.
 
 ## Purpose and boundaries
 
@@ -40,7 +42,7 @@ deliverable; lasso/elastic net and banded ridge follow through shared solvers.
 The distinctive addition is the combination of fractional ridge, time-series
 design/censor/run handling, nuisance-aware estimation, and appropriate tuning.
 AFNI already has lasso in `3dTfitter`/`thd_lasso.c`, and MVPA has ordinary ridge
-and ongoing continuous-estimator work. Avoid creating a third independent
+and completed continuous-estimator support. Avoid creating a third independent
 implementation of the same elastic-net mathematics.
 
 A future single-trial orchestrator can add an HRF library, noise-pool PCs,
@@ -149,100 +151,233 @@ Provisional outputs:
   solver tolerances and versions. Full coefficient paths only on request for
   limited subsets. Emit a beta/trial manifest usable by RSA and MVPA adapters.
 
-## Refactoring assessment from the current source
+## Concrete library boundaries
 
-### Reuse established layers
+### Source baseline and dependency direction
 
-| Existing module | Evidence in the current tree | Proposed use by Picard |
-|---|---|---|
-| `thd_xmat.[ch]` | Reader, raw attributes, run/censor maps, column selection, diagnostics, explicit trial manifests. | Reuse parsing and mappings. Add narrowly scoped role/row helpers only when necessary; keep penalty policy in the caller. |
-| `thd_crossval.[ch]` | Explicit train/test lists, grouped and nested plans, callback-based candidate search. | Reuse plan representation and compatible search infrastructure; add time-block/gap construction and per-response/fold-loss support where needed. |
-| `thd_datatable.[ch]` / `thd_sampleset.[ch]` | Metadata and canonical sample/dataset mappings used by MVPA. | Reuse for manifest/table interoperability. Do not require a dataset-backed sampleset just to describe a numerical time-series fold. |
-| `thd_patterns.[ch]` | Spatial extraction, ROI/searchlight support, surface domain helpers. | Reuse appropriate domain/extraction utilities; measure batching needs before adding a small time-series extraction helper. Voxelwise fitting does not require searchlights. |
-| `thd_rsa.[ch]` / `thd_simmatrix.[ch]` | RDM construction and representational geometry. | Keep as downstream consumers for beta reliability validation. They are not penalized-regression engines. |
+The completed numerical implementations are still in `thd_mvpa.c`, with public
+interfaces in `thd_mvpa.h`. No `thd_regression`, `thd_linproj`, or `thd_picard`
+module exists at this review. These are planned boundaries, not existing APIs.
+Use one regression library for the estimator family, not a library per penalty.
 
-### Extract the estimator layer from thd_mvpa after active work settles
+```text
+3dMVPA.c -> thd_mvpa -> thd_regression
+                     -> thd_crossval / existing pattern and inference modules
 
-The strongest candidate is a new `thd_regression.[ch]` containing dataset-
-independent numerical fits. At inspection, `thd_mvpa.c` contains:
+3dPicard.c -> thd_picard -> thd_regression
+                       -> thd_linproj
+                       -> thd_crossval
+           -> thd_xmat / AFNI dataset and output APIs
 
-- `THD_ridge_*`: centered primal/dual Cholesky ridge, positive penalties,
-  multiple responses, and sharing of factors for equal response penalties.
-- `THD_regression_*`: a continuous-estimator interface with elastic-net,
-  banded-ridge, PLS and SVR branches in the working tree. Their presence is
-  not an assertion that the corresponding roadmap milestones have shipped.
-- `reg_elastic`: residual-update coordinate descent and full KKT checks.
-  `THD_regression_fit` currently zeros coefficients for every candidate, so
-  a warm-started path would be an extension, not an existing capability.
+1dXmatMaker -> independent basis/design generation -> thd_xmat -> .xmat.1D
+                                                                    |
+                                       3dLSS / 3dREMLfit / 3dPicard <-+
+```
 
-Extract the stable estimator code mechanically first, retaining function names
-and compatibility declarations/includes for existing callers. A small movement
-of the whole existing continuous-estimator block may be safer than splitting
-its internal shared buffers by penalty family. PLS/SVR can remain available to
-MVPA without becoming Picard features. Decide exact extraction size after the
-active changes settle, and preserve model serialization and CLI behavior.
+Arrows express direct responsibilities; existing transitive AFNI header/link
+requirements are not a mandate for a broad dependency cleanup. Picard must not
+call MVPA's CV runner or depend on classification, permutation, saved-model or
+searchlight workflow code. RSA remains a downstream consumer of beta patterns.
+3dDeconvolve is outside this graph and stays untouched.
 
-Then introduce an explicit prepared-design interface: factor/prepare X once,
-fit bounded blocks of Y, and evaluate parameter paths. Keep independent response
-penalties and diagnostics separate from shared design state. Add fractional
-ridge as an SVD backend; it cannot be implemented simply by relabeling existing
-positive-lambda Cholesky fits. A fraction can map to different lambdas for
-different responses, so one factorization per distinct lambda is insufficient
-for an efficient whole-brain fractional path.
+| File/module | Owns | Does not own | Planned action |
+|---|---|---|---|
+| `thd_regression.[ch]` | Ridge and continuous-estimator numerical fits; coefficients, fitted numeric state, diagnostics; new prepared-design/path fits. | Dataset I/O, labels, censor/run interpretation, fold construction, candidate selection, inference. | New module: move the completed `THD_ridge_*` and `THD_regression_*` blocks together, then add Picard numerical capabilities. |
+| `thd_linproj.[ch]` | Factorization of supplied unpenalized Z; rank policy, projection of multiple RHS, nuisance coefficient recovery. | Automatic intercepts, column-role guesses, fold selection, scaling policy, whitening estimation. | New small numerical module for Picard. MVPA nuisance migration is a separate optional change, not a prerequisite. |
+| `thd_picard.[ch]` | Fitting workflow over numeric designs/responses: roles and maps supplied by caller, training-only preparation, scaling/back-transforms, scores, response-specific selection and final refits. | AFNI dataset handles, command parsing, file writing, HRF generation, RSA statistics. | New module; thin application layer above shared solvers and folds. |
+| `thd_crossval.[ch]` | Index-based fold plans, nesting, validation, generic search traversal. | HRF/fraction interpretation, nuisance fits, repeated-condition beta score definitions. | Reuse; add metadata-only fold construction and a separate path/batch traversal when needed. Preserve current scalar-search API. |
+| `thd_xmat.[ch]` | Matrix parsing/writing, labels/attributes, retained/full row mappings, run/column transformations, metadata adapters. | Penalized fitting, response-specific preprocessing, HRF candidate selection. | Reuse existing API; extend only general metadata/mapping needs. |
+| `thd_mvpa.[ch]` | MVPA preprocessing, classifiers, selection/PCA workflows, CV policies, permutations, audits, activation patterns and frozen-model formats. | Ownership of the extracted regression implementations. | Include `thd_regression.h`, retain workflow APIs and serialized behavior, replace private solver-field access. |
+| `3dPicard.c` | CLI, xmat/manifest ingestion, domain checks, mask and response batching, worker scheduling, AFNI outputs, provenance. | Numerical algorithms and candidate scoring logic. | New executable adapter; start with existing 3dDeconvolve matrices. |
+| `thd_patterns`, `thd_sampleset`, `thd_datatable` | Existing spatial extraction and table/sample identities. | A mandatory ROI/searchlight representation for voxelwise fitting. | Reuse only where needed; begin with a local bounded response reader in the executable. |
+| `thd_rsa`, `thd_simmatrix`, `thd_mapinfer`, `thd_permute` | Their established representational/inference responsibilities. | Picard's initial solver or model-selection engine. | No Picard-driven changes or new inference dependencies. |
 
-The extracted numerical layer must support caller-controlled intercept and
-centering behavior. Existing MVPA entry points should preserve their centered
-fit semantics through wrappers; Picard needs fits on its explicitly projected
-design, particularly once whitening is supported. Do not silently recenter
-a whitened/projected system using an ordinary constant vector.
+### Stage 1: exact estimator extraction and compatibility surface
 
-Choose matrix layout and ownership once at the adapter boundary: xmat is
-column-major float, while current MVPA solvers accept row-major float and
-compute internally in double. Avoid repeating conversions per voxel or candidate.
-Provide a double-precision fitting path for prepared designs without forcing
-existing MVPA callers to change storage conventions.
+Move the following declarations from `thd_mvpa.h` into `thd_regression.h`,
+re-exported by including that header from `thd_mvpa.h`:
 
-### Separate reusable projection mechanics from nuisance policy
+- `THD_RIDGE_AUTO/PRIMAL/DUAL`, opaque `THD_ridge_workspace`, and every
+  `THD_ridge_*` allocation/fit/predict/coefficient/free entry point.
+- `THD_REG_*`, `THD_regression_config`, `THD_regression_diagnostic`, opaque
+  `THD_regression`, and its allocation/fit/predict/coefficient/diagnostic/free
+  functions. Keep enum values, configuration meaning and function signatures.
 
-MVPA's `THD_preprocess_set_nuisance` currently adjusts predictor columns before
-scaling, adds an intercept, normalizes nuisance columns internally, and requires
-a full-rank nuisance design in every training split. Picard's partial penalized
-model needs projection of both X and Y and reconstruction of nuisance coefficients.
-These are related numerical operations but different scientific policies.
+Move the matching implementations and their private helpers/structs into
+`thd_regression.c`: `ridge_fit_penalties`, `reg_soft`, `reg_kkt`, `reg_elastic`,
+`reg_banded`, `reg_pls`, and `reg_svr`. Keep all four completed continuous
+estimators together. PLS and SVR remain supported for MVPA, without becoming
+Picard features. Preserve existing float input/output boundaries, double
+accumulation, intercept rules, parameter units and error behavior in this step.
 
-A small `thd_linproj.[ch]` is a candidate if both consumers benefit: reusable
-QR/SVD factorization, projection, coefficient recovery, explicit rank policy,
-and caller-owned scratch. Keep MVPA's existing strict rank/centering policy in
-its wrapper. Define Picard's treatment of redundant or fold-zero nuisance
-columns separately. Preserve fitted nuisance span and predictor identifiability;
-do not silently delete scientifically meaningful columns.
+The source has real internal coupling that must be resolved before moving it:
 
-This extraction is optional for the first fixed-design prototype. Share a
-concrete second use rather than creating a general linear-algebra framework.
-Use existing AFNI factorization facilities where their precision and contracts
-fit; audit `thd_lasso.c` for useful numerical precedent without inheriting its
-file-static configuration or assuming it has the desired thread/path interface.
+| Existing access in `thd_mvpa.c` | Required boundary |
+|---|---|
+| `ridge_record_patterns` reads ridge predictor means, coefficients and response means. | Read-only fitted-state access retaining double precision and the current centered-score arithmetic; do not round through the float prediction API. |
+| `regression_cv_mean` reads ridge/regression response means. | Numeric training-response means accessor, including SVR where mean is distinct from fitted intercept. |
+| `regression_cv_record` reads coefficients, predictor means, group IDs and diagnostics. | Read-only model state plus existing diagnostics accessor. Selection remapping and descriptive group variance/covariance stay in MVPA. |
+| `ridge_candidate_evaluate` reads regression diagnostics directly. | Use `THD_regression_diagnostics`; keep fold/candidate aggregation in MVPA. |
+| `THD_mvpa_ridge_freeze` reads fitted flag, active dimensions, means and coefficients. | Copy state into the existing frozen-model representation through checked accessors. Preserve serialization fields, arithmetic and prediction behavior. |
+| `reg_banded` borrows `THD_ridge_workspace` factor/RHS buffers. | Keep both implementations in the same numerical module; no public scratch-buffer accessor. |
+| `reg_banded` calls the classifier-local `lda_solve`. | Give the shared numerical module a narrow SPD solve helper, callable by LDA through a module-internal header. Preserve arithmetic and caller-specific failure messages; do not move the LDA model or create a general algebra framework. |
 
-### Extend folds without importing the entire MVPA workflow
+Concrete accessor design: add `THD_ridge_get_state` and
+`THD_regression_get_state` returning a borrowed, const numeric view containing
+active n/p/q, predictor means, response means, coefficients, and applicable
+group membership. A request fails if the model is unfitted. Views expire on
+refit/free; callers may copy into owned storage, but cannot mutate solver state.
+Existing coefficient-export functions continue to return caller-owned copies
+and original-input-space intercepts. Header/type spelling is proposed; these
+functions are not implemented yet. New public headers contain no AFNI datasets,
+THD_sampleset, THD_foldplan or permutation types. A private
+`thd_regression_internal.h` may declare the SPD helper for LDA; it must not
+expose workspace structs to MVPA as a shortcut around these accessors.
 
-`THD_nested_candidate_search` already separates preparation, evaluation, loss
-aggregation and tie-breaking. Keep it generic. Picard-specific fraction paths,
-trial-repeat tuning, HRF selection and final voxel refitting belong in a thin
-Picard workflow layer, provisionally `thd_picard.[ch]`, when needed.
+Leave `THD_response_ridge`, `THD_mvpa_ridge_workspace`, `THD_mvpa_set_regression`,
+`THD_mvpa_run_ridge_cv`, tuning/permutation runners, frozen-model code, all
+classifiers and `THD_preprocessor` in `thd_mvpa`. `THD_pca_*` and activation-
+pattern routines also stay there initially. A later noise-pool PCA requirement
+must justify its own extraction; PLS is not a substitute for nuisance PCA.
 
-Current grouped-fold constructors use THD_sampleset, and current validation
-requires exactly one test assignment per sample for non-fixed plans. Temporal
-gaps can exclude rows from training while retaining test coverage, but repeated
-CV or arbitrary partial test coverage needs a deliberate extension, not bypassed
-validation. A metadata-only constructor may be sufficient for early time-series
-work. Trial-repeat beta tuning requires its own scoring contract; a shared fold
-struct does not make it the same problem as prediction CV.
+### Stages 2 and 4: prepared designs and parameter paths
 
-Keep MVPA classification, permutations, feature selection, activation patterns,
-saved-model workflows and model comparison in their existing domain layer.
-Keep RSA's RDM regression and inference there as well. Picard should export
-compatible beta datasets and manifests; adding it must not require RSA to link
-to the new penalized solver or changing its scientific nulls.
+Add these capabilities inside `thd_regression`, alongside legacy wrappers:
+
+| Proposed object/operation | Contract |
+|---|---|
+| `THD_regression_design` / prepare | Own a double copy of the supplied effective X and immutable decomposition/cache state. X is already row-selected, nuisance-projected and scaled by the caller. No implicit centering/intercept. Backend capabilities are explicit. |
+| `THD_regression_workspace` / allocate | Own per-worker response, coefficient, residual and convergence scratch for bounded n/p/q capacities. Borrow the prepared design; allocate before numerical loops. |
+| Fit fixed settings / fit path | Accept double response batches and explicit fraction/lambda/mixing/group settings. Return coefficients and diagnostics; do not choose the winning candidate. Cold start is explicit; warm starts only within a compatible response/design path. |
+| Path result sink | Deliver one candidate's coefficients and per-response actual parameters/diagnostics to the workflow, then reuse buffers. Do not require a full path x voxel x coefficient tensor. Callbacks must copy anything retained. |
+| Fit selected settings | Refit a response batch using per-response selected settings on a design prepared from all eligible training rows. Share compatible numerical work; never substitute a tuning-fold fit for the final fit. |
+
+Stage 2 implements only the SVD/fractional-ridge backend and its endpoint rules.
+Stage 4 adapts the existing elastic-net coordinate-descent kernel to prepared
+inputs and path warm starts. Current `THD_regression_fit` zeros coefficients
+for each candidate; do not describe warm starts or screening as already present.
+Stage 6 adapts the existing banded-ridge kernel, preserving the shared numerical
+implementation rather than writing a second banded solver. A candidate may
+share immutable Gram data but needs mutable factorization scratch per worker.
+
+Existing APIs retain their centering and legacy penalty units. New prepared
+fits accept already transformed doubles and never recenter them. Internal
+kernels should serve both interfaces; changes to kernel plumbing require
+legacy-parity checks. For normalized Picard lambda, diagonal ridge/group
+penalties use n_train*lambda; completed MVPA elastic-net alpha is the normalized
+strength, whereas ordinary/banded ridge lambdas are unnormalized. Fractional
+ridge reports which convention its actual lambda uses. `alpha`, `rho` and
+candidate ordering must not silently change meaning for existing MVPA users.
+
+Prepared state is keyed by effective X, row selection, nuisance span, scaling,
+whitening and candidate design. Response-specific fractional lambdas do not
+invalidate an otherwise shared SVD. Different folds or HRFs generally do.
+Do not reuse response-dependent path state between voxels or folds. Existing
+PLS joint-response domains remain unchanged; Picard's ridge/EN batching is
+independent-response fitting, not multitask estimation.
+
+### Stage 2: projection, workflow and data ownership
+
+`thd_linproj` exposes an opaque `THD_linproj` with prepare, project,
+solve/recover, rank-report and free operations. It factors exactly the supplied
+Z in double precision, including an intercept only if present. A rank-revealing
+QR/SVD policy is explicit; no normal equations for the projection. Reuse one
+factorization to project X and each Y batch. Recover Gamma from Y-XB after
+coefficient back-transformation. Preserve column mappings when Z is redundant
+and distinguish identifiable fitted nuisance signal from nonunique coefficients.
+
+MVPA's `THD_preprocess_set_nuisance` remains predictor-side adjustment with its
+current strict rank/intercept behavior. Do not route it through the new module
+in the initial extraction. Sharing its underlying mechanism later requires a
+separate parity change; the same word "nuisance" does not make the two policies
+interchangeable. Whitening is supplied consistently to Z/X/Y by a later workflow
+adapter; `thd_linproj` does not estimate temporal noise or know about runs.
+
+`thd_picard` owns two classes of state:
+
+- An analysis/design plan: owned copies of numeric designs, column-role maps,
+  retained-to-full row IDs, run/trial identities needed by the selected mode,
+  scaling configuration, candidate descriptions, and validated fold plans.
+  The executable parses files into these inputs; the workflow never reads them.
+- A worker workspace: response-batch scratch, training-only transforms,
+  references to prepared designs, scores, candidate diagnostics, selection and
+  final-refit outputs. Borrowed immutable plan state outlives every worker.
+
+Proposed workflow calls are `THD_picard_plan_create`,
+`THD_picard_workspace_alloc`, `THD_picard_fit_batch`,
+`THD_picard_tune_batch`, and matching free operations. These are interface
+requirements, not frozen C signatures. Public data remain numeric arrays and
+explicit metadata IDs, with bounded errors returned to the caller. Fatal CLI
+exits, logging destinations and file ownership belong to `3dPicard.c`.
+
+The executable loads bounded Y blocks in retained-row order from full-timeline
+AFNI data, applies dataset scale factors, and converts to double once. The xmat
+adapter converts column-major floats to compact row-major doubles once per input
+plan, without claiming to recover lost text precision. X is [row][predictor],
+Y is [row][response], and B is [predictor][response], using active dimensions.
+Z and nuisance coefficients follow the same conventions. Output mapping and
+float conversion occur only at the executable boundary. Existing MVPA buffers
+and layout are not changed by this decision.
+
+Each worker uses a private workspace and writes disjoint result slots. File
+writing is serialized by the executable. No mutable global solver settings;
+failed fits invalidate their result and produce an explicit status/error, not
+stale coefficients. Bound cached designs and Y/path scratch with a memory
+budget; chunk size or worker count must not change the selected estimator.
+
+### Stage 3: folds and selection boundaries
+
+Reuse `THD_foldplan`, `THD_nested_foldplan` and their validators. Add a numeric
+constructor from row/run/group IDs so Picard does not fabricate dataset-backed
+THD_sampleset objects. Temporal blocks/gaps use original time/run coordinates,
+then map to retained rows; gaps are not distances on the compressed censored
+axis. Preserve the current non-fixed-plan requirement of one test assignment
+per sample. Repeated/partial test coverage needs its own later contract.
+
+`THD_nested_candidate_search` returns one scalar winner and assumes a nested
+outer/inner plan. It is reusable for scalar/global selection, but is not already
+a per-voxel path selector or a final all-data tuning driver. Do not run it once
+per voxel if that repeats design preparation. Add a separate generic
+`THD_cv_path_search` traversal when stage 3 needs it: explicit inner plan,
+prepare callback once per fold, path-evaluation callback once per fold/response
+batch, and finish callback. Results and scoring live in the caller context.
+Keep the existing scalar function and its semantics unchanged. Reuse validated
+index mapping and lifetime rules; nested traversal may compose the new driver.
+
+`thd_picard` supplies the callbacks and owns fold-by-candidate-by-response losses,
+R2 baselines, one-SE summaries, per-response winners and optional global
+aggregation. Store fold-level loss/weight information needed by the selected
+rule; stream or batch audit output. Final refits use a separately prepared
+full-training design. Prediction CV and repeated-condition beta tuning are
+separate workflow modes; only generic scheduling is shared. Do not carry over
+MVPA's row-permutation inference into temporally dependent Picard data.
+
+### Build and validation boundary
+
+For extraction, update `src/CMakeLists_binaries.txt`'s explicit 3dMVPA source
+list and `src/Makefile.INCLUDE`'s MVPA object/header dependencies to compile
+`thd_regression.c` exactly once. Register Picard with `thd_picard`,
+`thd_linproj`, `thd_regression`, `thd_crossval` and the required xmat/AFNI adapters.
+Account for current crossval/xmat transitive table/sample link dependencies;
+removing those dependencies is not part of this change. Do not add thd_mvpa
+or inference modules to Picard merely to resolve numerical symbols. Leave
+3dDeconvolve, REML and LSS target definitions untouched.
+
+Stage-1 acceptance includes the existing tests registered as `3dMVPA:ridge`,
+`response-ridge`, `regression`, `regression_null`, `regression-surface`,
+`nuisance`, `activation-patterns` and `saved-models` (with the 3dMVPA prefix),
+plus affected nested-tuning, classifier/LDA, coefficient and pipeline coverage.
+Retain numerical fixtures in `src/pmolfese/tests/test_mvpa.c`; move or add
+solver-only coverage in `test_regression.c` as appropriate, without removing
+MVPA integration assertions. Validate all four moved estimator branches, not
+only those exposed by Picard. Capture a pre-extraction reference build/results.
+
+New focused tests are `test_linproj.c` (span/rank/recovery),
+`test_picard.c` (numeric workflow and training isolation), and Picard CLI/oracle
+fixtures for censoring, labels, batch/thread invariance and fraction selection.
+Names are planned. Test symbols/ownership, failed-fit invalidation, accessor
+lifetimes and double precision where activation patterns depend on it. No
+scientific tests were run for this documentation-only boundary review.
 
 ## Suggested implementation sequence and acceptance gates
 
@@ -255,20 +390,22 @@ errors from design-generation differences.
 
 | Stage | Deliverable | Gate before proceeding |
 |---|---|---|
-| 0 | Settle design roles, objective units, scaling, output identities and tuning modes; review completed MVPA work. | Written contracts and reuse decision; no concurrent extraction of active solver changes. |
-| 1 | Mechanically extract stable estimator code if ready; reuse xmat infrastructure. | Existing ridge/EN, preprocessing, CV, coefficient and saved-model checks remain equivalent for the moved code; supported builds link correctly. |
-| 2 | Fixed-design fractional ridge with unpenalized nuisance, fixed fraction/path and diagnostics. | Independent fracridge oracle and direct augmented-model checks; zero/rank-deficient/high-dimensional cases; coefficient reconstruction. |
-| 3a | Shared-feature run-wise prediction tuning and final refit. | Fold-local preprocessing and held-out perturbation checks; defined score baseline, deterministic selection and undefined-score handling. |
-| 3b | Repeated-condition single-trial tuning with explicit event identities. | Hand-checkable repeated-trial fixture; reject unsupported tuning when repeats are absent; component-level GLMsingle comparison. |
-| 4 | Lasso/elastic-net paths using the settled shared solver. | Matched objective/scaling/folds against glmnet or scikit-learn; KKT failures visible; warm/cold path agreement. |
-| 5 | Multiple compatible design matrices and HRF selection. | Explicit selection protocol; correct per-voxel design IDs and aligned beta identities; independent evaluation when advertised. |
-| 6 | Banded ridge, prewhitening, support refits, performance refinements. | Separate numerical and scientific validation per feature, measured runtime/peak memory, thread-count agreement within documented tolerances. |
+| 0 | Capture the completed MVPA reference build; specify model roles, units, scaling, state accessors and fixture identities. | Reviewed extraction checklist and baseline results; library boundaries above agreed; no dependency on Maker. |
+| 1 | Create `thd_regression.[ch]`, move ridge plus all four continuous estimators, replace MVPA private-field access and update build lists. | Behavior-preserving extraction: ridge/EN/banded/PLS/SVR, LDA helper, CV, patterns, coefficients and saved-model coverage passes. No new numerical algorithm in this change. |
+| 2 | Add SVD/fractional paths to `thd_regression`, projection/recovery in `thd_linproj`, fixed-design workflow in `thd_picard`, and the `3dPicard.c` adapter. | Existing 3dDeconvolve matrices work; fracridge and direct-model oracles pass, including rank/endpoint cases; nuisance recovery, labels, batch/thread behavior and memory bounds verified. |
+| 3a | Extend numeric fold construction/path traversal in `thd_crossval`; implement shared-feature prediction scoring/selection/final refit in `thd_picard`. | Fold-local preprocessing and held-out perturbation checks; defined score baseline, deterministic per-response/global selection and undefined-score handling. |
+| 3b | Add separate repeated-condition beta-tuning mode to `thd_picard` using explicit event identities and shared generic traversal where applicable. | Hand-checkable repeated-trial fixture; reject unsupported tuning when repeats are absent; component-level GLMsingle comparison. |
+| 4 | Extend the extracted EN kernel with prepared-double fits and warm-start paths; add Picard sparse-penalty configuration. | Matched objective/scaling/folds against glmnet or scikit-learn; full KKT and warm/cold agreement; legacy MVPA EN results preserved. |
+| 5 | Add candidate-design plans, identity validation and HRF-selection policy to `thd_picard`; ingest manifests in the executable. | Correct per-voxel design IDs and aligned beta identities; independent evaluation when advertised; ordinary single-matrix fitting remains independent of Maker. |
+| 6 | Adapt extracted banded ridge to Picard's prepared fits; add prewhitening/support-refit adapters and measured optimizations as separate subchanges. | Legacy banded results preserved; per-feature numerical/scientific gates, runtime/peak memory and thread-count checks pass; no duplicate banded solver. |
 | 7 | Single-trial orchestrator: noise-pool PCs, PC-count selection, staged outputs. | Pinned-reference component and end-to-end comparisons; documented differences from GLMsingle. |
 
 Stages 3a and 3b are separate deliverables, not interchangeable implementations.
 For a single-trial-first release, prioritize 3b and stage 5 over sparse penalties.
-If MVPA extraction is not ready, stage 2 can start with new fractional-ridge code
-without copying its existing elastic-net implementation.
+MVPA's numerical prerequisites are now complete. Stage 1 is the planned first
+code change, with stage 2 building on the extracted library. Do not copy EN or
+banded implementations into Picard or broaden the extraction into a rewrite of
+MVPA's preprocessing/inference system.
 
 The recommended handoff to Maker implementation is after stage 2 and one of
 3a/3b pass their acceptance gates. Maker requirements and reference fixtures
@@ -477,6 +614,7 @@ new Maker-specific metadata to perform their ordinary matrix-based fits.
 - Local source reviewed: `src/thd_mvpa.[ch]`, `src/thd_crossval.[ch]`,
   `src/thd_xmat.[ch]`, `src/thd_patterns.h`, `src/thd_sampleset.h`,
   `src/thd_rsa.[ch]`, `src/3dRSA.c`, `src/3dMVPA.c`, `src/3dTfitter.c`,
-  `src/3dREMLfit.c`, `src/Makefile.INCLUDE`, and `tests/CMakeLists.txt`.
+  `src/3dREMLfit.c`, `src/CMakeLists_binaries.txt`, `src/Makefile.INCLUDE`,
+  and `tests/CMakeLists.txt`.
 - Related roadmap: `src/pmolfese/3dMVPA_PLAN.md`. Its milestone status remains
   authoritative for MVPA; this document does not advance or replace it.
