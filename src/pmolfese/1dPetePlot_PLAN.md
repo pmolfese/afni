@@ -2,13 +2,36 @@
 
 Date: 2026-10-26
 
-Status as of 2026-10-27: **M1 Complete (basic plotting prototype scope)**;
+Status as of 2026-10-30: **M1 Complete (basic plotting prototype scope)**;
 **M0, M2, M3, M4, M5, M6, and M7 Partially complete**. **M5 first slice Complete**
-(direct editing, Undo/Redo, projects/replay). **M6 first slice Complete
+(direct editing, Undo/Redo, projects/replay). **M5 styling/duplication slice Complete
+(implementation and automated checks):** scoped appearance editor with live preview,
+independent graph copies, version 3 projects, and headless replay. **M6 first slice Complete
 (implementation and automated checks)**: Open/Drop → Preview → Add, empty launch,
 column mapping, background previews, and mixed-source projects/replay. **M7 first
 slice Complete (implementation and automated checks)**: ROI-wide RSA reader,
 `-rsa` presets, semantic Open/Drop review, and reproducible projects/exports.
+**M7 confidence-interval slice Complete (implementation and automated checks):**
+supplied asymmetric ROI intervals, explicit CI-method selection, source-level/
+construction labels, semantic import, and exact project replay.
+**M7 RDM/condition-label slice Complete (implementation and automated checks):**
+named matrix inputs, condition alignment/order, explicit shared scales, native
+attachment review, and fingerprinted replay.
+**M6 scientific-attachments slice Complete (implementation and automated checks):**
+explicit groups/uncertainty, censor and X-matrix sidecars, alignment review, and
+fingerprinted replay for the graph being imported.
+**M7 long-table slice Complete (implementation and automated checks):**
+time curves with optional supplied CI bands, categorical run summaries, semantic
+Open/Drop review, identity-based selection and frozen project replay.
+**M5 source-reload/relink slice Complete (implementation and automated checks):**
+source status/replacement review, explicit refreshed previews, project-open recovery,
+compatible presentation retention, and data-aware Undo/Redo.
+**M6 existing-graph attachment slice Complete (implementation and automated checks):**
+reopen saved ordinary import roles, preview/apply attachment changes, independent
+copies, and version 4 project replay. CLI-base/RSA/RDM attachment editors remain open.
+**M7 fitted/commonality slice Complete (implementation and automated checks):**
+explicit accuracy/weights/fit-contrast/raw-commonality/conditional-partial-R² families,
+supplied decomposition intervals, semantic import and headless PNG/SVG.
 Native drag/drop reaches preview per user feedback; the revised fixed action footer
 and native Open Data chooser still need hands-on verification.
 Detailed completion markers appear
@@ -31,24 +54,47 @@ Do not end a milestone with only a completion report or silently start another.
 The user reports that the M5 first slice looks to be working. Record this as user
 feedback; detailed native-dialog and cross-platform verification remain separate.
 
-### Next implementation choices — Awaiting user selection after M7 first slice
+### Next implementation choices — Awaiting user selection after M5/M6/M7, 2026-10-30
 
-The user selected M7 on 2026-10-27; the first RSA slice is implemented below.
+The user selected all three proposed slices: source reload/relink, existing-graph
+attachments, and fitted/commonality views. Their implemented scope and remaining
+limitations are recorded below. Choose the next slice before further implementation.
 
-1. **M7 next slice: ROI effects with supplied confidence intervals (recommended).**
-   Add ROI comparison/forest plots using the actual asymmetric bootstrap, condition-
-   bootstrap, or dual-bootstrap bounds. Preserve interval method and effect scale;
-   do not recompute inference or substitute symmetric bands. This builds on the
-   semantic reader and makes the supplied uncertainty useful in figures.
-2. **M5 next slice: Figure styling and duplication.** Editable series colors,
-   line widths, marker sizes, and legend labels, plus Duplicate Graph. Keep these
-   changes undoable and persistent, with deliberate figure/selected-graph scope.
-3. **M6 next slice: Scientific attachments.** Add uncertainty/group/label roles
-   for generic tables and compatible censor/X-matrix attachment previews. Validate
-   timeline alignment and make the target graph explicit before attachment.
+1. **M2: AFNI build/install integration (recommended).** Connect opt-in Make/CMake
+   targets and `build_afni.py` prerequisites/options; verify installation and
+   program discovery. This makes the now broader tool practical in AFNI builds.
+   Linux runtime and release baseline checks need the corresponding environments.
+2. **M7: Explicit cross-file ROI joins.** Align selected results by ROI identity,
+   report unmatched/duplicate identities, and require a missing-data policy before
+   comparisons. Do not silently pair table row positions or infer pooled effects.
+3. **M6: Extend existing-graph editing to CLI-created graphs.** Establish explicit
+   source/column roles for compatible CLI graphs, then reuse attachment preview/
+   Apply. Broader metadata, automatic suggestions and scientific RSA/RDM editors
+   remain separate choices.
 
-These choices do not supersede remaining M2 distribution or M3 parity work;
-those remain available priorities if the user prefers them.
+Remaining M3 transformations/parity and M5 condition-color/accessibility refinement
+are also available priorities. None of these next choices has been started here.
+
+### Combined M5/M6/M7 verification — 2026-10-30
+
+**Complete:** 120 tests in the GUI build (102 unit + 18 CLI), 77 in the headless
+build (58 unit + 19 CLI), Clippy with warnings denied for both configurations,
+and formatting. Source tests cover changed/missing/relinked files, same-width
+column reorder rejection, recovery, fixed Apply footer and stale-preview rejection.
+Data-history tests combine text edits, reload, attachment edits, independent copies,
+Undo/Redo, dropped sidecar dependencies and exact project-replay pixels. Version 4
+recipes export headlessly; prior recipe versions remain readable.
+
+RSA tests cover five new families, probability-column exclusion, pair/triple
+components, negative shared values, supplied 90% bounds, rejected unsupported
+intervals, frozen selections, and invalid requests preserving existing outputs.
+The release commonality heatmap and three-panel interval export were visually
+inspected. The macOS ARM64 release binary and `.app` were rebuilt offline. No new
+dependencies were added.
+
+**Remaining platform checks:** Hands-on use of the new native source/recovery and
+attachment-edit controls, and Linux/other-architecture execution. The automated
+egui harness and CPU export inspection do not establish those platform results.
 
 ## Objective and agreed requirements
 
@@ -422,8 +468,11 @@ Begin build plumbing during M0/M1; finish release integration here.
 
 - **Complete:** Heatmap index labels track reordered conditions; explicit color
   limits and zero-centered limits are available.
-- **Remaining:** User-supplied condition labels, automatic shared color limits
-  across matrices, optional matrix masks, and improved publication layouts.
+- **Complete in M7 RDM slice:** User-supplied condition labels and name-based
+  alignment/order. Explicit automatic shared color limits across CLI matrices;
+  fixed limits for comparable native imports.
+- **Remaining:** Optional matrix masks, live linked color-scale editing across
+  native imports, and improved publication layouts.
 - **Complete:** Named-column TSV selection (delivered with M3).
 - **Complete in M6 interactive imports:** Table headers become series labels.
   **Complete in M7:** Semantic ordinary ROI-wide RSA tables.
@@ -497,7 +546,8 @@ computed model; M5 now stores source arguments and editable presentation separat
 with fingerprints and headless recipe replay. M6 adds independent source layers,
 original column indices, and explicit numeric roles; richer scientific identity
 and semantic roles for ordinary ROI-wide RSA are now implemented in M7;
-long schemas and cross-file scientific joins remain future work. Current
+long time/run schemas are implemented below; cross-file scientific joins remain
+future work. Current
 `3dRSA.c` writes mixed ROI/label/nvox/effect/statistic columns and separate long
 formats for series/run-resolved output; its `.rsa.1D` requires a semantic reader,
 not just the existing numeric `.1D` parser or TSV reader.
@@ -533,9 +583,28 @@ window/menu/image-dialog checks do not count as verification of these new contro
 - **Complete in M6:** Version 2 mixed-source recipes, stable import-layer IDs and
   original column indices, explicit numeric role mappings, and version 1 read
   compatibility. Undo/Redo includes Add Graph; saved projects exclude undone imports.
-- **Remaining:** GUI relink/reload for existing panels, richer scientific roles,
-  style actions, and subsequent schema migrations. Import Retry rereads a pending
-  source; it does not replace an already-added graph.
+- **Complete in styling slice:** Version 3 presentation styles and canonical copy
+  source IDs; version 1/2 read compatibility retains original pixels. Undo/Redo
+  includes selected/shared style changes and Duplicate Graph. Saving excludes
+  undone copies, with source fingerprints and invalid-style/copy checks before
+  atomic replacement. Copied data remain independently editable in presentation.
+- **Complete — source reload/relink (2026-10-30):** File menu source-status workspace,
+  native replacement choosers, background Preview changes and explicit Apply.
+  Existing selectors/frozen selections persist; imported column names/order and
+  graph/series compatibility are checked. Compatible titles, captions, styles and
+  panel IDs/order survive. Fit new bounds by default; keeping views is explicit.
+  Recheck fingerprints before Apply; cancel/stale candidates cannot mutate data.
+- **Complete:** Open Project offers explicit source recovery without replacing the
+  active document before success. Strict headless replay remains unchanged. Save
+  records new fingerprints only after a user-applied refresh. Inactive/undone
+  imports are excluded from reload dependencies.
+- **Complete:** Data-aware Undo/Redo includes source recipes, observations, views and
+  export configuration. Retain eight prior data versions; prune older dependent
+  history to bound retained snapshots. Undo never rewrites disk sources: cached
+  figures remain exportable, but recipe save still requires matching source bytes.
+  Version 4 projects read versions 1–3 and replay edited graph recipes headlessly.
+- **Remaining:** Richer source/series identities beyond stored import columns and
+  scientific preset selections; portable data snapshots remain deferred below.
 - **Deferred:** Portable bundles/data snapshots and persistent undo history. Current
   recipes reference external inputs; demos and inline `1D:` data are self-contained.
   Stdin needs to be saved to a file and reopened before Save Project is available.
@@ -554,16 +623,40 @@ window/menu/image-dialog checks do not count as verification of these new contro
   scale to fit. PNG/SVG and window share the layout. Oversized edits remain
   uncommitted with an actionable message, rather than silently losing text.
   Margin-free QC strips intentionally omit text and reject caption options.
-- **Remaining:** Figure-wide styles, selected-panel style overrides, consistent
-  condition color controls, duplicate panel, and broader accessibility/typography
-  refinement. Compact navigator previews omit captions; full views/exports retain them.
+- **Complete — styling and duplication slice (2026-10-27):** Full-window style
+  workspace with live preview, explicit This graph / All graphs scope, fixed
+  Apply/Cancel footer, and Escape cancellation. Per-series colors/legend names,
+  line widths, marker radii, series-legend visibility, and heatmap palettes use
+  the shared PNG/SVG/window renderer. Shared settings affect compatible graphs;
+  series colors/names remain individual. Each Apply is one Undo action. Defaults
+  can be restored per graph. Scientific annotations and numeric content remain intact.
+- **Complete:** Duplicate Graph in inspector, graph context menus, and Edit menu
+  (Command–D / Ctrl–D), inserting beside and selecting the original's copy. Current
+  bounds, data, annotations, and styles are copied; titles/styles then edit
+  independently. Copy-of-copy identities, reorder, history pruning, project
+  reconstruction, and headless export are covered. Margin-free strips reject
+  multi-graph duplication; the existing 64 retained-graph limit applies. Automatic
+  height growth remains an export setting outside presentation Undo history.
+- **Remaining:** Consistent condition color controls and broader accessibility/
+  typography refinement. Compact navigator previews omit captions; full views/exports
+  retain them.
 
 **Evidence:** Automated edit/type/commit/cancel/undo/redo/reorder/save/reopen tests;
 1×/2× semantic click targets and focused-panel targeting; source relocation and
 changed/missing-input detection; retained NaN gaps; identical CPU-rendered pixels
 before and after project reconstruction; CLI PNG/SVG replay, sizing and overwrite
 checks; caption wrapping/axis separation. Captioned output visually inspected.
-Example project: `1dPetePlot/examples/edited-figure.peteplot.json`.
+Example projects: `1dPetePlot/examples/edited-figure.peteplot.json` and
+`1dPetePlot/examples/styled-copies.peteplot.json`.
+
+**Styling-slice evidence:** 92 GUI-build tests and 63 headless-build tests; Clippy
+in both builds and formatting pass. Tests cover fixed-footer Apply at 850×500,
+Escape without leaving full screen, selected/shared scope, one-action Undo,
+independent copies/copies of copies, imported CI/RDM copies, reorder/undo/replay,
+legacy pixels, and rejected invalid styles/copy identities without overwriting
+outputs. The rendered styled-copy example was visually inspected and the macOS
+release bundle rebuilt. Native styling controls and Linux runtime verification
+remain pending. No dependencies were added.
 
 ### M6: interactive data import and plot suggestions — Partially complete
 
@@ -599,10 +692,43 @@ Example project: `1dPetePlot/examples/edited-figure.peteplot.json`.
   256 columns; 16 series and 50,000 selected line/scatter points; 256-square heatmaps;
   16 queued files and 64 retained graphs including Undo. Limits report actionable
   errors and do not silently sample or truncate scientific observations.
-- **Remaining:** Units, row/ROI identities, run/TR metadata, uncertainty/label/group
-  roles, cross-source joins/alignment, and recognized X-matrix design views or
-  censor/condition attachment suggestions. Existing CLI X-matrix shading is unchanged.
-  Require matching timelines/metadata and explicit attachment targets.
+- **Complete — scientific attachments (2026-10-27):** Explicit Group column for
+  ordinary line/scatter/distribution previews. First-seen categorical order, no
+  aggregation, original row positions and line gaps retained, shared histogram
+  bins, and category colors consistent across Y series. Missing group identities
+  and empty groups are rejected; 16 total series / 50,000 stored preview points.
+- **Complete:** Supplied symmetric width columns/files or asymmetric lower/upper
+  columns per Y in line previews. Explicit role separation, matching row/column
+  counts, finite-or-gap handling, bounds containment, optional band autorange,
+  and no inferred SE/CI/confidence level. No mean imputation with uncertainty/group
+  roles. New CLI -group-by and -yfiles_lo/-yfiles_hi use the same model.
+- **Complete:** Censor column/file and AFNI X-matrix choosers target the new graph
+  being previewed. Binary masks preserve observations. Positive condition groups,
+  configurable modeled-response threshold/colors, NRowFull/GoodList checks, and
+  unshaded missing design rows reuse CLI semantics. Multiple shading colors coexist.
+  Sidecars require an explicit same-row-order/timeline confirmation in addition
+  to numeric checks. No resampling, stimulus-timing inference, or cross-file join.
+- **Complete:** Bounded sidecar files; all auxiliary paths/selectors and original
+  column roles persist as fingerprinted recipe arguments. Add performs a fresh
+  source verification; changed preview sources cannot be committed. Undo, duplicate,
+  styling, relocated projects, and headless PNG/SVG replay preserve attachments.
+  The initial attachment slice used version 3; current saves use version 4.
+  Import Retry preserves mapping with unchanged
+  source path and column names/order; incompatible families require clearing roles.
+- **Complete — edit existing attachments (2026-10-30):** Edit menu and graph context
+  menu reopen saved ordinary line/scatter/distribution import roles in full-window
+  review. Restore group, uncertainty, censor and X-matrix options; require renewed
+  sidecar alignment confirmation. Fixed Apply changes to graph footer, preview,
+  cancellation and stale-source checks reuse import validation.
+- **Complete:** Preserve panel ID, text and compatible styling; allow explicit
+  style reset when changed roles conflict. Apply is one data Undo action. Existing
+  copies keep their old recipe; new copies inherit the edit. Removed attachments
+  stop being dependencies unless another graph still uses them. Version 4
+  reconstruction and headless replay preserve edited scientific content.
+- **Remaining:** Attachment editing for CLI-created base graphs and scientific
+  RSA/RDM graphs; external separate lower/upper-file editing; units, row/ROI labels,
+  richer run/TR metadata, cross-source joins, X-matrix design views and automatic
+  attachment suggestions. Source relinking is completed in M5.
 - **Remaining:** Simultaneous candidate thumbnail gallery (the first slice shows
   one selected preview), CSV, advanced RSA schemas, richer metadata, and
   large-data optimization beyond the explicit interactive limits.
@@ -624,6 +750,16 @@ The three-panel mixed-source example export was visually inspected:
 `1dPetePlot/examples/imported-figure.peteplot.json`; try importing its synthetic
 `import-demo.tsv` source through the window.
 
+**Scientific-attachment evidence:** 101 GUI-build tests and 66 headless-build tests;
+Clippy in both configurations and formatting pass. Combined attachments preserve
+asymmetric endpoints and original rows; invalid masks/counts/bounds/design metadata
+fail, and a stale-sidecar Add click is rejected at 850×500. Tests cover shared bins,
+category ordering, negative scaling, width columns/files, explicit alignment,
+Add/Undo/duplicate/replay pixel equality, and relocated/changed sources. The
+synthetic attached-figure export was visually inspected and macOS release bundle
+rebuilt. Native attachment UI/dialog and Linux runtime checks remain pending.
+Example: `1dPetePlot/examples/attachments/attached-figure.peteplot.json`.
+
 ### M7: scientific presets, beginning with RSA — Partially complete
 
 **First usable slice — Complete (implementation and automated verification), 2026-10-27.**
@@ -631,12 +767,15 @@ The three-panel mixed-source example export was visually inspected:
 - **Complete:** Semantic reader for ordinary ROI-wide `3dRSA` tables, using the
   current local `3dRSA.c` header/output code as the reference. Supports commented
   headers, labels with spaces, named models, unique ROI identities, and voxel counts.
-  Numeric RDM input remains the ordinary `-heat` path.
+  Numeric matrices retain the ordinary `-heat` path; the RDM slice below adds
+  explicit named axes through `-rdm`.
 - **Complete:** Distinct r, beta b, and partial-r roles; default r for ordinary
   comparison and b for regression. Probability/FWE, interval, fit/weight, contrast,
   LOO, reliability and noise-ceiling columns are retained as auxiliary values,
   not plotted as primary effects. Probabilities/interval ordering are validated.
-  Unknown/commonality and long series/run schemas fail explicitly.
+  Unknown schemas fail explicitly; commonality uses explicit families below, and
+  long series/run schemas use the
+  separate completed reader below.
 - **Complete:** `-rsa FILE` generates per-model distributions, one ROI-matched
   model comparison with ROI/label/nvox hover, and a rectangular ROI-by-model effect
   heatmap. Separate row/model labels and symmetric color normalization; a coefficient
@@ -661,11 +800,105 @@ The three-panel mixed-source example export was visually inspected:
 - **Complete:** Explicit source/plot limits and automatic heatmap label sizing;
   oversized explicit dimensions/layouts fail before export. Input limits are 16 MiB,
   10,000 ROIs / 1,000,000 cells / 512 columns (256 columns for interactive import).
-- **Remaining:** Supplied asymmetric confidence-interval ROI plots; actual RDM
-  inputs with condition-label matching and explicit shared scales; long series/run,
-  fits/contrasts/commonality visualization; multi-file ROI joins. A results table
-  cannot reconstruct an RDM. Recognizing auxiliary columns does not complete their
-  plotting workflows or scientific method labeling.
+- **Complete — confidence-interval slice, 2026-10-27:** `-rsa-plots intervals`
+  makes one horizontal ROI effect/CI panel per selected model. Supplied endpoints
+  retain asymmetry; no recomputation, tanh conversion, clamping, or substitution
+  of symmetric bands. All model panels share an initial x scale including zero,
+  estimates and endpoints. ROI labels/order and full hover details are retained.
+- **Complete:** `-rsa-ci auto|boot|cboot|dual` selects subject, condition, or dual
+  bootstrap bounds. Auto requires exactly one common method across selected
+  models; multiple methods require an explicit choice. Confidence level and
+  percentile/corrected-variance t construction come from matching source comments;
+  absent levels say “CI level not recorded.” Invalid/conflicting levels fail.
+  Regression intervals are beta bounds; applying them to partial r is rejected.
+- **Complete:** Strict missing-triplet validation. Explicit gap policy retains
+  the ROI row marked missing without a point or interval; completely missing
+  panels fail. No significance filtering. Up to 40 selected ROIs per panel,
+  automatic label height, and rejection of explicit dimensions that cannot fit.
+- **Complete:** Full-window Open/Drop review offers Confidence intervals and a
+  method selector. Add/Undo, mixed projects, editable titles/captions, hover,
+  pan/zoom, and current-view export use the shared model. Projects freeze the
+  resolved method, including explicit/implicit auto, alongside the existing
+  selections/version/source fingerprint. CLI PNG/SVG and replay need no display.
+- **Complete — RDM/condition-label slice, 2026-10-27:** `-rdm FILE ...` reads
+  1–8 actual square symmetric numeric matrices with 2–256 conditions. Required
+  `-rdm-labels FILE` is supplied once for a shared source order or once per matrix.
+  Names are unique, case sensitive, one per line (spaces allowed). Count/set and
+  duplicate checks precede rendering. Both axes align by identity; no RDM is
+  inferred from ROI results or matrix dimensions.
+- **Complete:** `-rdm-order FILE` applies a full name-based permutation to both
+  axes and values, defaulting to the first label file's order. Full names/values
+  remain available on hover; dense/long axis labels are thinned/abbreviated.
+  Named axes have additional layout space.
+- **Complete:** Independent color scales by default; `-rdm-scale shared` explicitly
+  derives one common range, while `-clim` sets fixed limits. Existing color maps
+  and zero-centered scales apply. Ranges include the diagonal. Matrix sense is
+  declared with `-rdm-kind unspecified|similarity|dissimilarity`; the default
+  is unspecified because AFNI saved matrices can encode either sense. No sign,
+  scale, similarity/distance conversion or normalization is performed. Shared
+  scales assume the user intends a comparison in compatible units.
+- **Complete:** Symmetry tolerance `1e-6 * max(1, |a|, |b|)` without averaging.
+  Negative distances and diagonal entries are preserved. Strict missing default;
+  gap mode requires mirrored missing cells and displays them gray. Imputation,
+  one-sided missingness, infinities, entirely missing data, triangular vectors,
+  selectors, and text-bearing matrices fail. Inputs are bounded to 16 MiB each;
+  condition names to 256 bytes.
+- **Complete:** Open/Drop a numeric square `.1D`, choose RDM / named matrix, attach
+  labels and optional display order with native file choosers, choose sense and
+  optional fixed limits, preview then Add. Whole-matrix input avoids silently
+  selecting a different condition set on one axis. Identical fixed limits allow
+  comparison across imports; automatic shared ranges across multiple matrices
+  are currently a CLI operation. No automatic linked-scale editing is claimed.
+- **Complete:** Projects freeze RDM preset v1, sense/scale/palette and fingerprint
+  every matrix, label, and order file. Attachments are rechecked before Add and
+  replay; relative paths, Undo/Redo, edits, views and identical replay pixels are
+  retained. Native/headless PNG/SVG share rendering; no new dependencies.
+- **Complete — long time/run table slice, 2026-10-27:** Readers matched to the
+  local `3dRSA.c` series and run-resolved writers. Preserve ROI ID/label/nvox,
+  time_index/time_label, model, summary and auxiliary statistics. Rows join by
+  explicit identities, with duplicate/conflicting identity rejection. Time indices
+  retain numeric source order; labels are never interpreted as seconds. Runs,
+  MEAN and planned contrasts remain distinct categorical summaries.
+- **Complete:** Default time curves and unconnected run/model points, one panel
+  per ROI; explicit heatmaps and time-index CI plots. Source `effect`, standardized
+  beta and partial r remain distinct; `stat`, p/q/z/FWE and noise ceilings never
+  become effect candidates. Supplied time-series CI bands are opt-in; bootstrap
+  method, level and construction use source metadata. No inferred uncertainty,
+  averaging, significance filtering, scale conversion or imputation.
+- **Complete:** `-rsa-times` and `-rsa-summaries`, plus existing model/ROI/effect
+  selections, freeze into preset-v1 recipes. Strict missing default; explicit gaps
+  retain absent ROI/model/time or summary combinations, and incomplete interval
+  triplets retain a labeled missing row. Curves keep an available effect when
+  only its CI endpoints are missing. All-missing effects/interval panels fail.
+- **Complete:** Full-window Open/Drop review chooses the schema-appropriate plot,
+  one ROI per Add, effect/model/category selections and optional CI band. The
+  fixed action footer, background preview, source verification, Add/Undo,
+  presentation editing, and shared PNG/SVG/project replay paths are retained.
+- **Complete:** Bounded source/plot sizes, up to 8 selected models, 40 ROIs,
+  2,000 indices/summaries, 50,000 observations and 64 panels; heatmaps limited to
+  40 category columns and interval plots to 40 rows per ROI. Exceeding limits
+  requires explicit subsetting. Axis/heat scales fit each ROI independently.
+  Full point identities and supplied statistics remain on hover; crowded axis
+  labels are thinned/abbreviated. No new dependencies.
+- **Complete — fitted/commonality families (2026-10-30):** Explicit `-rsa-family`
+  fit, weights, fit-contrast, commonality and partial-r2, with literal
+  `-rsa-measures` selection. Match local 3dRSA writer fields: cvR accuracy, normalized
+  mean fold weights, cvDiff held-fold Fisher-z differences, uniq/common raw R²
+  regions, and conditional partialR2. Primary effects remain the default.
+- **Complete:** Separate scientific labels/captions; source scale and negative raw
+  shared components retained. Weights are descriptive, partial R² is not additive
+  raw decomposition. No estimation, conversion, normalization, clipping, inferred
+  significance or aggregation. p/q stay auxiliary; incomplete schemas fail.
+- **Complete:** Default ROI-by-quantity heatmap; histogram/scatter and supplied
+  commonality/partial-R² intervals reuse shared geometry. Fit/weights/fit-contrast
+  interval requests fail because the source supplies no endpoints. CI method and
+  recorded level remain explicit. Pairwise and triple region names persist.
+- **Complete:** Family-filtered Open/Drop choices, frozen recipe selections,
+  Add/Undo/duplicate/style and PNG/SVG replay. Synthetic fitted/pairwise/triple
+  fixtures test negative components and 90% supplied intervals; no dependencies.
+- **Remaining:** Fixed-model wide contrasts (`_diff`, `_rDiff`, `_zDiff`),
+  leave-one-out views and multi-file ROI joins. Named run contrasts and fitted
+  cvDiff do not complete all contrast workflows. Results cannot reconstruct RDMs.
 - **Remaining:** Native hands-on inspection of the RSA import controls and hover;
   Linux/other architecture checks. In-process GUI tests and CPU export inspection
   are evidence for implementation, not those platform checks.
@@ -678,25 +911,51 @@ The three-panel mixed-source example export was visually inspected:
 1dPetePlot -rsa results.rsa.1D -rsa-models semantic,visual \
   -rsa-rois 3,12,27 -rsa-plots scatter,heatmap -prefix selected.svg
 1dPetePlot -rsa regression.rsa.1D -rsa-effect pr -prefix partial-r.png
+1dPetePlot -rsa results.rsa.1D -rsa-plots intervals -rsa-ci boot -prefix ci.svg
+1dPetePlot -rsa regression.rsa.1D -rsa-plots intervals -rsa-ci dual -prefix beta-ci.png
+1dPetePlot -rdm model.1D neural.1D -rdm-labels conditions.txt \
+  -rdm-kind dissimilarity -rdm-scale shared -prefix rdms.svg
 1dPetePlot -recipe figure.peteplot.json -prefix publication.svg
 ```
 
 **Evidence:** Synthetic ordinary/regression fixtures with optional fitted metrics,
 probabilities, bounds and reliability; unordered ROI rows; missing effects/complete
-pair omission; unknown/long/duplicate schemas; missing requested ROI/model checks;
+pair omission; unknown/incomplete/duplicate schemas; missing requested ROI/model checks;
 rectangular heatmap hover/orientation; semantic Open/Drop review and Add/Undo/reopen;
 headless PNG/SVG exports and output preservation on validation failure; frozen
 preset/relative-source relocation with identical replay pixels and changed-source
-refusal. The ordinary four-panel summary PNG was visually inspected.
-Fixtures: `1dPetePlot/examples/rsa/{ordinary,regression}.rsa.1D`.
+refusal. Interval coverage includes exact asymmetric geometry, metadata/method
+ambiguity, missing triplets, beta versus partial r, bounds beyond [-1,1], 40-ROI
+layout, current-view pixel replay, and invalid-export output preservation. The
+ordinary summary and two-model correlation/beta interval PNGs were visually
+inspected. Native hands-on interval controls and Linux runtime remain pending.
+RDM evidence adds deliberately permuted synthetic matrix sources; name-based
+alignment of both axes, different source orders, duplicate/count/set rejection,
+asymmetry/tolerance/missingness, preserved negatives/diagonal, independent/shared/
+fixed scales, PNG/SVG export failure preservation, import controls at 850×500,
+Add/Undo, changed-label detection, and relocated project pixel equality. The
+aligned two-matrix export was visually inspected. Native RDM file choosers and
+Wayland still require hands-on verification.
+Fixtures: `1dPetePlot/examples/rsa/{ordinary,regression,series,runs,runs-joint}.rsa.1D` and
+`1dPetePlot/examples/rdm/` (matrices, source labels, and display order).
 
 **Later QC preset:** load a compatible motion/outlier/censor/design set, suggest
 existing QC plots, and validate row/run/TR alignment. Recognizing a folder can
 suggest related files; show which files will be used rather than guessing silently.
 
-**Remaining validation for later slices:** RDM condition-label mismatch fixtures,
-asymmetric interval rendering with explicit method/scale labels, long-schema
-recognition, and cross-file ROI joins. Continue preserving GUI/headless equality
+**Long-table evidence:** Schema-faithful synthetic series, run and joint-run
+fixtures; shuffled source rows, explicit category/model order, conflicting identity
+and missing-combination checks; supplied method ambiguity and incomplete CI rows;
+semantic import defaults/filters and visible Add at 850×500; Add/Undo and exact
+mixed-project pixels; relocated current-view project replay and changed-source
+refusal; PNG/SVG exports and existing-output preservation on invalid selection.
+Synthetic time-series/band and categorical run PNGs were visually inspected.
+Validation: 110 tests in the GUI build (94 unit + 16 CLI), 73 in the headless
+build (56 unit + 17 CLI); both all-target Clippy checks and formatting pass.
+The macOS ARM64 release binary/app bundle was rebuilt offline.
+Native hands-on long-table controls and Linux runtime remain pending.
+
+**Remaining validation for later slices:** Cross-file ROI joins. Continue preserving GUI/headless equality
 and the no-inference/no-undocumented-filtering contract.
 
 ### Recommended order and useful later additions
@@ -704,10 +963,12 @@ and the no-inference/no-undocumented-filtering contract.
 1. **Complete (first slice):** Minimal document/action foundation, direct title/
    caption editing, Undo/Redo, Save/Open Project, and headless replay. Finish the
    new native-control hands-on check and continue the remaining M5 items.
-2. **Complete (first slice):** Open/Drop, numeric column preview, deterministic plot
-   choices, Add/Undo, and mixed-source replay. Continue scientific attachments later.
-3. **Complete (first slice):** Ordinary-table `-rsa` and semantic import. Continue
-   supplied intervals, actual RDM inputs, and richer result schemas next.
+2. **Complete (first and scientific-attachment slices):** Open/Drop, numeric column
+   preview, deterministic choices, Add/Undo, mixed-source replay, supplied bounds,
+   grouping, censor and X-matrix previews. Existing-graph attachment editing remains.
+3. **Complete (first, confidence-interval, and RDM slices):** Ordinary-table
+   `-rsa`, semantic import, supplied intervals, and named matrices with shared
+   scales. Continue richer result schemas next.
 4. Add publication templates, explicit linked axes/colorbars, linked ROI/condition
    selection, and replace-data-with-same-schema while preserving figure styling.
 5. Consider editable shading handles with explicit coordinate readouts and undo,
@@ -721,14 +982,14 @@ figure's layout a reversible action. Keep presentation editing separate from any
 new analysis/inference features, which need their own statistical specifications.
 
 Keep estimates qualitative until prototypes and representative large files exist.
-The direct-editing, initial import and ordinary RSA slices are delivered; scientific
-attachments and broader presets still need their own semantic contracts. No GUI
+The direct-editing/styling, import/attachment, and ordinary RSA slices are delivered;
+existing-graph data replacement and broader presets need their own semantic contracts. No GUI
 framework replacement was needed. Serialization uses serde/serde_json; font metrics
 reuse ttf-parser, already present in the renderer's dependency tree.
 
 ## Validation and completion criteria — Partially complete
 
-**Complete for the current implementation:** 71 GUI-build tests and 48 headless
+**Complete for the current implementation:** 101 GUI-build tests and 66 headless
 build tests pass; Clippy and formatting checks pass. Coverage includes selectors,
 numeric validation, histogram behavior, heatmap permutations, coordinate mapping,
 PNG/SVG exports, output sizing/replacement protection, title/order validation,
@@ -742,7 +1003,9 @@ caption, direct-editing, and undo tests; native inspection of the new M5 control
 remains pending after desktop automation timeouts. See the prototype results and
 README for the exact platform evidence. M6 adds background-worker cancellation,
 queue/retry, bounded large-data previews, visible/clickable footer, Add/Undo, mixed
-project pixel equality and headless replay tests. Native drop reaches preview per
+project pixel equality and headless replay tests. Scientific attachments add role,
+alignment, stale-sidecar, asymmetric-bound, grouped-bin, and relocated replay checks.
+Native drop reaches preview per
 user feedback; revised-footer/chooser/Wayland checks remain pending.
 
 **Remaining:** Linux and other architecture/runtime checks, release integration,
@@ -807,8 +1070,10 @@ proposals; update them as decisions are made before dependent implementation wor
 | D10 | Transform scope | Python scaling plus common normalization/detrending/log operations before a general expression language | General AFNI expression evaluator deferred | Accepted 2026-10-26; scaling implemented |
 | D11 | Scientific text | Unicode Greek and basic explicit superscripts/subscripts, literal ordinary underscores | Full TeX-like engine deferred | Accepted 2026-10-26; basic rendering implemented |
 | D12 | Editable workspace direction | Direct editing, drop/preview/add workflow, and RSA family entry point | Preserve shared CLI/export model and existing scientific contracts | User-requested direction 2026-10-27; M5/M6/M7 first slices implemented |
-| D13 | Document and reproducibility design | Versioned recipe, stable IDs, undoable edits, explicit source links, GUI/headless replay | Version 1 JSON recipe selected; rich source/series identities, relinking, and portable bundles remain open | First document/editing/replay slice implemented 2026-10-27 |
+| D13 | Document and reproducibility design | Versioned recipe, stable IDs, undoable edits, explicit source links, GUI/headless replay | Version 4 recipes and explicit relink/reload implemented; richer source/series identities and portable bundles remain open | First document/editing/replay slice implemented 2026-10-27 |
 | D14 | Plot suggestions and presets | Deterministic schema-aware candidates; role selection when ambiguous; ordinary RSA table first | Universal scientific intent cannot be inferred from numeric shape | First ordinary-table RSA slice implemented in M7; broader schemas remain |
+| D15 | RSA confidence intervals | Plot supplied endpoints with explicit method, effect scale, and recorded confidence level; strict missing default | Beta bounds cannot be applied to partial r; ambiguous methods require a choice; missing level is never assumed | User-selected M7 slice implemented 2026-10-27 |
+| D16 | RDM condition identity and scale | Label-file source order, full name-based alignment/order; independent default and explicit shared/fixed scales | Matrix sense defaults to unspecified; retain negatives/diagonal and fingerprint attachments | User-selected M7 slice implemented 2026-10-27 |
 
 The no-X11 requirement is accepted, not a pending choice. Linux systems without
 Wayland retain command-line export. Any future X11 backend would require a change
