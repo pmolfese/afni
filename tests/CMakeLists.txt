@@ -313,7 +313,7 @@ if(TARGET 3dMVPA AND TARGET 3dUndump AND TARGET 3dbucket
         $<TARGET_FILE:3dMVPA>
     )
     set_tests_properties(3dMVPA:logistic PROPERTIES LABELS "3dMVPA;numeric;integration")
-    foreach(regression_test regression regression_null)
+    foreach(regression_test regression regression_null progress)
       add_test(NAME 3dMVPA:${regression_test}
         COMMAND ${Python_EXECUTABLE}
           ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_${regression_test}.py

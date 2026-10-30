@@ -29,8 +29,99 @@
 /*----------------------------------------------------------------------------
   Classification and continuous prediction in ROIs and spatial neighborhoods.
   Compact input adapters end at THD_sampleset; everything after that is shared.
-                                                     -- P Molfese, Oct 2026
+                                                     -- P Molfese, December 2026
 ------------------------------------------------------------------------------*/
+
+#define MVPA_PROGRESS_AUTO 0
+#define MVPA_PROGRESS_BAR  1
+#define MVPA_PROGRESS_LINE 2
+#define MVPA_PROGRESS_OFF  3
+
+typedef struct {
+   int enabled, mode, is_tty, total, done, last_bucket ;
+   double start, last_report ;
+   const char *label, *unit ;
+} MVPA_progress ;
+
+static void mvpa_duration( double sec , char *buf , size_t nbuf )
+{
+   long ss=(long)((sec>0.0)?sec+0.5:0.0), hh=ss/3600, mm=(ss%3600)/60 ;
+   ss %= 60 ;
+   if( hh > 0 ) snprintf(buf,nbuf,"%ldh%02ldm%02lds",hh,mm,ss) ;
+   else if( mm > 0 ) snprintf(buf,nbuf,"%ldm%02lds",mm,ss) ;
+   else snprintf(buf,nbuf,"%lds",ss) ;
+}
+
+static void mvpa_progress_init( MVPA_progress *p, int mode, int quiet,
+                               const char *label, int total, const char *unit )
+{
+   memset(p,0,sizeof(*p)) ;
+   p->enabled = !quiet && mode != MVPA_PROGRESS_OFF && total > 0 ;
+   p->is_tty = isatty(fileno(stderr)) ;
+   p->mode = (mode==MVPA_PROGRESS_AUTO)
+           ? (p->is_tty ? MVPA_PROGRESS_BAR : MVPA_PROGRESS_LINE)
+           : mode ;
+   p->label=label ; p->total=total ; p->unit=unit ;
+   p->start=p->last_report=0.001*(double)NI_clock_time() ;
+   if( !p->enabled ) return ;
+   if( p->mode == MVPA_PROGRESS_BAR ){
+     fprintf(stderr,"++ 3dMVPA %s [--------------------] 0/%d (0.0%%)",
+             label,total) ;
+     fflush(stderr) ;
+   } else {
+     INFO_message("3dMVPA %s: 0/%d %s complete",label,total,unit) ;
+   }
+}
+
+static void mvpa_progress_advance( MVPA_progress *p )
+{
+   int done,bucket ; double now,elapsed,rate,eta ; char ebuf[32],tbuf[32] ;
+   if( !p->enabled ) return ;
+   /* Keep counting and rendering together so parallel completions cannot
+      print an older count after a newer one (or after the final newline). */
+#ifdef USE_OMP
+#pragma omp critical(mvpa_progress_render)
+#endif
+   {
+     done = ++p->done ;
+     if( done > p->total ) done=p->total ;
+     now=0.001*(double)NI_clock_time() ; bucket=(int)(10.0*done/p->total) ;
+     if( done==p->total ||
+         (p->mode==MVPA_PROGRESS_BAR && now-p->last_report>=1.0) ||
+         (p->mode==MVPA_PROGRESS_LINE && bucket>p->last_bucket) ){
+       elapsed=now-p->start ; rate=(elapsed>0.0)?done/elapsed:0.0 ;
+       eta=(rate>0.0)?(p->total-done)/rate:0.0 ;
+       mvpa_duration(elapsed,ebuf,sizeof(ebuf)) ;
+       mvpa_duration(eta,tbuf,sizeof(tbuf)) ;
+       if( p->mode==MVPA_PROGRESS_BAR ){
+         int ii,fill=(int)(20.0*done/p->total) ;
+         fprintf(stderr,"\r++ 3dMVPA %s [",p->label) ;
+         for( ii=0 ; ii<20 ; ii++ ) fputc((ii<fill)?'#':'-',stderr) ;
+         fprintf(stderr,"] %d/%d (%.1f%%) | %.2f %s/s | elapsed %s",
+                 done,p->total,100.0*done/p->total,rate,p->unit,ebuf) ;
+         if( done<p->total ) fprintf(stderr," | ETA ~%s",tbuf) ;
+         if( p->is_tty ) fputs("\033[K",stderr) ; /* erase an older, longer ETA */
+         if( done==p->total ) fprintf(stderr,"\n") ;
+         fflush(stderr) ;
+       } else {
+         INFO_message("3dMVPA %s: %d/%d %s complete (%.1f%%); "
+                      "%.2f %s/s; elapsed %s%s%s",
+                      p->label,done,p->total,p->unit,
+                      100.0*done/p->total,rate,p->unit,ebuf,
+                      (done<p->total)?"; ETA ~":"",(done<p->total)?tbuf:"") ;
+       }
+       p->last_report=now ; p->last_bucket=bucket ;
+     }
+   }
+}
+
+static void mvpa_progress_finish( MVPA_progress *p )
+{
+   /* Keep error messages on a new line if a location failed. */
+   if( p->enabled && p->mode==MVPA_PROGRESS_BAR && p->done<p->total ){
+      fputc('\n',stderr) ; fflush(stderr) ;
+   }
+}
 
 static char *mvpa_options[]={
    "-save_model","-apply_model","-compare_predictions","-mode","-dataTable","-dataTableFile","-trial_manifest","-xmat_stims",
@@ -55,7 +146,7 @@ static char *mvpa_options[]={
    "-nperm","-seed","-permute_within","-block_column",
    "-save_predictions","-save_fold_scores","-save_confusion","-save_summary_scores",
    "-save_coefficients","-coef_lambda","-save_patterns",
-   "-show_table","-show_samples","-show_folds","-validate_only","-quiet","-help","-h",NULL
+   "-show_table","-show_samples","-show_folds","-validate_only","-quiet","-progress","-help","-h",NULL
 } ;
 
 typedef struct {
@@ -741,7 +832,15 @@ static void usage_3dMVPA( void )
 "                         solver convergence are not tested. Supplied labels\n"
 "                         and XColumn provenance are not proof of correct\n"
 "                         event mapping, anatomical QC or run independence.\n"
-"  -quiet                 Suppress informational messages.\n"
+"  -quiet                 Suppress informational and progress messages.\n"
+"  -progress M            auto, bar, line, or off [auto]. Auto uses an updating\n"
+"                         bar on a terminal and 10%% milestone lines when stderr\n"
+"                         is redirected. Counts completed analysis locations\n"
+"                         (ROIs, searchlight centers, or encoding voxels/nodes),\n"
+"                         with throughput, elapsed time and approximate ETA.\n"
+"                         Each location includes all folds, tuning and requested\n"
+"                         permutations; a single large ROI can take a while\n"
+"                         before its first update. -quiet overrides this option.\n"
 "\n"
 "Saved ridge models (format version 1):                       ~1~\n"
 "\n"
@@ -1085,7 +1184,62 @@ static void usage_3dMVPA( void )
 "Epsilon has Rating's units. Compare aligned held-out predictions with the\n"
 "ridge baseline; changing the loss does not guarantee improved prediction.\n"
 "\n"
+"References:                                                 ~1~\n"
+"\n"
+"Selected methodological references; cite the papers relevant to your analysis.\n"
+"The options above specify 3dMVPA's objectives, scaling and inference contracts.\n"
+"\n"
+"* Cox (1996), Comput Biomed Res 29:162-173. [AFNI]\n"
+"  AFNI: software for analysis and visualization of functional magnetic\n"
+"  resonance neuroimages. https://doi.org/10.1006/cbmr.1996.0014\n"
+"* Norman, Polyn, Detre & Haxby (2006), Trends Cogn Sci 10:424-430. [MVPA]\n"
+"  Beyond mind-reading: multi-voxel pattern analysis of fMRI data.\n"
+"  https://doi.org/10.1016/j.tics.2006.07.005\n"
+"* Kriegeskorte, Goebel & Bandettini (2006), PNAS 103:3863-3868. [searchlights]\n"
+"  Information-based functional brain mapping.\n"
+"  https://doi.org/10.1073/pnas.0600244103\n"
+"* Varma & Simon (2006), BMC Bioinformatics 7:91. [nested cross-validation]\n"
+"  Bias in error estimation when using cross-validation for model selection.\n"
+"  https://doi.org/10.1186/1471-2105-7-91\n"
+"* Hoerl & Kennard (1970), Technometrics 12:55-67. [ridge regression]\n"
+"  Ridge regression: biased estimation for nonorthogonal problems.\n"
+"  https://doi.org/10.1080/00401706.1970.10488634\n"
+"* Zou & Hastie (2005), J R Stat Soc B 67:301-320. [elastic net]\n"
+"  Regularization and variable selection via the elastic net.\n"
+"  https://doi.org/10.1111/j.1467-9868.2005.00503.x\n"
+"* Friedman, Hastie & Tibshirani (2010), J Stat Softw 33(1):1-22.\n"
+"  Regularization paths for generalized linear models via coordinate descent.\n"
+"  https://doi.org/10.18637/jss.v033.i01 [penalized regression/logistic models]\n"
+"* Hsieh et al. (2008), ICML:408-415. [linear SVM dual coordinate descent]\n"
+"  A dual coordinate descent method for large-scale linear SVM.\n"
+"  https://doi.org/10.1145/1390156.1390208\n"
+"* Ho & Lin (2012), J Mach Learn Res 13:3323-3348. [linear SVR]\n"
+"  Large-scale linear support vector regression.\n"
+"  https://www.jmlr.org/papers/v13/ho12a.html\n"
+"* Dupre la Tour, Eickenberg, Nunez-Elizalde & Gallant (2022),\n"
+"  NeuroImage 264:119728. [banded ridge encoding]\n"
+"  Feature-space selection with banded ridge regression.\n"
+"  https://doi.org/10.1016/j.neuroimage.2022.119728\n"
+"* Wold, Sjostrom & Eriksson (2001), Chemom Intell Lab Syst 58:109-130.\n"
+"  PLS-regression: a basic tool of chemometrics. [PLS regression]\n"
+"  https://doi.org/10.1016/S0169-7439(01)00155-1\n"
+"* Jolliffe & Cadima (2016), Philos Trans R Soc A 374:20150202. [PCA]\n"
+"  Principal component analysis: a review and recent developments.\n"
+"  https://doi.org/10.1098/rsta.2015.0202\n"
+"* Haufe et al. (2014), NeuroImage 87:96-110. [activation patterns]\n"
+"  On the interpretation of weight vectors of linear models in multivariate\n"
+"  neuroimaging. https://doi.org/10.1016/j.neuroimage.2013.10.067\n"
+"* Nichols & Holmes (2002), Hum Brain Mapp 15:1-25. [permutation/max-FWE]\n"
+"  Nonparametric permutation tests for functional neuroimaging:\n"
+"  a primer with examples. https://doi.org/10.1002/hbm.1058\n"
+"* Benjamini & Hochberg (1995), J R Stat Soc B 57:289-300. [FDR]\n"
+"  Controlling the false discovery rate: a practical and powerful approach\n"
+"  to multiple testing. https://doi.org/10.1111/j.2517-6161.1995.tb02031.x\n"
+"\n"
+"-- P Molfese, December 2026\n"
 ) ;
+   PRINT_AFNI_OMP_USAGE(PROGRAM_NAME,NULL) ;
+   PRINT_COMPILE_DATE ;
 }
 
 static long mvpa_parse_long( const char *opt, const char *arg, long lo, long hi )
@@ -2083,7 +2237,7 @@ static void mvpa_reg_close(mvpa_reg_options *a)
 static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
  THD_3dim_dataset *mset,THD_roilist *rl,int encoding,const char *columns,
  int preprocess,const int *groups,double lambda,int metric,const char *prefix,
- const char *predfile,const char *foldfile,int nworker,int quiet,
+ const char *predfile,const char *foldfile,int nworker,int quiet,int progress_mode,
  const THD_nested_foldplan *nested,const double *grid,int nl,const char *inner_column,
  const PERM_set *pset,const char *permute_within,
  const float *nuisance,int nnuisance,const char *nuisance_columns,
@@ -2093,6 +2247,7 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
  const mvpa_pattern_audit *pattern_audit,
  int two_tables,int response_lambda,THD_mvpa_model *frozen_model,mvpa_reg_options *reg,int argc,char **argv)
 {
+   MVPA_progress progress;
    char **names=NULL,err[1024],label[256],*tablefile,runerr[1024]="";
    float *attr,**patterns,*values,*paint;int na,maxvox,r,o,k,b,nout,nbrick,i,failed=0;
    THD_mvpa_ridge_workspace **workers;THD_3dim_dataset *out;
@@ -2210,6 +2365,7 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
          fputs("# For this estimator, generic pipeline Penalty fields hold ONE-based regression candidate IDs. First candidate wins exact ties after smaller feature/PCA counts.\n",audit[j]);
       }
    }
+   mvpa_progress_init(&progress,progress_mode,quiet,encoding?"Encoding":"Decoding",rl->nroi,"locations");
    AFNI_OMP_START;
 #ifdef USE_OMP
 #pragma omp parallel for num_threads(nworker) schedule(dynamic,1) ordered
@@ -2332,8 +2488,10 @@ static void mvpa_continuous_analysis(THD_sampleset *ss,const THD_foldplan *plan,
       }
       }
       }
+      if(ok)mvpa_progress_advance(&progress);
    }
    AFNI_OMP_END;
+   mvpa_progress_finish(&progress);
    if(ferror(table) || fclose(table))ERROR_exit(PROGRAM_NAME ": error writing continuous results");
    if(pred && (ferror(pred) || fclose(pred)))ERROR_exit(PROGRAM_NAME ": error writing continuous predictions");
    if(fold && (ferror(fold) || fclose(fold)))ERROR_exit(PROGRAM_NAME ": error writing continuous folds");
@@ -3336,6 +3494,7 @@ int main( int argc, char **argv )
    int nclass=0,distance=THD_CENTROID_EUCLIDEAN,preprocess=THD_PREP_FEATURE_ZSCORE ;
    int metric=THD_METRIC_BALANCED_ACCURACY,cv_k=0,nperm=0,nperm_block=0 ;
    int show_table=0,show_samples=0,show_folds=0,quiet=0,nopt=1,ii,rr,maxvox ;
+   int progress_mode=MVPA_PROGRESS_AUTO; MVPA_progress progress;
    int nworker=1,failed=0,io_failed=0 ; char runerr[1024]="" ;
    FILE *prediction_fp=NULL,*fold_fp=NULL,*class_tuning=NULL ;char *class_tunefile=NULL;
 
@@ -3562,6 +3721,15 @@ int main( int argc, char **argv )
      else if( IS("-show_folds") ){ show_folds=1 ; nopt++ ; }
      else if( IS("-validate_only") ){ validate_only=1 ; nopt++ ; }
      else if( IS("-quiet") ){ quiet=1 ; nopt++ ; }
+     else if( IS("-progress") ){
+       NEEDARG("auto, bar, line, or off") ;
+            if(!strcasecmp(argv[nopt],"auto"))progress_mode=MVPA_PROGRESS_AUTO;
+       else if(!strcasecmp(argv[nopt],"bar"))progress_mode=MVPA_PROGRESS_BAR;
+       else if(!strcasecmp(argv[nopt],"line"))progress_mode=MVPA_PROGRESS_LINE;
+       else if(!strcasecmp(argv[nopt],"off"))progress_mode=MVPA_PROGRESS_OFF;
+       else ERROR_exit(PROGRAM_NAME ": -progress must be auto, bar, line, or off");
+       nopt++;
+     }
      else if( IS("-trial_manifest") ){
        NEEDARG("a trial manifest filename") ;
        if( tab!=NULL ) ERROR_exit(PROGRAM_NAME ": choose one of -trial_manifest and -dataTable/-dataTableFile") ;
@@ -4183,7 +4351,7 @@ int main( int argc, char **argv )
    if(continuous){
      mvpa_continuous_analysis(ss,plan,mset,rl,encoding,encoding?design_columns:target_column,
        preprocess,group_id,lambda,metric,prefix,save_predictions,save_fold_scores,
-       nworker,quiet,nested,lambda_grid,nlambda,inner_column,perm_set,permute_within,nuisance,nnuisance,nuisance_columns,feature_counts,nfeature_counts,&selection_audit,tune_requested,tune_objective,candidate_audit,pca_counts,npca_counts,&pca_audit,&pattern_audit,two_tables,lambda_per_response,frozen_model,&reg,argc,argv);
+       nworker,quiet,progress_mode,nested,lambda_grid,nlambda,inner_column,perm_set,permute_within,nuisance,nnuisance,nuisance_columns,feature_counts,nfeature_counts,&selection_audit,tune_requested,tune_objective,candidate_audit,pca_counts,npca_counts,&pca_audit,&pattern_audit,two_tables,lambda_per_response,frozen_model,&reg,argc,argv);
      if(frozen_model){if(!THD_mvpa_model_write(save_model,frozen_model,THD_ok_overwrite(),err,sizeof(err)))ERROR_exit(PROGRAM_NAME ": %s",err);THD_mvpa_model_free(frozen_model);frozen_model=NULL;}
      if(coef_prefix)mvpa_descriptive_coefficients(ss,mset,rl,encoding,searchlight!=NULL,
        encoding?design_columns:target_column,NULL,NULL,0,preprocess,group_id,coef_lambda,
@@ -4380,6 +4548,7 @@ int main( int argc, char **argv )
      INFO_message(PROGRAM_NAME ": %d centers, at most %d features, %d worker%s",
                   rl->nroi,maxvox,nworker,nworker==1?"":"s") ;
 
+   mvpa_progress_init(&progress,progress_mode,quiet,"Classification",rl->nroi,"locations");
    AFNI_OMP_START ;
 #ifdef USE_OMP
 #pragma omp parallel for if(searchlight != NULL && rl->nroi > 1) \
@@ -4480,8 +4649,10 @@ int main( int argc, char **argv )
          }
        }
      }
+     if(ok)mvpa_progress_advance(&progress);
    }
    AFNI_OMP_END ;
+   mvpa_progress_finish(&progress);
    if( prediction_fp!=NULL ){
      if( ferror(prediction_fp) ) io_failed=1 ;
      if( fclose(prediction_fp)!=0 ) io_failed=1 ;
