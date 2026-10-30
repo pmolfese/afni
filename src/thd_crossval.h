@@ -43,6 +43,30 @@ extern void THD_nested_foldplan_free(THD_nested_foldplan *plan);
 extern void THD_nested_foldplan_print(const THD_nested_foldplan *plan,
                                      const THD_sampleset *ss, FILE *fp);
 
+/* Shared grouped candidate search. Plans must already be validated and remain
+   immutable. Candidates are arranged in nsetup batches of ncandidate values:
+   setup() resets accumulators; prepare() fits shared training-only transforms;
+   evaluate() fits one candidate and accumulates held-out results; finish()
+   supplies a MINIMIZED pooled loss and number of valid components. prefer()
+   resolves exact ties using model-specific parameter preferences. IDs are
+   setup*ncandidate+candidate. Callbacks must not inspect outer-test outcomes.
+   Train/test scratch each needs outer->nsample ints; losses needs the product.
+   No allocation occurs in this driver. NaN loss is allowed only with nvalid=0;
+   finite losses beat undefined ones. If every candidate is undefined, prefer()
+   selects a deterministic fallback. Infinite or inconsistent losses fail.
+   The returned winner is not fitted: caller refits on all outer training rows. */
+typedef struct {
+   int (*setup)(void *,int,char *,int);
+   int (*prepare)(void *,int,const int *,int,const int *,int,char *,int);
+   int (*evaluate)(void *,int,int,const int *,int,const int *,int,char *,int);
+   int (*finish)(void *,int,int,double *,int *,char *,int);
+   int (*prefer)(void *,int,int);
+} THD_cv_candidate_ops;
+extern int THD_nested_candidate_search(const THD_nested_foldplan *plan,int outer,
+   int nsetup,int ncandidate,const THD_cv_candidate_ops *ops,void *context,
+   int *train,int *test,double *losses,int *winner,int *winner_nvalid,
+   char *err,int nerr);
+
 /*! Leave one level of group_column out.  With within_column, make independent
     folds inside every stratum (for example Run within Subj); other strata are
     excluded from each fold.  Without it, all samples share one stratum. */
@@ -69,6 +93,22 @@ extern THD_foldplan * THD_foldplan_fixed(
                                       const char *train_value,
                                       const char *test_value,
                                       char *err, int nerr ) ;
+
+/*! Fixed partition independently within each level of within_column.
+    Every stratum must contain both roles; other strata are excluded from each
+    fit. NULL within_column is identical to THD_foldplan_fixed. Across fixed
+    folds, every sample belongs exactly once to training OR test, never both. */
+extern THD_foldplan *THD_foldplan_fixed_within(const THD_sampleset *ss,
+   const char *column,const char *train_value,const char *test_value,
+   const char *within_column,char *err,int nerr);
+
+/*! Count distinct metadata keys shared by the global fixed training/test
+    roles. Optional scope_column qualifies each key (e.g. Session within Subj);
+    NULL compares global keys (e.g. canonical stimulus Item identities).
+    Exact case-sensitive values; owned temporary state only, no data loading. */
+extern int THD_foldplan_overlap_count(const THD_sampleset *ss,
+   const THD_foldplan *plan,const char *column,const char *scope_column,
+   int *count,char *err,int nerr);
 
 /*! Structural validation, and classifier-specific class coverage.  Every
     class must occur in every training set; require_test also requires it in

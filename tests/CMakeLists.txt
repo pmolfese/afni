@@ -243,6 +243,14 @@ if(TARGET 3dMVPA AND TARGET 3dUndump AND TARGET 3dbucket
     set_tests_properties(3dMVPA:fixed-partitions PROPERTIES
                          LABELS "3dMVPA;numeric;integration")
     add_test(
+      NAME 3dMVPA:transfer
+      COMMAND ${Python_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_transfer.py
+        $<TARGET_FILE:3dMVPA>
+    )
+    set_tests_properties(3dMVPA:transfer PROPERTIES
+                         LABELS "3dMVPA;numeric;integration")
+    add_test(
       NAME 3dMVPA:nuisance
       COMMAND ${Python_EXECUTABLE}
         ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_nuisance.py
@@ -257,6 +265,78 @@ if(TARGET 3dMVPA AND TARGET 3dUndump AND TARGET 3dbucket
         $<TARGET_FILE:3dMVPA>
     )
     set_tests_properties(3dMVPA:feature-selection PROPERTIES
+                         LABELS "3dMVPA;numeric;integration")
+    add_test(
+      NAME 3dMVPA:tuning-objectives
+      COMMAND ${Python_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_tuning.py
+        $<TARGET_FILE:3dMVPA>
+    )
+    set_tests_properties(3dMVPA:tuning-objectives PROPERTIES
+                         LABELS "3dMVPA;numeric;integration")
+    add_test(
+      NAME 3dMVPA:pca
+      COMMAND ${Python_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_pca.py
+        $<TARGET_FILE:3dMVPA>
+    )
+    set_tests_properties(3dMVPA:pca PROPERTIES
+                         LABELS "3dMVPA;numeric;integration")
+    add_test(
+      NAME 3dMVPA:saved-models
+      COMMAND ${Python_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_models.py
+        $<TARGET_FILE:3dMVPA>
+    )
+    set_tests_properties(3dMVPA:saved-models PROPERTIES
+                         LABELS "3dMVPA;numeric;integration")
+    add_test(
+      NAME 3dMVPA:response-ridge
+      COMMAND ${Python_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_response_ridge.py
+        $<TARGET_FILE:3dMVPA>
+    )
+    set_tests_properties(3dMVPA:response-ridge PROPERTIES
+                         LABELS "3dMVPA;numeric;integration")
+    add_test(
+      NAME 3dMVPA:paired-comparisons
+      COMMAND ${Python_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_comparisons.py
+        $<TARGET_FILE:3dMVPA>
+    )
+    set_tests_properties(3dMVPA:paired-comparisons PROPERTIES
+                         LABELS "3dMVPA;numeric;integration")
+    add_test(
+      NAME 3dMVPA:logistic
+      COMMAND ${Python_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_logistic.py
+        $<TARGET_FILE:3dMVPA>
+    )
+    set_tests_properties(3dMVPA:logistic PROPERTIES LABELS "3dMVPA;numeric;integration")
+    foreach(regression_test regression regression_null)
+      add_test(NAME 3dMVPA:${regression_test}
+        COMMAND ${Python_EXECUTABLE}
+          ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_${regression_test}.py
+          $<TARGET_FILE:3dMVPA>)
+      set_tests_properties(3dMVPA:${regression_test} PROPERTIES
+        LABELS "3dMVPA;numeric;integration")
+    endforeach()
+    if(TARGET CreateIcosahedron AND TARGET ConvertDset)
+      add_test(NAME 3dMVPA:regression-surface
+        COMMAND ${Python_EXECUTABLE}
+          ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_regression_surface.py
+          $<TARGET_FILE:3dMVPA> $<TARGET_FILE:CreateIcosahedron> $<TARGET_FILE:ConvertDset>)
+      set_tests_properties(3dMVPA:regression-surface PROPERTIES
+        LABELS "3dMVPA;numeric;integration")
+    endif()
+    add_test(
+      NAME 3dMVPA:activation-patterns
+      COMMAND ${Python_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_mvpa_patterns.py
+        $<TARGET_FILE:3dMVPA>
+        $<TARGET_FILE:3dmaskdump>
+    )
+    set_tests_properties(3dMVPA:activation-patterns PROPERTIES
                          LABELS "3dMVPA;numeric;integration")
   endif()
 endif()
@@ -281,6 +361,14 @@ if(TARGET 3dMVPA AND TARGET CreateIcosahedron AND TARGET ConvertDset
 endif()
 
 if(TARGET 1dTrdm AND TARGET 3dRSA)
+  add_test(
+    NAME 3dRSA:labeled-rdms
+    COMMAND ${Python_EXECUTABLE}
+      ${CMAKE_SOURCE_DIR}/tests/scripts/check_rsa_labeled_rdms.py
+      --bin $<TARGET_FILE:3dRSA>
+      --trdm-bin $<TARGET_FILE:1dTrdm>
+  )
+  set_tests_properties(3dRSA:labeled-rdms PROPERTIES LABELS "3dRSA;1dTrdm;numeric;integration")
   add_test(
     NAME 1dTrdm:numeric
     COMMAND

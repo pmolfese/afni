@@ -543,3 +543,202 @@ awk -F '\t' '
   { n++; if ($6 != 2 || $7 != 1 || $9 != 0 || $10 != "Rating" || $11 < .99999) exit 1 }
   END { if(n != 8) exit 1 }
 ' "$work/selection_encode.niml.dset.features.1D"
+
+# Explicit inner objectives and common candidates retain sparse unit identities.
+for method in ridge svm; do
+  for workers in 1 2; do
+    penalty=(-lambda_grid .1,10)
+    if test "$method" = svm; then penalty=(-svm_c_grid .1,10); fi
+    OMP_NUM_THREADS=$workers "$mvpa" -mode classify -method "$method" \
+      -dataTableFile "$work/ridge_class.1D" -target_column Condition -cv_column Run \
+      -mask "$work/mask.niml.dset" -surf "$work/mesh.gii" -searchlight 100 \
+      -select_features_grid 2,1 "${penalty[@]}" -metric accuracy -tune_metric BACC \
+      -nperm 99 -permute_within Run -prefix "$work/objective_${method}_$workers.niml.dset" \
+      -save_tuning "$work/objective_${method}_$workers.candidates.1D"
+  done
+  cmp "$work/objective_${method}_1.candidates.1D" "$work/objective_${method}_2.candidates.1D"
+  awk -F '\t' '
+    /^#/ {next}
+    { n++;seen[$1]=1;if($5!="balanced_accuracy" || $12!=4 || $13!=2 || $14<0 || $14>1)exit 1;chosen+=$15 }
+    END{if(n!=48 || chosen!=12 || !seen[0] || !seen[2] || !seen[5] || !seen[9])exit 1}
+  ' "$work/objective_${method}_1.candidates.1D"
+done
+# The 3-run table permits grouped inner fits with at least two rows; Run is a
+# numeric response here so both continuous modes can reuse the sparse fixture.
+awk 'BEGIN{OFS="\t"} NR==1{print $0,"Rating";next} {print $0,substr($2,2)+0}' \
+  "$work/ridge_class.1D" > "$work/objective_continuous.1D"
+for mode in decode encode; do
+  role=(-target_column Rating)
+  if test "$mode" = encode; then role=(-design_columns Rating -score pattern); fi
+  OMP_NUM_THREADS=2 "$mvpa" -mode "$mode" -method ridge \
+    -dataTableFile "$work/objective_continuous.1D" "${role[@]}" -cv_column Run \
+    -mask "$work/mask.niml.dset" -surf "$work/mesh.gii" -searchlight 100 \
+    -lambda_grid .1,10 -tune_metric MAE \
+    -prefix "$work/objective_$mode.niml.dset" -save_tuning "$work/objective_$mode.candidates.1D"
+  awk -F '\t' '
+    /^#/ {next}
+    {n++;seen[$1]=1;if($5!="MAE" || $12!=4 || $14<0)exit 1;chosen+=$15}
+    END{if(n!=24 || chosen!=12 || !seen[0] || !seen[2] || !seen[5] || !seen[9])exit 1}
+  ' "$work/objective_$mode.candidates.1D"
+done
+
+# Fold-local PCA: sparse IDs, joint grids, permutations and deterministic workers.
+for method in ridge svm centroid; do
+  for workers in 1 2; do
+    penalty=()
+    if test "$method" = ridge; then penalty=(-lambda_grid .1,10); fi
+    if test "$method" = svm; then penalty=(-svm_c_grid .1,10); fi
+    OMP_NUM_THREADS=$workers "$mvpa" -mode classify -method "$method" \
+      -dataTableFile "$work/ridge_class.1D" -target_column Condition -cv_column Run \
+      -mask "$work/mask.niml.dset" -surf "$work/mesh.gii" -searchlight 100 \
+      -select_features_grid 2,4 -pca_components_grid 1,9 "${penalty[@]}" \
+      -nperm 99 -permute_within Run -prefix "$work/pca_${method}_$workers.niml.dset" \
+      -save_predictions "$work/pca_${method}_$workers.pred.1D" \
+      -save_pca_loadings "$work/pca_${method}_$workers.load.1D"
+    "$convertdset" -o_1Dp_stdout -input "$work/pca_${method}_$workers.niml.dset" \
+      -prepend_node_index_1D > "$work/pca_${method}_$workers.1D"
+  done
+  for suffix in pca.1D pca_tuning.1D; do
+    cmp "$work/pca_${method}_1.niml.dset.$suffix" "$work/pca_${method}_2.niml.dset.$suffix"
+  done
+  for suffix in pred.1D load.1D 1D; do
+    cmp "$work/pca_${method}_1.$suffix" "$work/pca_${method}_2.$suffix"
+  done
+  awk -F '\t' '
+    /^#/ {next}
+    {n++;seen[$1]=1;if($6!="node_0" && $6!="node_2" && $6!="node_5" && $6!="node_9")exit 1}
+    END{if(n<24 || !seen[0] || !seen[2] || !seen[5] || !seen[9])exit 1}
+  ' "$work/pca_${method}_1.load.1D"
+done
+for mode in decode encode; do
+  role=(-target_column Rating)
+  if test "$mode" = encode; then role=(-design_columns Rating -score pattern); fi
+  for workers in 1 2; do
+    OMP_NUM_THREADS=$workers "$mvpa" -mode "$mode" -method ridge \
+      -dataTableFile "$work/objective_continuous.1D" "${role[@]}" -cv_column Run \
+      -mask "$work/mask.niml.dset" -surf "$work/mesh.gii" -searchlight 100 \
+      -lambda_grid .1,10 -pca_components_grid 1,3 -tune_metric MAE \
+      -nperm 99 -permute_within Run -prefix "$work/pca_${mode}_$workers.niml.dset" \
+      -save_pca_loadings "$work/pca_${mode}_$workers.load.1D"
+  done
+  cmp "$work/pca_${mode}_1.niml.dset.pca.1D" "$work/pca_${mode}_2.niml.dset.pca.1D"
+  cmp "$work/pca_${mode}_1.niml.dset.pca_tuning.1D" "$work/pca_${mode}_2.niml.dset.pca_tuning.1D"
+  cmp "$work/pca_${mode}_1.load.1D" "$work/pca_${mode}_2.load.1D"
+done
+
+# Descriptive outer-training activation patterns retain neural sparse IDs.
+for workers in 1 2; do
+  OMP_NUM_THREADS=$workers "$mvpa" -mode classify -method ridge \
+    -dataTableFile "$work/ridge_class.1D" -target_column Condition -cv_column Run \
+    -mask "$work/mask.niml.dset" -surf "$work/mesh.gii" -searchlight 100 \
+    -select_features_grid 2,4 -pca_components_grid 1,2 -lambda_grid .1,10 \
+    -nperm 99 -permute_within Run -prefix "$work/pattern_score_$workers.niml.dset" \
+    -save_patterns "$work/pattern_$workers.niml.dset" \
+    -save_predictions "$work/pattern_$workers.pred.1D"
+  sed "s/pattern_$workers/pattern/g" "$work/pattern_$workers.niml.dset.patterns.1D" > "$work/pattern_$workers.table"
+done
+cmp "$work/pattern_1.table" "$work/pattern_2.table"
+cmp "$work/pattern_1.niml.dset.pattern_covariance.1D" "$work/pattern_2.niml.dset.pattern_covariance.1D"
+cmp "$work/pattern_1.pred.1D" "$work/pattern_2.pred.1D"
+awk -F '\t' '
+  /^#/ {next}
+  {n++;seen[$6]=1;if($11!=1 || $4!=4 || $5<0 || $5>3 || $16<0 || $16>1)exit 1}
+  END{if(n!=96 || !seen["node_0"] || !seen["node_2"] || !seen["node_5"] || !seen["node_9"])exit 1}
+' "$work/pattern_1.niml.dset.patterns.1D"
+for unit in 0 2 5 9; do
+  for fold in 1 2 3; do
+    for workers in 1 2; do
+      "$convertdset" -o_1Dp_stdout -input "$work/pattern_$workers.unit_$unit.fold_$fold.niml.dset" \
+        -prepend_node_index_1D > "$work/pattern_map_$workers.1D"
+    done
+    cmp "$work/pattern_map_1.1D" "$work/pattern_map_2.1D"
+    awk 'BEGIN{id[1]=0;id[2]=2;id[3]=5;id[4]=9}
+      NF{n++;if($1!=id[n] || ($2+$3)>1e-5 || ($2+$3)<-1e-5)exit 1}
+      END{if(n!=4)exit 1}' "$work/pattern_map_1.1D"
+  done
+done
+
+# Paired comparisons consume sparse classification/continuous audits directly.
+for kind in ridge decode encode; do
+  "$mvpa" -compare_predictions "$work/pca_${kind}_1.pred.1D" "$work/pca_${kind}_2.pred.1D" \
+    -prefix "$work/paired_$kind"
+  awk -F '\t' '
+    /^#/ {next}
+    {n++;seen[$2]=1;if($11!="NA" && $11!=0)exit 1;if($12!="NA" && $12!=0)exit 1}
+    END{if(!n || !seen[0] || !seen[2] || !seen[5] || !seen[9])exit 1}
+  ' "$work/paired_$kind.comparison.1D"
+done
+
+# Response-specific lambdas in shared sparse-surface decode/encode fits.
+for mode in decode encode; do
+  role=(-target_column Rating)
+  if test "$mode" = encode; then role=(-design_columns Rating -score pattern); fi
+  for workers in 1 2; do
+    OMP_NUM_THREADS=$workers "$mvpa" -mode "$mode" -method ridge \
+      -dataTableFile "$work/objective_continuous.1D" "${role[@]}" -cv_column Run \
+      -mask "$work/mask.niml.dset" -surf "$work/mesh.gii" -searchlight 100 \
+      -lambda_per_response -lambda_grid .1,10 -pca_components_grid 1,3 \
+      -nperm 99 -permute_within Run -prefix "$work/response_${mode}_$workers.niml.dset" \
+      -save_predictions "$work/response_${mode}_$workers.pred.1D"
+  done
+  cmp "$work/response_${mode}_1.pred.1D" "$work/response_${mode}_2.pred.1D"
+  cmp "$work/response_${mode}_1.niml.dset.tuning.1D" "$work/response_${mode}_2.niml.dset.tuning.1D"
+  awk -F '\t' -v mode="$mode" '
+    /^#/ {next}
+    {n++;seen[$1]=1;chosen+=$15;if($13<0 || $13>1)exit 1;
+     if(mode=="encode" && $19!="node_0" && $19!="node_2" && $19!="node_5" && $19!="node_9")exit 1}
+    END{if(!n || chosen!=(mode=="encode"?48:12) || !seen[0] || !seen[2] || !seen[5] || !seen[9])exit 1}
+  ' "$work/response_${mode}_1.niml.dset.tuning.1D"
+done
+
+# #38: exact sparse domains and the existing runners also support transfer.
+cat > "$work/transfer.1D" <<EOF2
+Subj Run Sample Item Session Task Condition Y X InputFile
+s01 r1 a1 i1 pre visual A 0 0 $work/samples.niml.dset[0]
+s01 r1 b1 i2 pre visual B 10 10 $work/samples.niml.dset[1]
+s01 r2 a2 i3 post auditory A 1 1 $work/samples.niml.dset[2]
+s01 r2 b2 i4 post auditory B 9 9 $work/samples.niml.dset[3]
+EOF2
+for mode in classify decode encode; do
+    target=( -target_column Condition )
+    if [[ "$mode" == decode ]]; then target=( -target_column Y ); fi
+    if [[ "$mode" == encode ]]; then target=( -design_columns X -score pattern ); fi
+    for kind in transfer fixed; do
+        partition=( -transfer_column Task -train_domain visual -test_domain auditory -transfer_subjects within )
+        if [[ "$kind" == fixed ]]; then partition=( -partition_column Task -train_value visual -test_value auditory ); fi
+        OMP_NUM_THREADS=2 "$mvpa" -mode "$mode" -dataTableFile "$work/transfer.1D" \
+            "${target[@]}" "${partition[@]}" -method ridge -lambda 1 \
+            -mask "$work/mask.niml.dset" -surf "$work/mesh.gii" -searchlight 100 \
+            -prefix "$work/$mode.$kind.niml.dset" > "$work/$mode.$kind.log" 2>&1
+        "$convertdset" -o_1Dp_stdout -input "$work/$mode.$kind.niml.dset" \
+            -prepend_node_index_1D > "$work/$mode.$kind.values.1D"
+    done
+    cmp "$work/$mode.transfer.values.1D" "$work/$mode.fixed.values.1D"
+done
+printf 'PASS sparse surface transfer matches fixed-split classification, decoding and encoding\n'
+
+# #29: logistic probability audits preserve sparse IDs and worker determinism.
+for workers in 1 2; do
+  OMP_NUM_THREADS=$workers "$mvpa" -mode classify -method logistic \
+    -dataTableFile "$work/ridge_class.1D" -target_column Condition -cv_column Run \
+    -mask "$work/mask.niml.dset" -surf "$work/mesh.gii" -searchlight 100 \
+    -logistic_lambda_grid .1,10 -select_features_grid 1,2 -pca_components_grid 1,2 \
+    -nperm 99 -permute_within Run -seed 29 -prefix "$work/logistic_$workers.niml.dset" \
+    -save_predictions "$work/logistic_$workers.pred.1D" \
+    -save_probability_scores "$work/logistic_$workers.scores.1D" \
+    -save_calibration "$work/logistic_$workers.cal.1D"
+done
+for suffix in pred scores cal; do
+  cmp "$work/logistic_1.$suffix.1D" "$work/logistic_2.$suffix.1D"
+done
+awk -F '\t' '
+  /^#/ {next}
+  {n++;seen[$2]=1;if($22<0 || $23<0 || ($22+$23)<.999999 || ($22+$23)>1.000001)exit 1}
+  END{if(n!=24 || !seen[0] || !seen[2] || !seen[5] || !seen[9])exit 1}
+' "$work/logistic_1.pred.1D"
+# Apply the same logistic estimator through the directional transfer runner.
+"$mvpa" -mode classify -method logistic -dataTableFile "$work/transfer.1D" \
+  -target_column Condition -transfer_column Task -train_domain visual -test_domain auditory \
+  -transfer_subjects within -mask "$work/mask.niml.dset" -surf "$work/mesh.gii" -searchlight 100 \
+  -prefix "$work/logistic_transfer.niml.dset" -save_predictions "$work/logistic_transfer.pred.1D"
+printf 'PASS logistic sparse surface probabilities, nested selection/PCA, permutations and transfer\n'
