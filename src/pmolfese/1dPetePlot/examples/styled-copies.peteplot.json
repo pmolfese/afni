@@ -1,0 +1,80 @@
+{
+  "format": "1dPetePlot",
+  "version": 3,
+  "origin": {
+    "arguments": [
+      "-demo",
+      "line"
+    ],
+    "sources": [],
+    "duplicates": [
+      {
+        "id": 1,
+        "source": 0
+      }
+    ]
+  },
+  "state": {
+    "presentation": {
+      "title": "One dataset, two presentations",
+      "caption": "Synthetic demonstration. Duplicate Graph keeps the data and current view; colors, line widths, and legend names can then be edited independently.",
+      "columns": 2,
+      "panels": [
+        {
+          "id": 0,
+          "title": "Original",
+          "caption": "Original series colors and line widths.",
+          "xlabel": "Time (s)",
+          "ylabel": "Association (r)"
+        },
+        {
+          "id": 1,
+          "title": "Styled copy",
+          "caption": "An independent copy with custom colors, wider lines, and renamed legend entries.",
+          "xlabel": "Time (s)",
+          "ylabel": "Association (r)",
+          "style": {
+            "line_width": 3.5,
+            "legend": true,
+            "series": [
+              {
+                "color": "#824bc0",
+                "label": "Early response"
+              },
+              {
+                "color": "#d57a26",
+                "label": "Late response",
+                "line_width": 4.5
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "views": [
+      {
+        "x": [
+          0,
+          119
+        ],
+        "y": [
+          0,
+          0.8
+        ]
+      },
+      {
+        "x": [
+          0,
+          119
+        ],
+        "y": [
+          0,
+          0.8
+        ]
+      }
+    ],
+    "width": 1600,
+    "height": 900,
+    "full_plot": false
+  }
+}

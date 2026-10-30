@@ -1,0 +1,87 @@
+{
+  "format": "1dPetePlot",
+  "version": 3,
+  "origin": {
+    "arguments": [
+      "-infiles",
+      "signals.tsv[1]",
+      "-xfile",
+      "signals.tsv[0]",
+      "-one",
+      "-legend_labels",
+      "Effect",
+      "-yfiles_lo",
+      "signals.tsv[2]",
+      "-yfiles_hi",
+      "signals.tsv[3]",
+      "-ylim_use_pm",
+      "-censor",
+      "censor.1D",
+      "-shade-xmat",
+      "X.mat.1D",
+      "-shade-xmat-colors",
+      "#147d92",
+      "#e18a47",
+      "-group-by",
+      "5"
+    ],
+    "sources": [
+      {
+        "argument": 1,
+        "fingerprint": "fnv1a64:201:a5e7d305b7de87d4"
+      },
+      {
+        "argument": 3,
+        "fingerprint": "fnv1a64:201:a5e7d305b7de87d4"
+      },
+      {
+        "argument": 8,
+        "fingerprint": "fnv1a64:201:a5e7d305b7de87d4"
+      },
+      {
+        "argument": 10,
+        "fingerprint": "fnv1a64:201:a5e7d305b7de87d4"
+      },
+      {
+        "argument": 13,
+        "fingerprint": "fnv1a64:12:007bf29c6935cdf5"
+      },
+      {
+        "argument": 15,
+        "fingerprint": "fnv1a64:261:20b179cdd8d735c2"
+      }
+    ]
+  },
+  "state": {
+    "presentation": {
+      "title": "Scientific attachments on one timeline",
+      "subtitle": "Synthetic demonstration data",
+      "caption": "Supplied asymmetric bounds; group-separated traces; censored samples remain visible. Condition shading reflects modeled responses, not stimulus on/off timing. Missing design-matrix rows stay unshaded.",
+      "columns": 1,
+      "panels": [
+        {
+          "id": 0,
+          "title": "Effects by condition",
+          "caption": "Rest and Task retain original sample positions. Pink spans mark censored observations; teal and orange spans show the supplied design responses.",
+          "xlabel": "Time (s)",
+          "ylabel": "Effect"
+        }
+      ]
+    },
+    "views": [
+      {
+        "x": [
+          -0.7,
+          10.7
+        ],
+        "y": [
+          0.03,
+          1.17
+        ]
+      }
+    ],
+    "width": 1200,
+    "height": 850,
+    "full_plot": true
+  }
+}

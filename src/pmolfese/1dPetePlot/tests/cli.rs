@@ -23,6 +23,73 @@ fn success(out: Output) {
     );
 }
 #[test]
+fn rsa_intervals_export_headlessly_and_reject_incompatible_methods_without_replacing_files() {
+    let d = tempfile::tempdir().unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rsa/ordinary.rsa.1D");
+    let file = source.to_str().unwrap();
+    for ext in ["png", "svg"] {
+        let dest = d.path().join(format!("intervals.{ext}"));
+        let path = dest.to_str().unwrap();
+        success(run(&[
+            "-rsa",
+            file,
+            "-rsa-plots",
+            "intervals",
+            "-prefix",
+            path,
+        ]));
+        let original = std::fs::read(&dest).unwrap();
+        if ext == "png" {
+            assert_eq!(&original[..8], b"\x89PNG\r\n\x1a\n");
+        } else {
+            assert!(String::from_utf8_lossy(&original).contains("<svg"));
+        }
+        for extra in [
+            vec!["-rsa-ci", "cboot"],
+            vec!["-rsa-ci", "unknown"],
+            vec!["-height", "200"],
+        ] {
+            let mut args = vec![
+                "-rsa",
+                file,
+                "-rsa-plots",
+                "intervals",
+                "-prefix",
+                path,
+                "-overwrite",
+            ];
+            args.extend(extra);
+            assert!(!run(&args).status.success());
+            assert_eq!(std::fs::read(&dest).unwrap(), original);
+        }
+    }
+    let regression = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rsa/regression.rsa.1D");
+    let path = d.path().join("beta.png");
+    success(run(&[
+        "-rsa",
+        regression.to_str().unwrap(),
+        "-rsa-plots",
+        "intervals",
+        "-rsa-ci",
+        "dual",
+        "-prefix",
+        path.to_str().unwrap(),
+    ]));
+    let result = run(&[
+        "-rsa",
+        regression.to_str().unwrap(),
+        "-rsa-plots",
+        "intervals",
+        "-rsa-effect",
+        "pr",
+        "-prefix",
+        path.to_str().unwrap(),
+        "-overwrite",
+    ]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("not partial r"));
+}
+#[test]
 fn real_inputs_export_all_four_modes_without_display() {
     let d = tempfile::tempdir().unwrap();
     let dir = d.path();
@@ -573,4 +640,316 @@ fn rsa_presets_export_without_display_and_invalid_schemas_preserve_outputs() {
         png.to_str().unwrap(),
         "-overwrite",
     ]));
+}
+
+#[test]
+fn named_rdms_export_without_display_and_mismatch_preserves_existing_output() {
+    let d = tempfile::tempdir().unwrap();
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rdm");
+    let m = base.join("model.1D");
+    let n = base.join("neural.1D");
+    let labels = base.join("conditions.txt");
+    let other = base.join("neural-conditions.txt");
+    let order = base.join("display-order.txt");
+    let args = vec![
+        "-rdm",
+        m.to_str().unwrap(),
+        n.to_str().unwrap(),
+        "-rdm-labels",
+        labels.to_str().unwrap(),
+        "-rdm-labels",
+        other.to_str().unwrap(),
+        "-rdm-order",
+        order.to_str().unwrap(),
+        "-rdm-scale",
+        "shared",
+    ];
+    let bad = d.path().join("bad-labels.txt");
+    std::fs::write(&bad, "Faces\nFaces\n").unwrap();
+    for ext in ["png", "svg"] {
+        let dest = d.path().join(format!("comparison.{ext}"));
+        let out = dest.to_str().unwrap();
+        success(run(&[args.clone(), vec!["-prefix", out]].concat()));
+        let before = std::fs::read(&dest).unwrap();
+        if ext == "png" {
+            assert_eq!(&before[..8], b"\x89PNG\r\n\x1a\n");
+        } else {
+            assert!(String::from_utf8_lossy(&before).contains("<svg"));
+        }
+        for extra in [
+            vec!["-rdm-order", bad.to_str().unwrap()],
+            vec!["-missing", "mean"],
+            vec!["-rdm-scale", "unknown"],
+            vec!["-rdm-kind", "guess"],
+            vec!["-rdm-version", "2"],
+            vec!["-reorder", order.to_str().unwrap()],
+            vec!["-rsa", m.to_str().unwrap()],
+        ] {
+            let result = run(&[args.clone(), extra, vec!["-prefix", out, "-overwrite"]].concat());
+            assert!(!result.status.success());
+            assert_eq!(std::fs::read(&dest).unwrap(), before);
+        }
+    }
+    let no_labels = run(&[
+        "-rdm",
+        m.to_str().unwrap(),
+        "-prefix",
+        d.path().join("absent.png").to_str().unwrap(),
+    ]);
+    assert!(!no_labels.status.success());
+    assert!(String::from_utf8_lossy(&no_labels.stderr).contains("rdm-labels"));
+}
+
+#[test]
+fn styled_duplicates_replay_headlessly_and_invalid_styles_preserve_outputs() {
+    let d = tempfile::tempdir().unwrap();
+    let example =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/styled-copies.peteplot.json");
+    let project: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(example).unwrap()).unwrap();
+    let recipe = d.path().join("style.json");
+    for ext in ["png", "svg"] {
+        std::fs::write(&recipe, serde_json::to_vec(&project).unwrap()).unwrap();
+        let output = d.path().join(format!("style.{ext}"));
+        success(run(&[
+            "-recipe",
+            recipe.to_str().unwrap(),
+            "-prefix",
+            output.to_str().unwrap(),
+        ]));
+        let bytes = std::fs::read(&output).unwrap();
+        if ext == "svg" {
+            let svg = String::from_utf8_lossy(&bytes);
+            assert!(svg.contains("#824bc0"));
+            assert!(svg.contains("stroke-width=\"4.5\""));
+        }
+        for bad in [
+            "color", "width", "radius", "palette", "source", "cycle", "identity",
+        ] {
+            let mut invalid = project.clone();
+            let style = &mut invalid["state"]["presentation"]["panels"][1]["style"];
+            match bad {
+                "color" => style["series"][0]["color"] = "<script>".into(),
+                "width" => style["line_width"] = (-1).into(),
+                "radius" => style["marker_radius"] = 999.into(),
+                "palette" => style["palette"] = "unrecognized".into(),
+                "source" => invalid["origin"]["duplicates"][0]["source"] = 99.into(),
+                "cycle" => invalid["origin"]["duplicates"][0]["source"] = 1.into(),
+                "identity" => invalid["origin"]["duplicates"][0]["id"] = 0.into(),
+                _ => unreachable!(),
+            }
+            std::fs::write(&recipe, serde_json::to_vec(&invalid).unwrap()).unwrap();
+            assert!(
+                !run(&[
+                    "-recipe",
+                    recipe.to_str().unwrap(),
+                    "-prefix",
+                    output.to_str().unwrap(),
+                    "-overwrite"
+                ])
+                .status
+                .success(),
+                "{bad}"
+            );
+            assert_eq!(std::fs::read(&output).unwrap(), bytes);
+        }
+    }
+}
+
+#[test]
+fn scientific_attachments_replay_headlessly_and_reject_invalid_bounds_and_masks() {
+    let d = tempfile::tempdir().unwrap();
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/attachments");
+    for ext in ["png", "svg"] {
+        success(run(&[
+            "-recipe",
+            base.join("attached-figure.peteplot.json").to_str().unwrap(),
+            "-prefix",
+            d.path()
+                .join(format!("attachments.{ext}"))
+                .to_str()
+                .unwrap(),
+        ]));
+    }
+    let file = base.join("signals.tsv");
+    let y = format!("{}[effect]", file.display());
+    let lo = format!("{}[lower]", file.display());
+    let hi = format!("{}[upper]", file.display());
+    let dest = d.path().join("curve.png");
+    let args = vec![
+        "-infiles",
+        y.as_str(),
+        "-one",
+        "-group-by",
+        "condition",
+        "-yfiles_lo",
+        lo.as_str(),
+        "-yfiles_hi",
+        hi.as_str(),
+    ];
+    success(run(&[
+        args.clone(),
+        vec!["-prefix", dest.to_str().unwrap()],
+    ]
+    .concat()));
+    let before = std::fs::read(&dest).unwrap();
+    for extra in [
+        vec!["-missing", "mean"],
+        vec!["-group-by", "missing_name"],
+        vec!["-censor", "1D: 1 0"],
+        vec!["-yfiles_pm", "1D: 6@0.1"],
+        vec!["-scatter"],
+    ] {
+        assert!(
+            !run(&[
+                args.clone(),
+                extra,
+                vec!["-prefix", dest.to_str().unwrap(), "-overwrite"]
+            ]
+            .concat())
+            .status
+            .success()
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), before);
+    }
+    assert!(
+        !run(&[
+            "-infiles",
+            y.as_str(),
+            "-yfiles_lo",
+            hi.as_str(),
+            "-yfiles_hi",
+            lo.as_str(),
+            "-prefix",
+            dest.to_str().unwrap(),
+            "-overwrite"
+        ])
+        .status
+        .success()
+    );
+    assert_eq!(std::fs::read(dest).unwrap(), before);
+}
+
+#[test]
+fn long_rsa_exports_headlessly_and_invalid_selections_preserve_outputs() {
+    let d = tempfile::tempdir().unwrap();
+    for (name, mode) in [
+        ("series", "curves"),
+        ("series", "intervals"),
+        ("runs", "points"),
+        ("runs-joint", "heatmap"),
+    ] {
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("examples/rsa/{name}.rsa.1D"));
+        for ext in ["png", "svg"] {
+            let dest = d.path().join(format!("{name}-{mode}.{ext}"));
+            let args = vec![
+                "-rsa",
+                source.to_str().unwrap(),
+                "-rsa-rois",
+                "3",
+                "-rsa-plots",
+                mode,
+                "-prefix",
+                dest.to_str().unwrap(),
+            ];
+            success(run(&args));
+            let original = std::fs::read(&dest).unwrap();
+            if ext == "png" {
+                assert_eq!(&original[..8], b"\x89PNG\r\n\x1a\n");
+            } else {
+                assert!(String::from_utf8_lossy(&original).contains("<svg"));
+            }
+            for bad in [
+                vec!["-rsa-effect", "stat"],
+                vec!["-rsa-rois", "999"],
+                vec!["-rsa-times", "999"],
+            ] {
+                let mut invalid = args.clone();
+                invalid.extend(bad);
+                invalid.push("-overwrite");
+                assert!(!run(&invalid).status.success());
+                assert_eq!(std::fs::read(&dest).unwrap(), original);
+            }
+        }
+    }
+}
+
+#[test]
+fn fit_commonality_families_export_without_display_and_preserve_invalid_outputs() {
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rsa/fitted-commonality.rsa.1D");
+    let d = tempfile::tempdir().unwrap();
+    for family in [
+        "fit",
+        "weights",
+        "fit-contrast",
+        "commonality",
+        "partial-r2",
+    ] {
+        for ext in ["png", "svg"] {
+            let dest = d.path().join(format!("{family}.{ext}"));
+            let args = vec![
+                "-rsa",
+                base.to_str().unwrap(),
+                "-rsa-family",
+                family,
+                "-prefix",
+                dest.to_str().unwrap(),
+            ];
+            success(run(&args));
+            let original = std::fs::read(&dest).unwrap();
+            let mut bad = args.clone();
+            bad.extend(["-rsa-measures", "combined_cvP", "-overwrite"]);
+            assert!(!run(&bad).status.success());
+            assert_eq!(std::fs::read(&dest).unwrap(), original);
+        }
+    }
+    let path = d.path().join("ci.svg");
+    success(run(&[
+        "-rsa",
+        base.to_str().unwrap(),
+        "-rsa-family",
+        "commonality",
+        "-rsa-plots",
+        "intervals",
+        "-rsa-measures",
+        "common_A_B",
+        "-prefix",
+        path.to_str().unwrap(),
+    ]));
+}
+
+#[test]
+fn version_four_graph_edits_replay_headlessly_and_reject_unknown_targets() {
+    let d = tempfile::tempdir().unwrap();
+    let inline =
+        |values: &str| serde_json::json!({"arguments":["-infiles",values,"-one"],"sources":[]});
+    let mut origin = inline("1D: 1 2 3");
+    origin["duplicates"] = serde_json::json!([{"id":1,"source":0}]);
+    origin["overrides"] = serde_json::json!([{"id":0,"origin":inline("1D: 4 5 6"),"roles":{"columns":["value"],"x":null,"y":[0],"kind":"Lines","missing":"error"}}]);
+    let mut value = serde_json::json!({"format":"1dPetePlot","version":4,"origin":origin,"state":{"presentation":{"title":"Edited and independent copy","caption":"","columns":1,"panels":[{"id":0,"title":"Edited","caption":"","xlabel":"x","ylabel":"y"},{"id":1,"title":"Original copy","caption":"","xlabel":"x","ylabel":"y"}]},"views":[{"x":[-1,3],"y":[0,7]},{"x":[-1,3],"y":[0,7]}],"width":1000,"height":900,"full_plot":false}});
+    let recipe = d.path().join("edit.json");
+    std::fs::write(&recipe, serde_json::to_vec(&value).unwrap()).unwrap();
+    let out = d.path().join("edit.png");
+    success(run(&[
+        "-recipe",
+        recipe.to_str().unwrap(),
+        "-prefix",
+        out.to_str().unwrap(),
+    ]));
+    let original = std::fs::read(&out).unwrap();
+    value["origin"]["overrides"][0]["id"] = serde_json::json!(999);
+    std::fs::write(&recipe, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(
+        !run(&[
+            "-recipe",
+            recipe.to_str().unwrap(),
+            "-prefix",
+            out.to_str().unwrap(),
+            "-overwrite"
+        ])
+        .status
+        .success()
+    );
+    assert_eq!(std::fs::read(&out).unwrap(), original);
 }

@@ -1,5 +1,8 @@
+#[cfg(feature = "gui")]
+mod attachments;
 mod cli;
 mod document;
+mod grouping;
 #[cfg(feature = "gui")]
 mod gui;
 #[cfg(feature = "gui")]
@@ -11,9 +14,13 @@ mod input;
 mod menus;
 mod model;
 mod qc;
+mod rdm;
 mod render;
 mod rsa;
+mod rsa_extra;
+mod rsa_long;
 mod shading;
+mod style;
 
 use anyhow::{Context, Result};
 fn main() {

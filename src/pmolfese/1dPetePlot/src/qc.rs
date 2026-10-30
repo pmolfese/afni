@@ -8,6 +8,8 @@ use anyhow::{Context, Result, ensure};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Options {
     pub pm: Vec<String>,
+    pub lower: Vec<String>,
+    pub upper: Vec<String>,
     pub use_pm: bool,
     pub censor_files: Vec<String>,
     pub censor_trs: Vec<String>,
@@ -36,6 +38,7 @@ pub struct BoxStats {
 }
 #[derive(Clone, Debug, Default)]
 pub struct Decoration {
+    pub xticks: Option<Vec<(f64, String)>>,
     pub spans: Vec<Span>,
     pub annotations: Vec<crate::shading::Shade>,
     pub censored: Vec<bool>,
@@ -235,6 +238,30 @@ pub fn prepare(ss: &mut [Series], o: &Options, missing: input::Missing) -> Resul
         pm.is_empty() || pm.len() == count,
         "yfiles_pm must match the number of selected y columns"
     );
+    let endpoints = |files: &[String]| -> Result<Vec<Vec<f64>>> {
+        let mut columns = vec![];
+        for file in files {
+            let m = input::read_with(file, missing)?;
+            ensure!(
+                m.len() == n,
+                "uncertainty bounds must match the selected sample count ({n})"
+            );
+            for c in 0..m[0].len() {
+                columns.push(m.iter().map(|r| r[c]).collect());
+            }
+        }
+        ensure!(
+            columns.is_empty() || columns.len() == count,
+            "uncertainty bounds must match selected Y columns"
+        );
+        Ok(columns)
+    };
+    let lower = endpoints(&o.lower)?;
+    let upper = endpoints(&o.upper)?;
+    ensure!(
+        lower.len() == upper.len(),
+        "supply matching lower and upper bounds"
+    );
     let mut out = vec![];
     for (i, s) in ss.iter_mut().enumerate() {
         let threshold = o
@@ -271,6 +298,39 @@ pub fn prepare(ss: &mut [Series], o: &Options, missing: input::Missing) -> Resul
             1.
         };
         ensure!(scale.is_finite(), "scale must be finite");
+        let supplied = if !lower.is_empty() {
+            let mut band = vec![];
+            for (row, p) in s.points.iter().enumerate() {
+                let (lo, hi) = (lower[i][row], upper[i][row]);
+                ensure!(
+                    !(lo.is_finite() && hi.is_finite()) || lo <= hi,
+                    "lower uncertainty endpoint exceeds upper at sample {row}"
+                );
+                ensure!(
+                    !p[1].is_finite()
+                        || ((!lo.is_finite() || lo <= p[1]) && (!hi.is_finite() || p[1] <= hi)),
+                    "uncertainty bounds do not contain the estimate at sample {row}"
+                );
+                let pair = if !lo.is_finite() || !hi.is_finite() {
+                    [f64::NAN; 2]
+                } else if scale >= 0. {
+                    [lo * scale, hi * scale]
+                } else {
+                    [hi * scale, lo * scale]
+                };
+                ensure!(
+                    pair.iter().all(|v| !v.is_infinite()),
+                    "scaled uncertainty bounds overflow"
+                );
+                band.push(pair);
+            }
+            Some(band)
+        } else {
+            None
+        };
+        if supplied.is_some() {
+            s.band = supplied;
+        }
         for p in &mut s.points {
             let finite = p[1].is_finite();
             p[1] *= scale;
@@ -432,5 +492,33 @@ mod tests {
         let d = prepare(&mut [series(&[0., 1., 2.])], &o, input::Missing::Error).unwrap();
         assert_eq!(d[0].boxes.len(), 1);
         assert_eq!(d[0].boxes[0].n, 0);
+    }
+    #[test]
+    fn supplied_bounds_preserve_asymmetry_and_reverse_correctly_under_negative_scaling() {
+        let options = crate::cli::parse(
+            &[
+                "-infiles",
+                "1D: 1 3 5",
+                "-yfiles_lo",
+                "1D: 0 1 4",
+                "-yfiles_hi",
+                "1D: 4 5 6",
+                "-scale",
+                "-2",
+                "-ylim_use_pm",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap();
+        let fig = crate::model::from_options(&options).unwrap();
+        let crate::model::Content::Lines(s) = &fig.plots[0].content else {
+            panic!()
+        };
+        assert_eq!(
+            s[0].band.as_ref().unwrap(),
+            &vec![[-8., 0.], [-10., -2.], [-12., -8.]]
+        );
+        assert_eq!(s[0].points[1][1], -6.);
+        assert!(fig.plots[0].bounds.y[0] < -12.);
     }
 }

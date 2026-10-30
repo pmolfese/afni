@@ -235,11 +235,45 @@ impl Renderer {
                 }
             }
             let heat = matches!(p.content, Content::Heat { .. });
+            let named = matches!(
+                p.content,
+                Content::Heat {
+                    named_conditions: true,
+                    ..
+                }
+            );
+            let intervals = matches!(p.content, Content::Intervals { .. });
             let mut a = Area {
-                x: x + if heat { 93. } else { 73. },
+                x: x + if named {
+                    150.
+                } else if intervals {
+                    156.
+                } else if heat {
+                    93.
+                } else {
+                    73.
+                },
                 y: y + 103. + title_extra,
-                w: pw - if heat { 172. } else { 100. },
-                h: ph - if heat { 179. } else { 162. } - title_extra - caption_height,
+                w: pw
+                    - if named {
+                        230.
+                    } else if intervals {
+                        183.
+                    } else if heat {
+                        172.
+                    } else {
+                        100.
+                    },
+                h: ph
+                    - if named {
+                        245.
+                    } else if heat {
+                        179.
+                    } else {
+                        162.
+                    }
+                    - title_extra
+                    - caption_height,
                 bounds: *b,
             };
             if !p.qc.boxes.is_empty() {
@@ -290,13 +324,42 @@ impl Renderer {
                     "effect heatmap labels need more room; increase -height or select fewer -rsa-rois"
                 );
             }
+            if let Content::Intervals { rows, .. } = &p.content {
+                ensure!(
+                    a.h >= rows.len() as f64 * 13.,
+                    "interval labels need more room; increase -height or select fewer -rsa-rois"
+                );
+            }
             text_regions.push(TextRegion {
                 target: TextTarget::XLabel(i),
-                rect: [a.x, a.y + a.h + if heat { 52. } else { 31. }, a.w, 18.],
+                rect: [
+                    a.x,
+                    a.y + a.h
+                        + if named {
+                            97.
+                        } else if heat {
+                            52.
+                        } else {
+                            31.
+                        },
+                    a.w,
+                    18.,
+                ],
             });
             text_regions.push(TextRegion {
                 target: TextTarget::YLabel(i),
-                rect: [a.x - if heat { 94. } else { 61. }, a.y, 20., a.h],
+                rect: [
+                    a.x - if named || intervals {
+                        147.
+                    } else if heat {
+                        94.
+                    } else {
+                        61.
+                    },
+                    a.y,
+                    20.,
+                    a.h,
+                ],
             });
             draw_plot(&mut svg, p, &a, i);
             draw_boxes(&mut svg, p, &a, i);
@@ -462,6 +525,15 @@ fn short(s: &str, n: usize) -> String {
         s.to_owned()
     }
 }
+fn condition_label(s: &str, width: f64) -> String {
+    let mut n = s.chars().count().min(24);
+    let mut label = short(s, n);
+    while n > 1 && text_width(&label, 9.5) > width {
+        n -= 1;
+        label = short(s, n);
+    }
+    label
+}
 fn text(s: &mut String, x: f64, y: f64, size: f64, color: &str, t: &str, anchor: &str) {
     let _ = write!(
         s,
@@ -589,6 +661,14 @@ fn palette(t: f64, cmap: &str) -> String {
 fn draw_plot(svg: &mut String, p: &Plot, a: &Area, id: usize) {
     rect(svg, a.x, a.y, a.w, a.h, "#fbfcfd", None, 0.);
     let heat = matches!(p.content, Content::Heat { .. });
+    let named = matches!(
+        p.content,
+        Content::Heat {
+            named_conditions: true,
+            ..
+        }
+    );
+    let intervals = matches!(p.content, Content::Intervals { .. });
     let _ = write!(
         svg,
         r#"<defs><clipPath id="plot{id}"><rect x="{}" y="{}" width="{}" height="{}"/></clipPath></defs>"#,
@@ -629,25 +709,86 @@ fn draw_plot(svg: &mut String, p: &Plot, a: &Area, id: usize) {
     }
     svg.push_str("</g>");
     if !heat {
-        for t in ticks(a.bounds.y) {
+        for t in ticks(a.bounds.y).into_iter().filter(|_| !intervals) {
             let q = a.point(a.bounds.x[0], t);
             line(svg, q, [a.x + a.w, q[1]], GRID, 1., false);
             if !p.qc.margin_off {
                 text(svg, a.x - 11., q[1] + 4., 11., MUTED, &num(t), "end");
             }
         }
-        for t in ticks(a.bounds.x) {
-            let q = a.point(t, a.bounds.y[0]);
+        let xticks: Vec<_> =
+            p.qc.xticks
+                .clone()
+                .unwrap_or_else(|| ticks(a.bounds.x).into_iter().map(|t| (t, num(t))).collect());
+        let visible: Vec<_> = xticks
+            .iter()
+            .filter(|(t, _)| *t >= a.bounds.x[0] && *t <= a.bounds.x[1])
+            .collect();
+        let stride = if p.qc.xticks.is_some() {
+            visible.len().div_ceil((a.w / 100.).max(1.) as usize).max(1)
+        } else {
+            1
+        };
+        for (t, label) in visible.into_iter().step_by(stride) {
+            let q = a.point(*t, a.bounds.y[0]);
             line(svg, q, [q[0], a.y], GRID, 1., false);
             if !p.qc.margin_off {
-                text(svg, q[0], a.y + a.h + 20., 11., MUTED, &num(t), "middle");
+                let short = if label.chars().count() > 15 {
+                    format!("{}…", label.chars().take(14).collect::<String>())
+                } else {
+                    label.clone()
+                };
+                text(svg, q[0], a.y + a.h + 20., 11., MUTED, &short, "middle");
             }
         }
     }
     let _ = write!(svg, r#"<g clip-path="url(#plot{id})">"#);
     match &p.content {
+        Content::Intervals { rows, color, .. } => {
+            let color = p.style.color(0, color);
+            for (i, row) in rows.iter().enumerate() {
+                let y = (rows.len() - i) as f64 - 0.5;
+                let py = a.point(a.bounds.x[0], y)[1];
+                line(svg, [a.x, py], [a.x + a.w, py], GRID, 0.7, false);
+                if let Some([estimate, lo, hi]) = row.values {
+                    let left = a.point(lo, y);
+                    let right = a.point(hi, y);
+                    let point = a.point(estimate, y);
+                    line(svg, left, right, color, p.style.width(0, 2.2), false);
+                    for [x, y] in [left, right] {
+                        line(
+                            svg,
+                            [x, y - 4.5],
+                            [x, y + 4.5],
+                            color,
+                            p.style.width(0, 1.6),
+                            false,
+                        );
+                    }
+                    let _ = write!(
+                        svg,
+                        r#"<circle cx="{}" cy="{}" r="{}" fill="{}" stroke="white" stroke-width="1"/>"#,
+                        point[0],
+                        point[1],
+                        p.style.radius(0, 4.1),
+                        color
+                    );
+                } else {
+                    text(
+                        svg,
+                        a.x + 8.,
+                        py + 3.5,
+                        10.,
+                        MUTED,
+                        "missing effect / CI",
+                        "start",
+                    );
+                }
+            }
+        }
         Content::Lines(series) | Content::Scatter(series) => {
-            for s in series {
+            for (si, s) in series.iter().enumerate() {
+                let color = p.style.color(si, &s.color);
                 if let Some(band) = &s.band {
                     let mut start = 0;
                     while start < s.points.len() {
@@ -680,7 +821,7 @@ fn draw_plot(svg: &mut String, p: &Plot, a: &Area, id: usize) {
                         let _ = write!(
                             svg,
                             r#"<path d="{path} Z" fill="{}" fill-opacity="0.16"/>"#,
-                            s.color
+                            color
                         );
                         start = end;
                     }
@@ -705,8 +846,9 @@ fn draw_plot(svg: &mut String, p: &Plot, a: &Area, id: usize) {
                     }
                     let _ = write!(
                         svg,
-                        r#"<path d="{path}" fill="none" stroke="{}" stroke-width="2.1" stroke-linejoin="round" stroke-linecap="round"/>"#,
-                        s.color
+                        r#"<path d="{path}" fill="none" stroke="{}" stroke-width="{}" stroke-linejoin="round" stroke-linecap="round"/>"#,
+                        color,
+                        p.style.width(si, 2.1)
                     );
                     for (i, pt) in s.points.iter().enumerate() {
                         if !pt[1].is_finite()
@@ -718,8 +860,11 @@ fn draw_plot(svg: &mut String, p: &Plot, a: &Area, id: usize) {
                         let q = a.point(pt[0], pt[1]);
                         let _ = write!(
                             svg,
-                            r#"<circle cx="{}" cy="{}" r="3" fill="{}"/>"#,
-                            q[0], q[1], s.color
+                            r#"<circle cx="{}" cy="{}" r="{}" fill="{}"/>"#,
+                            q[0],
+                            q[1],
+                            p.style.radius(si, 3.),
+                            color
                         );
                     }
                 } else {
@@ -727,15 +872,18 @@ fn draw_plot(svg: &mut String, p: &Plot, a: &Area, id: usize) {
                         let q = a.point(pt[0], pt[1]);
                         let _ = write!(
                             svg,
-                            r#"<circle cx="{:.3}" cy="{:.3}" r="3.4" fill="{}" fill-opacity="0.72" stroke="white" stroke-width="0.7"/>"#,
-                            q[0], q[1], s.color
+                            r#"<circle cx="{:.3}" cy="{:.3}" r="{}" fill="{}" fill-opacity="0.72" stroke="white" stroke-width="0.7"/>"#,
+                            q[0],
+                            q[1],
+                            p.style.radius(si, 3.4),
+                            color
                         );
                     }
                 }
             }
         }
         Content::Histogram { series, edges, .. } => {
-            for (s, e) in series.iter().zip(edges) {
+            for (si, (s, e)) in series.iter().zip(edges).enumerate() {
                 for (i, pt) in s.points.iter().enumerate() {
                     let l = a.point(e[i], pt[1]);
                     let r = a.point(e[i + 1], 0.);
@@ -746,7 +894,7 @@ fn draw_plot(svg: &mut String, p: &Plot, a: &Area, id: usize) {
                         l[1],
                         (r[0] - l[0]).max(0.),
                         (r[1] - l[1]).max(0.),
-                        s.color
+                        p.style.color(si, &s.color)
                     );
                 }
             }
@@ -767,7 +915,7 @@ fn draw_plot(svg: &mut String, p: &Plot, a: &Area, id: usize) {
                         w + 0.05,
                         h + 0.05,
                         &if v.is_finite() {
-                            palette((v - clim[0]) / (clim[1] - clim[0]), cmap)
+                            palette((v - clim[0]) / (clim[1] - clim[0]), p.style.cmap(cmap))
                         } else {
                             "#dce3e8".into()
                         },
@@ -811,31 +959,71 @@ fn draw_plot(svg: &mut String, p: &Plot, a: &Area, id: usize) {
     if p.qc.margin_off {
         return;
     }
+    if let Content::Intervals { rows, .. } = &p.content {
+        for (i, row) in rows.iter().enumerate() {
+            let y = a.point(a.bounds.x[0], (rows.len() - i) as f64 - 0.5)[1];
+            if y >= a.y && y <= a.y + a.h {
+                text(
+                    svg,
+                    a.x - 9.,
+                    y + 3.5,
+                    10.,
+                    MUTED,
+                    &short(&row.label, 22),
+                    "end",
+                );
+            }
+        }
+    }
     if let Content::Heat {
         matrix,
         labels,
         row_labels,
         square_cells,
+        named_conditions: _,
         cmap,
         clim,
     } = &p.content
     {
         let n = matrix.len();
-        let skip = labels.len().div_ceil(12);
+        let skip = if named {
+            ((a.bounds.x[1] - a.bounds.x[0]) * 16. / a.w).ceil().max(1.) as usize
+        } else {
+            labels.len().div_ceil(12)
+        };
         for i in (0..labels.len()).step_by(skip) {
             let q = a.point(i as f64 + 0.5, 0.);
             if q[0] >= a.x && q[0] <= a.x + a.w {
                 let _ = write!(
                     svg,
-                    r#"<g transform="translate({:.3} {:.3}) rotate(-40)">"#,
+                    r#"<g transform="translate({:.3} {:.3}) rotate({})">"#,
                     q[0],
-                    a.y + a.h + 15.
+                    a.y + a.h + 15.,
+                    if named { -50 } else { -40 }
                 );
-                text(svg, 0., 0., 9.5, MUTED, &short(&labels[i], 16), "end");
+                text(
+                    svg,
+                    0.,
+                    0.,
+                    9.5,
+                    MUTED,
+                    &if named {
+                        condition_label(&labels[i], 105.)
+                    } else {
+                        short(&labels[i], 16)
+                    },
+                    "end",
+                );
                 svg.push_str("</g>");
             }
         }
-        let skip = if *square_cells { n.div_ceil(12) } else { 1 };
+        let skip = if named {
+            ((a.bounds.y[1] - a.bounds.y[0]) * 14. / a.h).ceil().max(1.) as usize
+        } else if *square_cells {
+            n.div_ceil(12)
+        } else {
+            1
+        };
         for i in (0..n).step_by(skip) {
             let q = a.point(0., (n - i) as f64 - 0.5);
             if q[1] >= a.y && q[1] <= a.y + a.h {
@@ -845,7 +1033,11 @@ fn draw_plot(svg: &mut String, p: &Plot, a: &Area, id: usize) {
                     q[1] + 3.,
                     9.5,
                     MUTED,
-                    &short(&row_labels[i], 16),
+                    &if named {
+                        condition_label(&row_labels[i], 120.)
+                    } else {
+                        short(&row_labels[i], 16)
+                    },
                     "end",
                 );
             }
@@ -859,7 +1051,7 @@ fn draw_plot(svg: &mut String, p: &Plot, a: &Area, id: usize) {
                 a.y + a.h * (1. - t),
                 9.,
                 a.h / 99. + 0.1,
-                &palette(t, cmap),
+                &palette(t, p.style.cmap(cmap)),
                 None,
                 0.,
             );
@@ -882,7 +1074,14 @@ fn draw_plot(svg: &mut String, p: &Plot, a: &Area, id: usize) {
     text(
         svg,
         a.x + a.w / 2.,
-        a.y + a.h + if heat { 65. } else { 44. },
+        a.y + a.h
+            + if named {
+                110.
+            } else if heat {
+                65.
+            } else {
+                44.
+            },
         12f64.min(12. * a.w / text_width(&p.xlabel, 12.).max(1.)),
         INK,
         &p.xlabel,
@@ -891,7 +1090,13 @@ fn draw_plot(svg: &mut String, p: &Plot, a: &Area, id: usize) {
     let _ = write!(
         svg,
         r#"<g transform="translate({:.3} {:.3}) rotate(-90)">"#,
-        a.x - if heat { 85. } else { 52. },
+        a.x - if named || intervals {
+            138.
+        } else if heat {
+            85.
+        } else {
+            52.
+        },
         a.y + a.h / 2.
     );
     let label = if let Some(n) = p.qc.label_wrap {
@@ -941,11 +1146,11 @@ fn legend_entries(p: &Plot) -> Vec<(&str, &str)> {
             }
         }
     }
-    if p.legend {
+    if p.style.legend.unwrap_or(p.legend) {
         match &p.content {
             Content::Lines(s) | Content::Scatter(s) | Content::Histogram { series: s, .. } => {
-                for v in s {
-                    legend.push((v.color.as_str(), v.label.as_str()));
+                for (i, v) in s.iter().enumerate() {
+                    legend.push((p.style.color(i, &v.color), p.style.label(i, &v.label)));
                 }
             }
             _ => {}
@@ -1119,6 +1324,63 @@ mod tests {
         assert!((d[0] - 1.).abs() < 1e-12 && (d[1] - 0.7).abs() < 1e-12);
     }
     #[test]
+    fn interval_geometry_keeps_asymmetry_and_clips_current_view() {
+        let file = format!(
+            "{}/examples/rsa/ordinary.rsa.1D",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let o = crate::cli::parse(&[
+            "-rsa".into(),
+            file,
+            "-rsa-plots".into(),
+            "intervals".into(),
+            "-rsa-rois".into(),
+            "12".into(),
+            "-rsa-models".into(),
+            "semantic".into(),
+        ])
+        .unwrap();
+        let mut f = model::from_options(&o).unwrap();
+        let a = Area {
+            x: 100.,
+            y: 100.,
+            w: 600.,
+            h: 200.,
+            bounds: Bounds {
+                x: [-0.2, 0.4],
+                y: [0., 1.],
+            },
+        };
+        let mut svg = String::new();
+        draw_plot(&mut svg, &f.plots[0], &a, 0);
+        let left = a.point(-0.04, 0.5);
+        let right = a.point(0.34, 0.5);
+        let point = a.point(0.18, 0.5);
+        let mut expected = String::new();
+        line(&mut expected, left, right, model::COLORS[0], 2.2, false);
+        assert!(svg.contains(&expected));
+        assert!(svg.contains(&format!(r#"<circle cx="{}" cy="{}""#, point[0], point[1])));
+        assert!((point[0] - left[0] - 220.).abs() < 1e-8);
+        assert!((right[0] - point[0] - 160.).abs() < 1e-8);
+        let Content::Intervals { rows, .. } = &mut f.plots[0].content else {
+            panic!()
+        };
+        rows[0].values = None;
+        svg.clear();
+        draw_plot(&mut svg, &f.plots[0], &a, 0);
+        assert!(!svg.contains("<circle"));
+        assert!(svg.contains("missing effect / CI") && svg.contains("12: Occipital"));
+        // Panned categorical labels leave the axes instead of remaining at fixed screen rows.
+        svg.clear();
+        let moved = Area {
+            bounds: a.bounds.pan(0.3, 2.),
+            ..a
+        };
+        draw_plot(&mut svg, &f.plots[0], &moved, 0);
+        assert!(!svg.contains("12: Occipital"));
+        assert!(svg.contains(r#"clip-path="url(#plot0)""#));
+    }
+    #[test]
     fn saved_vector_scene_matches_cpu_preview() {
         let r = Renderer::new();
         let f = model::demo();
@@ -1194,6 +1456,8 @@ mod tests {
     }
     #[test]
     fn scientific_labels_preserve_literal_underscores_and_escape_xml() {
+        let label = condition_label(&"W".repeat(100), 105.);
+        assert!(text_width(&label, 9.5) <= 105. && label.ends_with('…'));
         assert_eq!(scientific_text("model_a & b"), "model_a &amp; b");
         let t = scientific_text("β_{model} r^{2}");
         assert!(t.contains("baseline-shift=\"sub\""));
@@ -1232,5 +1496,70 @@ mod tests {
         draw_plot(&mut svg, &f.plots[0], &a, 0);
         assert_eq!(svg.matches("fill-opacity=\"0.18\"").count(), 8);
         assert!(!svg.contains("NaN"));
+    }
+    #[test]
+    fn styles_reach_geometry_bands_markers_legends_and_colorbar() {
+        let renderer = Renderer::new();
+        let mut fig = crate::model::demo();
+        let area = Area {
+            x: 100.,
+            y: 100.,
+            w: 400.,
+            h: 300.,
+            bounds: fig.plots[0].bounds,
+        };
+        fig.plots[0].style.series = vec![crate::style::SeriesStyle {
+            color: Some("#bc477b".into()),
+            label: Some("Styled <response>".into()),
+            line_width: Some(6.),
+            marker_radius: None,
+        }];
+        let mut svg = String::new();
+        draw_plot(&mut svg, &fig.plots[0], &area, 0);
+        assert!(svg.contains("stroke=\"#bc477b\" stroke-width=\"6\""));
+        assert!(svg.contains("fill=\"#bc477b\" fill-opacity=\"0.16\""));
+        assert!(legend_entries(&fig.plots[0]).contains(&("#bc477b", "Styled <response>")));
+        fig.plots[2].style.marker_radius = Some(9.);
+        svg.clear();
+        draw_plot(
+            &mut svg,
+            &fig.plots[2],
+            &Area {
+                bounds: fig.plots[2].bounds,
+                ..area
+            },
+            2,
+        );
+        assert!(svg.contains("r=\"9\""));
+        let original = fig.plots[3].content.clone();
+        fig.plots[3].style.palette = Some("Reds_and_Blues".into());
+        let mut styled = String::new();
+        draw_plot(
+            &mut styled,
+            &fig.plots[3],
+            &Area {
+                bounds: fig.plots[3].bounds,
+                ..area
+            },
+            3,
+        );
+        fig.plots[3].style = Default::default();
+        if let Content::Heat { cmap, .. } = &mut fig.plots[3].content {
+            *cmap = "Reds_and_Blues".into();
+        }
+        let mut equivalent = String::new();
+        draw_plot(
+            &mut equivalent,
+            &fig.plots[3],
+            &Area {
+                bounds: fig.plots[3].bounds,
+                ..area
+            },
+            3,
+        );
+        assert_eq!(styled, equivalent); // includes both cells and their colorbar
+        fig.plots[3].content = original;
+        let views = fig.plots.iter().map(|p| p.bounds).collect::<Vec<_>>();
+        assert!(renderer.scene(&fig, &views, 1200, 1000).is_ok());
     }
 }

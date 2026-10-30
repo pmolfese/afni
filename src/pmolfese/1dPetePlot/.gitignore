@@ -5,3 +5,4 @@
 !/Makefile
 !/examples/*.1D
 !/examples/rsa/*.1D
+!/examples/rdm/*.1D

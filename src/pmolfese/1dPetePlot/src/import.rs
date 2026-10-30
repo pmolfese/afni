@@ -36,6 +36,9 @@ pub struct Table {
     pub rsa: Option<crate::rsa::Table>,
 }
 impl Table {
+    pub fn long(&self) -> Option<&crate::rsa_long::LongTable> {
+        self.rsa.as_ref().and_then(|t| t.long.as_deref())
+    }
     pub fn numeric(&self) -> Vec<usize> {
         self.columns
             .iter()
@@ -117,12 +120,19 @@ pub fn inspect(path: &Path, cancel: impl Fn() -> bool) -> Result<Table> {
                         .effects
                         .iter()
                         .find(|(_, index)| **index == i)
-                        .map(|((_, kind), _)| kind.as_str());
+                        .map(|((_, kind), _)| kind.as_str())
+                        .or_else(|| crate::rsa_extra::family(&rsa, i));
                     Column {
                         name: name.clone(),
                         numeric: effect.is_some(),
                         invalid: false,
-                        missing: if i < 3 {
+                        missing: if let Some(long) = &rsa.long {
+                            if effect.is_some() {
+                                long.rows.values().filter(|r| !r[i].is_finite()).count()
+                            } else {
+                                0
+                            }
+                        } else if i < 3 {
                             0
                         } else {
                             rsa.rows
@@ -133,7 +143,9 @@ pub fn inspect(path: &Path, cancel: impl Fn() -> bool) -> Result<Table> {
                         role: effect
                             .map(|kind| format!("effect: {kind}"))
                             .unwrap_or_else(|| {
-                                if i < 3 {
+                                if rsa.long.is_some() && i < 5 {
+                                    "scientific identity"
+                                } else if i < 3 {
                                     "ROI metadata"
                                 } else {
                                     "auxiliary statistic"
@@ -153,6 +165,11 @@ pub fn inspect(path: &Path, cancel: impl Fn() -> bool) -> Result<Table> {
                     values
                 })
                 .collect();
+            let preview = rsa
+                .long
+                .as_ref()
+                .map(|l| l.preview.clone())
+                .unwrap_or(preview);
             let parent = path
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
@@ -161,7 +178,11 @@ pub fn inspect(path: &Path, cancel: impl Fn() -> bool) -> Result<Table> {
                 path: std::fs::canonicalize(parent)?.join(path.file_name().unwrap()),
                 fingerprint,
                 columns,
-                rows: rsa.rows.len(),
+                rows: rsa
+                    .long
+                    .as_ref()
+                    .map(|l| l.rows.len())
+                    .unwrap_or(rsa.rows.len()),
                 preview,
                 rsa: Some(rsa),
             });
@@ -290,15 +311,26 @@ pub enum Kind {
     Histogram,
     Scatter,
     Heat,
+    Intervals,
+    Rdm,
 }
 impl Kind {
-    pub const ALL: [Self; 4] = [Self::Line, Self::Histogram, Self::Scatter, Self::Heat];
+    pub const ALL: [Self; 6] = [
+        Self::Line,
+        Self::Histogram,
+        Self::Scatter,
+        Self::Heat,
+        Self::Intervals,
+        Self::Rdm,
+    ];
     pub fn name(self) -> &'static str {
         match self {
             Self::Line => "Lines",
             Self::Histogram => "Distribution",
             Self::Scatter => "Scatter",
             Self::Heat => "Heatmap",
+            Self::Intervals => "Confidence intervals",
+            Self::Rdm => "RDM / named matrix",
         }
     }
     pub fn explanation(self) -> &'static str {
@@ -311,6 +343,29 @@ impl Kind {
                 "Pair selected y columns with an explicit x column from the same rows."
             }
             Self::Heat => "Square numeric matrix; shape alone does not imply an RDM.",
+            Self::Rdm => {
+                "A symmetric pairwise matrix with an explicit condition-label file; values are preserved."
+            }
+            Self::Intervals => {
+                "RSA effects with supplied asymmetric confidence bounds, one row per ROI."
+            }
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct RdmMapping {
+    pub labels: String,
+    pub order: String,
+    pub sense: String,
+    pub clim: String,
+}
+impl Default for RdmMapping {
+    fn default() -> Self {
+        Self {
+            labels: String::new(),
+            order: String::new(),
+            sense: "unspecified".into(),
+            clim: String::new(),
         }
     }
 }
@@ -321,6 +376,15 @@ pub struct Mapping {
     pub y: Vec<usize>,
     pub missing: String,
     pub roi_filter: String,
+    pub ci: String,
+    pub rsa_models: String,
+    pub rsa_family: String,
+    pub rsa_steps: String,
+    pub rsa_band: bool,
+    pub presentation: Option<document::Panel>,
+    pub reset_style: bool,
+    pub rdm: RdmMapping,
+    pub attachments: crate::attachments::Attachments,
 }
 impl Mapping {
     pub fn for_kind(table: &Table, kind: Kind) -> Self {
@@ -328,6 +392,8 @@ impl Mapping {
         if let Some(rsa) = &table.rsa {
             let primary = if rsa.effects.keys().any(|(_, kind)| kind == "b") {
                 "b"
+            } else if rsa.long.is_some() {
+                "effect"
             } else {
                 "r"
             };
@@ -339,19 +405,183 @@ impl Mapping {
         }
         Self {
             kind,
-            x: if kind == Kind::Scatter {
+            x: if kind == Kind::Scatter && table.long().is_none() {
                 n.first().copied()
             } else {
                 None
             },
-            y: match kind {
-                Kind::Heat => n,
-                Kind::Scatter => n.into_iter().skip(1).take(1).collect(),
-                _ => n.into_iter().take(1).collect(),
+            y: if table.long().is_some() {
+                n.into_iter().take(1).collect()
+            } else {
+                match kind {
+                    Kind::Heat | Kind::Rdm => n,
+                    Kind::Scatter => n.into_iter().skip(1).take(1).collect(),
+                    _ => n.into_iter().take(1).collect(),
+                }
             },
             missing: "error".into(),
-            roi_filter: String::new(),
+            roi_filter: table
+                .rsa
+                .as_ref()
+                .filter(|t| t.long.is_some())
+                .and_then(|t| t.rows.keys().next())
+                .map(i32::to_string)
+                .unwrap_or_default(),
+            ci: "auto".into(),
+            rsa_models: String::new(),
+            rsa_family: "effects".into(),
+            rsa_steps: String::new(),
+            rsa_band: false,
+            presentation: None,
+            reset_style: false,
+            rdm: Default::default(),
+            attachments: crate::attachments::Attachments {
+                include_bounds: true,
+                threshold_percent: 5,
+                ..Default::default()
+            },
         }
+    }
+    pub fn allows(&self, table: &Table, i: usize) -> bool {
+        table.rsa.as_ref().is_none_or(|t| {
+            if self.rsa_family == "effects" {
+                t.effects.values().any(|v| *v == i)
+            } else {
+                crate::rsa_extra::family(t, i) == Some(self.rsa_family.as_str())
+            }
+        })
+    }
+    pub fn set_rsa_family(&mut self, table: &Table, family: &str) {
+        self.rsa_family = family.into();
+        if family == "effects" {
+            let original = Self::for_kind(table, self.kind);
+            self.x = original.x;
+            self.y = original.y;
+            return;
+        }
+        let n: Vec<_> = table
+            .numeric()
+            .into_iter()
+            .filter(|i| {
+                table.rsa.as_ref().is_some_and(|t| {
+                    if family == "effects" {
+                        t.effects.values().any(|v| v == i)
+                    } else {
+                        crate::rsa_extra::family(t, *i) == Some(family)
+                    }
+                })
+            })
+            .collect();
+        self.x = if self.kind == Kind::Scatter {
+            n.first().copied()
+        } else {
+            None
+        };
+        self.y = match self.kind {
+            Kind::Heat => n,
+            Kind::Scatter => n.into_iter().skip(1).take(1).collect(),
+            _ => n.into_iter().take(1).collect(),
+        };
+    }
+    pub fn restore(
+        table: &Table,
+        o: &cli::Options,
+        roles: &Roles,
+        presentation: document::Panel,
+    ) -> Result<Self> {
+        ensure!(
+            roles.columns
+                == table
+                    .columns
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .collect::<Vec<_>>(),
+            "source columns changed; reload/relink or reimport before editing roles"
+        );
+        let kind = Kind::ALL
+            .into_iter()
+            .find(|k| k.name() == roles.kind)
+            .context("unknown saved graph type")?;
+        ensure!(
+            table.rsa.is_none() && matches!(kind, Kind::Line | Kind::Scatter | Kind::Histogram),
+            "attachment editing requires an ordinary line, scatter or distribution graph"
+        );
+        let mut m = Self::for_kind(table, kind);
+        m.x = roles.x;
+        m.y = roles.y.clone();
+        m.missing = roles.missing.clone();
+        m.presentation = Some(presentation);
+        let column = |s: &str| -> Result<usize> {
+            s.parse::<usize>()
+                .ok()
+                .filter(|i| *i < table.columns.len())
+                .or_else(|| table.columns.iter().position(|c| c.name == s))
+                .context("saved column role no longer exists")
+        };
+        let selected = |spec: &str| -> Result<Option<Vec<usize>>> {
+            let (name, suffix) = document::split_spec(spec);
+            if Path::new(name) != table.path || suffix.is_empty() {
+                return Ok(None);
+            }
+            ensure!(
+                suffix.starts_with('[') && suffix.ends_with(']'),
+                "unsupported saved attachment selection"
+            );
+            Ok(Some(
+                suffix[1..suffix.len() - 1]
+                    .split(',')
+                    .map(column)
+                    .collect::<Result<_>>()?,
+            ))
+        };
+        m.attachments.group = o.group_by.as_deref().map(column).transpose()?;
+        m.attachments.include_bounds = o.qc.use_pm;
+        ensure!(
+            o.qc.pm.len() <= 1
+                && o.qc.lower.len() <= 1
+                && o.qc.upper.len() <= 1
+                && o.qc.censor_files.len() <= 1,
+            "edit one attachment file per role"
+        );
+        if let Some(spec) = o.qc.pm.first() {
+            if let Some(cols) = selected(spec)? {
+                ensure!(cols.len() == m.y.len(), "width/Y mapping mismatch");
+                m.attachments.uncertainty = "widths".into();
+                for (y, c) in m.y.iter().zip(cols) {
+                    m.attachments.bands.insert(*y, [Some(c), None]);
+                }
+            } else {
+                m.attachments.uncertainty = "file".into();
+                m.attachments.width_file = spec.clone();
+            }
+        } else if let Some(spec) = o.qc.lower.first() {
+            let lo =
+                selected(spec)?.context("editing external asymmetric bounds requires reimport")?;
+            let hi = selected(o.qc.upper.first().context("missing upper bounds")?)?
+                .context("upper bounds must be columns in the graph's source")?;
+            ensure!(
+                lo.len() == m.y.len() && hi.len() == m.y.len(),
+                "bound/Y mapping mismatch"
+            );
+            m.attachments.uncertainty = "bounds".into();
+            for ((y, l), h) in m.y.iter().zip(lo).zip(hi) {
+                m.attachments.bands.insert(*y, [Some(l), Some(h)]);
+            }
+        }
+        if let Some(spec) = o.qc.censor_files.first() {
+            if let Some(cols) = selected(spec)? {
+                ensure!(cols.len() == 1, "censor needs one column");
+                m.attachments.censor_column = Some(cols[0]);
+            } else {
+                m.attachments.censor_file = spec.clone();
+            }
+        }
+        m.attachments.xmat = o.shade_design.file.clone().unwrap_or_default();
+        m.attachments.palette = o.shade_design.colors.join(" ");
+        m.attachments.threshold_percent = (o.shade_design.threshold * 100.).round() as u32;
+        // Opening an editor is not renewed evidence that sidecar rows align.
+        m.attachments.aligned = false;
+        Ok(m)
     }
     pub fn roles(&self, table: &Table) -> Roles {
         Roles {
@@ -363,8 +593,131 @@ impl Mapping {
         }
     }
     fn rsa_arguments(&self, table: &Table, rsa: &crate::rsa::Table) -> Result<Vec<String>> {
+        if self.rsa_family != "effects" {
+            ensure!(
+                rsa.long.is_none(),
+                "choose primary effects for a long table"
+            );
+            ensure!(!self.y.is_empty(), "choose a scientific quantity");
+            let mode = match self.kind {
+                Kind::Histogram => "histogram",
+                Kind::Scatter => "scatter",
+                Kind::Heat => "heatmap",
+                Kind::Intervals => "intervals",
+                _ => anyhow::bail!("choose distribution, scatter, heatmap or intervals"),
+            };
+            let mut indices = self.y.clone();
+            if self.kind == Kind::Scatter {
+                ensure!(indices.len() == 1, "select one Y quantity");
+                indices.insert(0, self.x.context("choose an X quantity")?);
+            }
+            if matches!(self.kind, Kind::Histogram | Kind::Intervals) {
+                ensure!(
+                    indices.len() == 1,
+                    "select one quantity per graph; add other quantities separately"
+                );
+            }
+            ensure!(
+                indices
+                    .iter()
+                    .all(|i| crate::rsa_extra::family(rsa, *i) == Some(self.rsa_family.as_str())),
+                "quantities must share one scientific family; probabilities and weights cannot substitute for effects"
+            );
+            let mut args = vec![
+                "-rsa".into(),
+                table.path.to_str().context("path must be UTF-8")?.into(),
+                "-rsa-family".into(),
+                self.rsa_family.clone(),
+                "-rsa-measures".into(),
+                indices
+                    .iter()
+                    .map(|i| rsa.columns[*i].clone())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                "-rsa-plots".into(),
+                mode.into(),
+                "-missing".into(),
+                self.missing.clone(),
+            ];
+            if !self.roi_filter.trim().is_empty() {
+                args.extend(["-rsa-rois".into(), self.roi_filter.trim().into()]);
+            }
+            if self.kind == Kind::Intervals {
+                args.extend(["-rsa-ci".into(), self.ci.clone()]);
+            }
+            return Ok(args);
+        }
+        if let Some(long) = &rsa.long {
+            ensure!(
+                self.y.len() == 1,
+                "choose one effect kind for this long-table graph"
+            );
+            let effect = rsa
+                .effects
+                .iter()
+                .find(|(_, i)| **i == self.y[0])
+                .map(|((_, kind), _)| kind)
+                .context("select an effect, not a statistic")?;
+            let mode = match self.kind {
+                Kind::Line if long.time => "curves",
+                Kind::Scatter if !long.time => "points",
+                Kind::Heat => "heatmap",
+                Kind::Intervals if long.time => "intervals",
+                _ => anyhow::bail!("choose a plot compatible with this long RSA schema"),
+            };
+            let rois = crate::rsa::names(self.roi_filter.trim()).context(
+                "choose one ROI ID per imported graph; the CLI can make multiple panels",
+            )?;
+            ensure!(
+                rois.len() == 1,
+                "choose one ROI ID per imported graph; add other ROIs separately"
+            );
+            let mut args = vec![
+                "-rsa".into(),
+                table.path.to_str().context("path must be UTF-8")?.into(),
+                "-rsa-effect".into(),
+                effect.clone(),
+                "-rsa-plots".into(),
+                mode.into(),
+                "-rsa-rois".into(),
+                rois[0].clone(),
+                "-missing".into(),
+                self.missing.clone(),
+            ];
+            if !self.rsa_models.trim().is_empty() {
+                args.extend(["-rsa-models".into(), self.rsa_models.trim().into()]);
+            }
+            if !self.rsa_steps.trim().is_empty() {
+                args.extend([
+                    if long.time {
+                        "-rsa-times"
+                    } else {
+                        "-rsa-summaries"
+                    }
+                    .into(),
+                    self.rsa_steps.trim().into(),
+                ]);
+            }
+            if self.kind == Kind::Intervals || self.kind == Kind::Line && self.rsa_band {
+                let method = if self.ci == "auto" && self.kind == Kind::Line {
+                    let methods: Vec<_> = ["boot", "cboot", "dual"]
+                        .into_iter()
+                        .filter(|m| rsa.columns.contains(&format!("{m}Lo")))
+                        .collect();
+                    ensure!(
+                        methods.len() == 1,
+                        "choose a supplied CI method; auto requires exactly one"
+                    );
+                    methods[0].to_string()
+                } else {
+                    self.ci.clone()
+                };
+                args.extend(["-rsa-ci".into(), method]);
+            }
+            return Ok(args);
+        }
         ensure!(
-            self.kind != Kind::Line,
+            !matches!(self.kind, Kind::Line | Kind::Rdm),
             "RSA effects use distribution, paired scatter, or ROI-by-model heatmap"
         );
         ensure!(
@@ -379,10 +732,10 @@ impl Mapping {
                 self.y.len() == 1 && Some(self.y[0]) != self.x,
                 "select one Y effect different from X"
             );
-        } else if self.kind == Kind::Histogram {
+        } else if matches!(self.kind, Kind::Histogram | Kind::Intervals) {
             ensure!(
                 self.y.len() == 1,
-                "select one model effect per distribution; add other distributions separately"
+                "select one model effect per graph; add other models separately"
             );
         }
         indices.extend(&self.y);
@@ -418,6 +771,7 @@ impl Mapping {
                 Kind::Histogram => "histogram",
                 Kind::Scatter => "scatter",
                 Kind::Heat => "heatmap",
+                Kind::Intervals => "intervals",
                 _ => unreachable!(),
             }
             .into(),
@@ -427,12 +781,49 @@ impl Mapping {
         if !self.roi_filter.trim().is_empty() {
             args.extend(["-rsa-rois".into(), self.roi_filter.trim().into()]);
         }
+        if self.kind == Kind::Intervals {
+            args.extend(["-rsa-ci".into(), self.ci.clone()]);
+        }
         Ok(args)
     }
     pub fn arguments(&self, table: &Table) -> Result<Vec<String>> {
+        let attachments =
+            self.attachments
+                .arguments(table, self.kind, self.x, &self.y, &self.missing)?;
+        if self.kind == Kind::Rdm {
+            ensure!(
+                table.rsa.is_none(),
+                "RSA effect tables cannot reconstruct an RDM"
+            );
+            ensure!(
+                !self.rdm.labels.trim().is_empty(),
+                "choose a condition-label file, one label per matrix row/column"
+            );
+            let mut args = vec![
+                "-rdm".into(),
+                table.path.to_str().context("path must be UTF-8")?.into(),
+                "-rdm-labels".into(),
+                self.rdm.labels.clone(),
+                "-rdm-kind".into(),
+                self.rdm.sense.clone(),
+                "-missing".into(),
+                self.missing.clone(),
+            ];
+            if !self.rdm.order.trim().is_empty() {
+                args.extend(["-rdm-order".into(), self.rdm.order.clone()]);
+            }
+            if !self.rdm.clim.trim().is_empty() {
+                args.extend(["-clim".into(), self.rdm.clim.trim().into()]);
+            }
+            return Ok(args);
+        }
         if let Some(rsa) = &table.rsa {
             return self.rsa_arguments(table, rsa);
         }
+        ensure!(
+            self.kind != Kind::Intervals,
+            "confidence intervals require an ordinary 3dRSA ROI table with supplied bounds"
+        );
         ensure!(!self.y.is_empty(), "select at least one numeric y column");
         ensure!(
             self.y.len() <= if self.kind == Kind::Heat { 256 } else { 16 },
@@ -500,6 +891,7 @@ impl Mapping {
             Kind::Histogram => args.push("-histogram".into()),
             Kind::Scatter => args.push("-scatter".into()),
             Kind::Heat => args.push("-heat".into()),
+            Kind::Intervals | Kind::Rdm => unreachable!(),
         }
         if self.kind != Kind::Heat {
             args.extend(["-one".into(), "-legend_on".into(), "-legend_labels".into()]);
@@ -525,6 +917,7 @@ impl Mapping {
         } else if self.kind == Kind::Line {
             args.extend(["-xlabel".into(), "Row index (0-based)".into()]);
         }
+        args.extend(attachments);
         Ok(args)
     }
 }
@@ -549,9 +942,44 @@ pub fn prepare(table: &Table, mapping: &Mapping, cancel: impl Fn() -> bool) -> R
         document::fingerprint(&table.path)? == table.fingerprint,
         "source changed since inspection; retry import"
     );
+    mapping.attachments.validate_files()?;
     let options = cli::parse(&mapping.arguments(table)?)?;
     let origin = Origin::capture(&options)?;
-    let figure = model::from_options(&options)?;
+    let mut figure = model::from_options(&options)?;
+    if let Some(p) = &mapping.presentation {
+        ensure!(
+            figure.plots.len() == 1,
+            "an attachment edit must produce one graph"
+        );
+        let plot = &mut figure.plots[0];
+        if !mapping.reset_style {
+            p.style
+                .validate(plot)
+                .context("style no longer fits the selected series; enable Reset styling")?;
+            plot.style = p.style.clone();
+        }
+        plot.title = p.title.clone();
+        plot.caption = p.caption.clone();
+        plot.xlabel = p.xlabel.clone();
+        plot.ylabel = p.ylabel.clone();
+    }
+    if matches!(mapping.kind, Kind::Line | Kind::Scatter) {
+        let points: usize = figure
+            .plots
+            .iter()
+            .map(|p| match &p.content {
+                model::Content::Lines(s) | model::Content::Scatter(s) => {
+                    s.iter().map(|s| s.points.len()).sum()
+                }
+                _ => 0,
+            })
+            .sum();
+        ensure!(
+            points <= 50_000,
+            "grouped previews support 50000 stored points; select fewer Y columns/groups or use the CLI"
+        );
+    }
+    origin.verify()?;
     cancelled(&cancel)?;
     ensure!(
         document::fingerprint(&table.path)? == table.fingerprint,
@@ -574,7 +1002,7 @@ pub fn prepare(table: &Table, mapping: &Mapping, cancel: impl Fn() -> bool) -> R
 
 pub enum Work {
     Inspect(PathBuf),
-    Preview(Arc<Table>, Mapping),
+    Preview(Arc<Table>, Box<Mapping>),
     Confirm(Box<Prepared>),
 }
 pub enum Answer {
@@ -696,6 +1124,19 @@ mod tests {
             y: vec![2],
             missing: "error".into(),
             roi_filter: String::new(),
+            ci: "auto".into(),
+            rsa_models: String::new(),
+            rsa_family: "effects".into(),
+            rsa_steps: String::new(),
+            rsa_band: false,
+            presentation: None,
+            reset_style: false,
+            rdm: Default::default(),
+            attachments: crate::attachments::Attachments {
+                include_bounds: true,
+                threshold_percent: 5,
+                ..Default::default()
+            },
         };
         assert!(prepare(&table, &mapping, || false).is_err());
         mapping.missing = "gap".into();
@@ -725,12 +1166,16 @@ mod tests {
         let path = data(d.path(), "matrix.1D", "0 1 2\n1 0 3\n2 3 0\n");
         let table = inspect(&path, || false).unwrap();
         assert!(table.square());
-        for kind in Kind::ALL {
+        for kind in Kind::ALL
+            .into_iter()
+            .filter(|k| !matches!(k, Kind::Intervals | Kind::Rdm))
+        {
             let mapping = Mapping::for_kind(&table, kind);
             let p = prepare(&table, &mapping, || false).unwrap();
             assert_eq!(p.figure.plots.len(), 1);
             assert_eq!(p.size, [900, 600]);
             match &p.figure.plots[0].content {
+                model::Content::Intervals { .. } => panic!("generic data has no CI roles"),
                 model::Content::Histogram { series, .. } => {
                     assert_eq!(series[0].points.iter().map(|p| p[1]).sum::<f64>(), 3.)
                 }
@@ -752,6 +1197,19 @@ mod tests {
             y: vec![1],
             missing: "error".into(),
             roi_filter: String::new(),
+            ci: "auto".into(),
+            rsa_models: String::new(),
+            rsa_family: "effects".into(),
+            rsa_steps: String::new(),
+            rsa_band: false,
+            presentation: None,
+            reset_style: false,
+            rdm: Default::default(),
+            attachments: crate::attachments::Attachments {
+                include_bounds: true,
+                threshold_percent: 5,
+                ..Default::default()
+            },
         };
         assert!(bad.arguments(&table).is_err());
         let non_square = Mapping {
@@ -760,6 +1218,19 @@ mod tests {
             y: vec![0, 1],
             missing: "error".into(),
             roi_filter: String::new(),
+            ci: "auto".into(),
+            rsa_models: String::new(),
+            rsa_family: "effects".into(),
+            rsa_steps: String::new(),
+            rsa_band: false,
+            presentation: None,
+            reset_style: false,
+            rdm: Default::default(),
+            attachments: crate::attachments::Attachments {
+                include_bounds: true,
+                threshold_percent: 5,
+                ..Default::default()
+            },
         };
         assert!(non_square.arguments(&table).is_err());
     }
@@ -854,7 +1325,7 @@ mod tests {
                 assert_eq!(table.path.file_name(), last.file_name());
                 worker.start(Work::Preview(
                     table.clone(),
-                    Mapping::for_kind(&table, Kind::Line),
+                    Box::new(Mapping::for_kind(&table, Kind::Line)),
                 ));
                 worker.cancel();
                 break;

@@ -16,6 +16,8 @@ use std::{
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Panel {
+    #[serde(default)]
+    pub style: crate::style::PlotStyle,
     pub id: usize,
     pub title: String,
     pub caption: String,
@@ -43,6 +45,7 @@ impl Presentation {
                 .plots
                 .iter()
                 .map(|p| Panel {
+                    style: p.style.clone(),
                     id: p.id,
                     title: p.title.clone(),
                     caption: p.caption.clone(),
@@ -72,12 +75,21 @@ impl Presentation {
         ) {
             ensure!(text.len() <= 16_384, "project text exceeds 16384 bytes");
         }
+        for panel in &self.panels {
+            panel.style.validate(
+                fig.plots
+                    .iter()
+                    .find(|p| p.id == panel.id)
+                    .expect("validated identity"),
+            )?;
+        }
         let mut plots: BTreeMap<_, _> = fig.plots.drain(..).map(|p| (p.id, p)).collect();
         fig.plots = self
             .panels
             .iter()
             .map(|p| {
                 let mut plot = plots.remove(&p.id).expect("validated panel identity");
+                plot.style = p.style.clone();
                 plot.title = p.title.clone();
                 plot.caption = p.caption.clone();
                 plot.xlabel = p.xlabel.clone();
@@ -136,6 +148,16 @@ pub struct Origin {
     sources: Vec<Source>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     imports: Vec<ImportLayer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    duplicates: Vec<Duplicate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    overrides: Vec<ImportLayer>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Duplicate {
+    id: usize,
+    source: usize,
 }
 /// Source identity is the layer ID; series identity is (layer ID, original column index).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -173,7 +195,7 @@ pub fn fingerprint(path: &Path) -> Result<String> {
     }
     Ok(format!("fnv1a64:{size}:{hash:016x}"))
 }
-fn split_spec(spec: &str) -> (&str, &str) {
+pub(crate) fn split_spec(spec: &str) -> (&str, &str) {
     let mut name = spec.strip_suffix('\'').unwrap_or(spec);
     while name.ends_with(']') || name.ends_with('}') {
         let open = if name.ends_with(']') { '[' } else { '{' };
@@ -191,6 +213,8 @@ impl Origin {
             arguments: vec![],
             sources: vec![],
             imports: vec![],
+            duplicates: vec![],
+            overrides: vec![],
         }
     }
     pub fn add(&mut self, id: usize, origin: Origin, roles: Roles) {
@@ -200,16 +224,57 @@ impl Origin {
             roles,
         });
     }
-    pub fn retain_imports(&mut self, ids: &std::collections::BTreeSet<usize>) {
-        self.imports.retain(|layer| ids.contains(&layer.id));
+    pub fn duplicate(&mut self, id: usize, source: usize) {
+        if let Some(layer) = self.overrides.iter().find(|l| l.id == source) {
+            let mut copy = layer.clone();
+            copy.id = id;
+            self.imports.push(copy);
+            return;
+        }
+        // Canonical roots avoid chains and allow discarded intermediate copies to be pruned.
+        let source = self
+            .duplicates
+            .iter()
+            .find(|d| d.id == source)
+            .map_or(source, |d| d.source);
+        self.duplicates.push(Duplicate { id, source });
     }
-    fn verify_all(&self) -> Result<()> {
+    pub fn retain_imports(&mut self, ids: &std::collections::BTreeSet<usize>) {
+        self.overrides.retain(|l| ids.contains(&l.id));
+        self.duplicates.retain(|d| ids.contains(&d.id));
+        self.imports.retain(|layer| {
+            ids.contains(&layer.id) || self.duplicates.iter().any(|d| d.source == layer.id)
+        });
+    }
+    pub(crate) fn verify_all(&self) -> Result<()> {
         self.verify()?;
-        ensure!(self.imports.len() <= 64, "too many imported sources");
+        ensure!(
+            self.imports.len() + self.duplicates.len() <= 64,
+            "too many imported sources"
+        );
         let mut ids = std::collections::BTreeSet::new();
-        for layer in &self.imports {
+        ensure!(
+            self.overrides.len() <= 64
+                && self
+                    .overrides
+                    .iter()
+                    .map(|l| l.id)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    == self.overrides.len(),
+            "invalid graph overrides"
+        );
+        for (override_layer, layer) in self
+            .imports
+            .iter()
+            .map(|l| (false, l))
+            .chain(self.overrides.iter().map(|l| (true, l)))
+        {
             ensure!(
-                ids.insert(layer.id) && layer.origin.imports.is_empty(),
+                (override_layer || ids.insert(layer.id))
+                    && layer.origin.imports.is_empty()
+                    && layer.origin.duplicates.is_empty()
+                    && layer.origin.overrides.is_empty(),
                 "duplicate source identity or nested imports"
             );
             let role = &layer.roles;
@@ -228,7 +293,7 @@ impl Origin {
         }
         Ok(())
     }
-    fn rebuild(&self) -> Result<Figure> {
+    pub(crate) fn rebuild(&self) -> Result<Figure> {
         self.verify_all()?;
         let mut fig = if self.arguments.is_empty() {
             Figure::empty()
@@ -250,6 +315,32 @@ impl Origin {
             plot.id = layer.id;
             fig.plots.push(plot);
             fig.synthetic |= imported.synthetic;
+        }
+        // Every copy refers directly to an original/imported graph, never to another copy.
+        let originals = fig.plots.clone();
+        for copy in &self.duplicates {
+            ensure!(ids.insert(copy.id), "duplicate graph identity collision");
+            let mut plot = originals
+                .iter()
+                .find(|p| p.id == copy.source)
+                .context("duplicate graph refers to an unknown or non-original source")?
+                .clone();
+            plot.id = copy.id;
+            fig.plots.push(plot);
+        }
+        for layer in &self.overrides {
+            let target = fig
+                .plots
+                .iter_mut()
+                .find(|p| p.id == layer.id)
+                .context("override refers to unknown graph")?;
+            let mut replacement = model::from_options(&layer.origin.verify()?)?;
+            ensure!(
+                replacement.plots.len() == 1 && !replacement.plots[0].qc.margin_off,
+                "graph edit must produce one ordinary graph"
+            );
+            *target = replacement.plots.remove(0);
+            target.id = layer.id;
         }
         ensure!(fig.plots.len() <= 64, "project exceeds 64 graphs");
         ensure!(
@@ -275,7 +366,7 @@ impl Origin {
                 path.to_str().context("source path must be UTF-8")?
             );
         }
-        for layer in &mut self.imports {
+        for layer in self.imports.iter_mut().chain(&mut self.overrides) {
             ensure!(
                 layer.origin.imports.is_empty(),
                 "nested imports are unsupported"
@@ -286,9 +377,11 @@ impl Origin {
     }
     pub fn capture(o: &cli::Options) -> Result<Self> {
         let mut origin = Self {
-            arguments: crate::rsa::freeze(o)?,
+            arguments: crate::rdm::freeze(o)?,
             sources: vec![],
             imports: vec![],
+            duplicates: vec![],
+            overrides: vec![],
         };
         // Unit-test/demo callers may construct Options directly.
         if origin.arguments.is_empty() && o.files.is_empty() {
@@ -325,7 +418,7 @@ impl Origin {
         }
         Ok(origin)
     }
-    pub fn verify(&self) -> Result<cli::Options> {
+    fn options(&self) -> Result<cli::Options> {
         if self.arguments.is_empty() {
             ensure!(
                 self.sources.is_empty(),
@@ -344,6 +437,10 @@ impl Origin {
             expected == self.sources.iter().map(|s| s.argument).collect::<Vec<_>>(),
             "project source manifest does not match recipe"
         );
+        Ok(o)
+    }
+    pub fn verify(&self) -> Result<cli::Options> {
+        let o = self.options()?;
         for s in &self.sources {
             let name = split_spec(&self.arguments[s.argument]).0;
             ensure!(
@@ -352,10 +449,127 @@ impl Origin {
             );
             ensure!(
                 fingerprint(Path::new(name))? == s.fingerprint,
-                "source changed: {name}. Restore the original data or start a new figure from the changed source"
+                "source changed: {name}. Restore the original data for exact replay, or use File > Reload / Relink Sources to review the changed inputs"
             );
         }
         Ok(o)
+    }
+    /// Every unique physical source, excluding inline data. Selectors stay in the recipe.
+    pub fn source_paths(&self) -> Vec<String> {
+        let mut paths: Vec<_> = self
+            .sources
+            .iter()
+            .map(|s| split_spec(&self.arguments[s.argument]).0.to_owned())
+            .collect();
+        for layer in self.imports.iter().chain(&self.overrides) {
+            paths.extend(layer.origin.source_paths());
+        }
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+    pub fn source_status(&self, path: &str) -> String {
+        let current = match fingerprint(Path::new(path)) {
+            Ok(v) => v,
+            Err(e) => return format!("Missing/unreadable: {e}"),
+        };
+        let local = self
+            .sources
+            .iter()
+            .any(|s| split_spec(&self.arguments[s.argument]).0 == path && s.fingerprint != current);
+        let nested = self.imports.iter().chain(&self.overrides).any(|l| {
+            l.origin.source_paths().iter().any(|p| p == path)
+                && l.origin.source_status(path) != "Unchanged"
+        });
+        if local || nested {
+            "Changed"
+        } else {
+            "Unchanged"
+        }
+        .into()
+    }
+    /// Explicit preview operation only. Re-fingerprints sources; never called by normal replay.
+    pub fn refreshed(&self, replacements: &BTreeMap<String, String>) -> Result<Self> {
+        self.options()?; // Validate the old manifest even when its files are gone.
+        let mut args = self.arguments.clone();
+        for source in &self.sources {
+            let (name, suffix) = split_spec(&args[source.argument]);
+            if let Some(new) = replacements.get(name) {
+                args[source.argument] = format!("{new}{suffix}");
+            }
+        }
+        let mut next = if args.is_empty() {
+            Self::empty()
+        } else {
+            Self::capture(&cli::parse(&args)?)?
+        };
+        next.duplicates = self.duplicates.clone();
+        for (old, new) in [
+            (&self.imports, &mut next.imports),
+            (&self.overrides, &mut next.overrides),
+        ] {
+            for layer in old {
+                new.push(ImportLayer {
+                    id: layer.id,
+                    origin: Box::new(layer.origin.refreshed(replacements)?),
+                    roles: layer.roles.clone(),
+                });
+            }
+        }
+        Ok(next)
+    }
+    pub fn role_recipes(&self) -> Vec<(cli::Options, Roles)> {
+        self.imports
+            .iter()
+            .chain(&self.overrides)
+            .filter_map(|l| l.origin.options().ok().map(|o| (o, l.roles.clone())))
+            .collect()
+    }
+    pub fn editable(&self, id: usize) -> Result<(cli::Options, Roles)> {
+        if let Some(l) = self.overrides.iter().find(|l| l.id == id) {
+            return Ok((l.origin.verify()?, l.roles.clone()));
+        }
+        let root = self
+            .duplicates
+            .iter()
+            .find(|d| d.id == id)
+            .map_or(id, |d| d.source);
+        let l=self.imports.iter().find(|l|l.id==root).context("Edit attachments is available for graphs added through Open Data/drop. Import this dataset to assign editable column roles.")?;
+        Ok((l.origin.verify()?, l.roles.clone()))
+    }
+    pub fn replace_graph(&mut self, id: usize, origin: Origin, roles: Roles) {
+        self.overrides.retain(|l| l.id != id);
+        if let Some(index) = self.imports.iter().position(|l| l.id == id) {
+            // Existing copies keep the pre-edit recipe, without retaining dead dependencies
+            // for an original that no longer uses them.
+            let old = self.imports[index].clone();
+            for copy in self.duplicates.iter().filter(|d| d.source == id) {
+                let mut layer = old.clone();
+                layer.id = copy.id;
+                self.imports.push(layer);
+            }
+            self.duplicates.retain(|d| d.source != id);
+            self.imports[index] = ImportLayer {
+                id,
+                origin: Box::new(origin),
+                roles,
+            };
+            return;
+        }
+        if self.duplicates.iter().any(|d| d.id == id) {
+            self.duplicates.retain(|d| d.id != id);
+            self.imports.push(ImportLayer {
+                id,
+                origin: Box::new(origin),
+                roles,
+            });
+            return;
+        }
+        self.overrides.push(ImportLayer {
+            id,
+            origin: Box::new(origin),
+            roles,
+        });
     }
 }
 #[derive(Serialize, Deserialize)]
@@ -390,7 +604,9 @@ fn relative(path: &Path, base: &Path) -> PathBuf {
 pub fn save(path: &Path, origin: &Origin, state: &Snapshot, overwrite: bool) -> Result<()> {
     let mut recipe = origin.clone();
     recipe.retain_imports(&state.presentation.panels.iter().map(|p| p.id).collect());
-    recipe.verify_all()?;
+    let mut figure = recipe.rebuild()?;
+    state.presentation.apply(&mut figure)?;
+    state.validate(&figure)?;
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -399,7 +615,7 @@ pub fn save(path: &Path, origin: &Origin, state: &Snapshot, overwrite: bool) -> 
     recipe.rebase(&base, true)?;
     let project = Project {
         format: "1dPetePlot".into(),
-        version: 2,
+        version: 4,
         origin: recipe,
         state: state.clone(),
     };
@@ -414,7 +630,7 @@ pub fn save(path: &Path, origin: &Origin, state: &Snapshot, overwrite: bool) -> 
     }
     Ok(())
 }
-pub fn load(path: &Path) -> Result<Loaded> {
+pub fn read_project(path: &Path) -> Result<(Origin, Snapshot)> {
     let file =
         std::fs::File::open(path).with_context(|| format!("opening project {}", path.display()))?;
     ensure!(
@@ -423,26 +639,32 @@ pub fn load(path: &Path) -> Result<Loaded> {
     );
     let mut p: Project = serde_json::from_reader(file).context("reading project JSON")?;
     ensure!(
-        p.format == "1dPetePlot" && (1..=2).contains(&p.version),
-        "unsupported project format/version (expected 1dPetePlot version 1 or 2)"
+        p.format == "1dPetePlot" && (1..=4).contains(&p.version),
+        "unsupported project format/version (expected 1dPetePlot version 1, 2, 3, or 4)"
     );
     let base = std::fs::canonicalize(path)?.parent().unwrap().to_path_buf();
     p.origin.rebase(&base, false)?;
-    let mut figure = p.origin.rebuild().context("rebuilding project data")?;
-    p.state.presentation.apply(&mut figure)?;
-    p.state.validate(&figure)?;
+    Ok((p.origin, p.state))
+}
+pub fn load(path: &Path) -> Result<Loaded> {
+    let (origin, state) = read_project(path)?;
+    let mut figure = origin.rebuild().context("rebuilding project data")?;
+    state.presentation.apply(&mut figure)?;
+    state.validate(&figure)?;
     Ok(Loaded {
         figure,
-        origin: p.origin,
-        state: p.state,
+        origin,
+        state,
     })
 }
 
 #[cfg_attr(not(feature = "gui"), allow(dead_code))]
 #[derive(Default)]
 pub struct History {
-    undo: Vec<Presentation>,
-    redo: Vec<Presentation>,
+    undo: Vec<(Presentation, u64)>,
+    redo: Vec<(Presentation, u64)>,
+    revision: u64,
+    serial: u64,
 }
 #[cfg_attr(not(feature = "gui"), allow(dead_code))]
 impl History {
@@ -450,7 +672,7 @@ impl History {
         if &before == after {
             return;
         }
-        self.undo.push(before);
+        self.undo.push((before, self.revision));
         self.redo.clear();
         if self.undo.len() > 100 {
             self.undo.remove(0);
@@ -458,20 +680,46 @@ impl History {
     }
     pub fn undo(&mut self, current: Presentation) -> Option<Presentation> {
         let previous = self.undo.pop()?;
-        self.redo.push(current);
-        Some(previous)
+        self.redo.push((current, self.revision));
+        self.revision = previous.1;
+        Some(previous.0)
     }
     pub fn redo(&mut self, current: Presentation) -> Option<Presentation> {
         let next = self.redo.pop()?;
-        self.undo.push(current);
-        Some(next)
+        self.undo.push((current, self.revision));
+        self.revision = next.1;
+        Some(next.0)
     }
     pub fn panel_ids(&self) -> std::collections::BTreeSet<usize> {
         self.undo
             .iter()
             .chain(&self.redo)
-            .flat_map(|p| p.panels.iter().map(|p| p.id))
+            .flat_map(|(p, _)| p.panels.iter().map(|p| p.id))
             .collect()
+    }
+    pub fn retain_revisions(&mut self, keep: &std::collections::BTreeSet<u64>) {
+        self.undo.retain(|(_, r)| keep.contains(r));
+        self.redo.retain(|(_, r)| keep.contains(r));
+    }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub fn revisions(&self) -> std::collections::BTreeSet<u64> {
+        self.undo
+            .iter()
+            .chain(&self.redo)
+            .map(|(_, r)| *r)
+            .chain([self.revision])
+            .collect()
+    }
+    pub fn record_data(&mut self, before: Presentation) {
+        self.undo.push((before, self.revision));
+        self.redo.clear();
+        if self.undo.len() > 100 {
+            self.undo.remove(0);
+        }
+        self.serial += 1;
+        self.revision = self.serial;
     }
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
@@ -647,5 +895,88 @@ mod tests {
         branch.title = "New branch".into();
         history.record(before, &branch);
         assert!(!history.can_redo());
+    }
+    #[test]
+    fn old_projects_keep_pixels_and_invalid_style_or_copy_recipes_never_replace_a_file() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("figure.json");
+        let (mut origin, mut fig, mut state) = example(&["-demo".into()]);
+        save(&path, &origin, &state, false).unwrap();
+        let plain: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let renderer = crate::render::Renderer::new();
+        let render = |f: &Figure, state: &Snapshot| {
+            renderer
+                .raster(
+                    &renderer
+                        .scene(f, &state.views, state.width, state.height)
+                        .unwrap(),
+                )
+                .unwrap()
+                .data()
+                .to_vec()
+        };
+        let original_pixels = render(&fig, &state);
+        for version in [1, 2] {
+            let mut old = plain.clone();
+            old["version"] = version.into();
+            for panel in old["state"]["presentation"]["panels"]
+                .as_array_mut()
+                .unwrap()
+            {
+                panel.as_object_mut().unwrap().remove("style");
+            }
+            std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+            let loaded = load(&path).unwrap();
+            assert_eq!(render(&loaded.figure, &loaded.state), original_pixels);
+        }
+        origin.duplicate(10, fig.plots[0].id);
+        let mut copy = fig.plots[0].clone();
+        copy.id = 10;
+        copy.style.line_width = Some(5.);
+        copy.style.series = vec![crate::style::SeriesStyle {
+            color: Some("#bc477b".into()),
+            label: Some("New legend".into()),
+            ..Default::default()
+        }];
+        fig.plots.push(copy);
+        state.presentation = Presentation::capture(&fig);
+        state.views.push(fig.plots.last().unwrap().bounds);
+        state.height = 1500;
+        save(&path, &origin, &state, true).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(render(&loaded.figure, &loaded.state), render(&fig, &state));
+        let good: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        for (field, value) in [
+            ("/origin/duplicates/0/source", serde_json::json!(10)), // self/copy reference
+            ("/origin/duplicates/0/source", serde_json::json!(999)),
+            ("/origin/duplicates/0/id", serde_json::json!(0)),
+            (
+                "/state/presentation/panels/4/style/line_width",
+                serde_json::json!(0),
+            ),
+            (
+                "/state/presentation/panels/4/style/series/0/color",
+                serde_json::json!("red\"/><script>"),
+            ),
+            (
+                "/state/presentation/panels/4/style/series/0/label",
+                serde_json::json!("X".repeat(1025)),
+            ),
+        ] {
+            let mut bad = good.clone();
+            *bad.pointer_mut(field).unwrap() = value;
+            std::fs::write(&path, serde_json::to_vec(&bad).unwrap()).unwrap();
+            assert!(load(&path).is_err(), "{field}");
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        state.presentation.panels[4].style.marker_radius = Some(f64::NAN);
+        assert!(save(&path, &origin, &state, true).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        state.presentation.panels[4].style.marker_radius = None;
+        origin.duplicates[0].source = 10;
+        assert!(save(&path, &origin, &state, true).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 }

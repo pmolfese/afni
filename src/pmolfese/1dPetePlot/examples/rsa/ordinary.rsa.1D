@@ -2,6 +2,7 @@
 # metric   : correlation neural, Spearman comparison
 # models   : tested separately
 # nperm    : 1000 seed: 42
+# bootstrap: 1000   percentile CI: 95%
 #ROI label nvox semantic_r semantic_p semantic_q semantic_pfwe semantic_bootLo semantic_bootHi visual_r visual_p visual_q visual_pfwe visual_bootLo visual_bootHi fit_cvR fit_cvP fit_cvQ fit_w_semantic fit_w_visual nc_low nc_high
 12 Occipital 210 0.18 0.24 0.31 0.61 -0.04 0.34 0.73 0.001 0.01 0.03 0.58 0.82 0.70 0.01 0.04 0.2 0.8 0.62 0.85
 3 Left temporal 185 0.68 0.002 0.02 0.04 0.51 0.79 0.21 0.18 0.24 0.48 -0.02 0.37 0.65 0.02 0.06 0.8 0.2 0.58 0.80

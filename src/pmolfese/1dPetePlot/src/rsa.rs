@@ -1,9 +1,9 @@
-//! Versioned, deterministic presets for ordinary ROI-wide 3dRSA results.
+//! Versioned, deterministic presets for 3dRSA results; long schemas dispatch to rsa_long.
 //! No inference, significance filtering, RDM reconstruction, or cross-file row-position joins.
 use crate::{
     cli::Options,
     input::Missing,
-    model::{self, Bounds, Content, Figure, Plot, Series},
+    model::{self, Bounds, Content, Figure, IntervalRow, Plot, Series},
 };
 use anyhow::{Context, Result, bail, ensure};
 use std::{
@@ -20,6 +20,11 @@ pub struct Request {
     pub effect: String,
     pub pair: Option<Vec<String>>,
     pub version: u32,
+    pub ci: String,
+    pub times: Option<Vec<String>>,
+    pub summaries: Option<Vec<String>>,
+    pub family: String,
+    pub measures: Option<Vec<String>>,
 }
 impl Default for Request {
     fn default() -> Self {
@@ -31,6 +36,11 @@ impl Default for Request {
             effect: "auto".into(),
             pair: None,
             version: 1,
+            ci: "auto".into(),
+            times: None,
+            summaries: None,
+            family: "effects".into(),
+            measures: None,
         }
     }
 }
@@ -53,9 +63,11 @@ pub struct Roi {
 }
 #[derive(Clone, Debug)]
 pub struct Table {
+    pub long: Option<Box<crate::rsa_long::LongTable>>,
     pub columns: Vec<String>,
     pub models: Vec<String>,
     pub effects: BTreeMap<(String, String), usize>,
+    /// ROI identities; long-table observations live in `long.rows`.
     pub rows: BTreeMap<i32, Roi>,
     pub metadata: Vec<String>,
 }
@@ -106,7 +118,11 @@ pub fn read(path: &Path) -> Result<Table> {
         text.len() <= 16 * 1024 * 1024,
         "RSA input grew beyond 16 MiB"
     );
+    if crate::rsa_long::detect(&text) {
+        return crate::rsa_long::read(&text);
+    }
     let mut table = Table {
+        long: None,
         columns: vec![],
         models: vec![],
         effects: BTreeMap::new(),
@@ -130,11 +146,11 @@ pub fn read(path: &Path) -> Result<Table> {
                     !fields
                         .iter()
                         .any(|s| ["summary", "time_index", "time_label", "model"].contains(s)),
-                    "long series/run-resolved RSA tables are not supported yet; use ordinary ROI-wide results"
+                    "unsupported mixed RSA identity schema; expected a complete wide or long header"
                 );
                 ensure!(
-                    fields.len() <= 512 && fields.iter().all(|s| s.len() <= 128),
-                    "RSA header exceeds 512 columns / 128 bytes per name"
+                    fields.len() <= 512 && fields.iter().all(|s| s.len() <= 256),
+                    "RSA header exceeds 512 columns / 256 bytes per name"
                 );
                 ensure!(
                     fields.iter().collect::<BTreeSet<_>>().len() == fields.len(),
@@ -221,6 +237,9 @@ pub fn read(path: &Path) -> Result<Table> {
         .filter_map(|c| c.strip_suffix("_cvR").map(|fit| format!("{fit}_w_")))
         .collect();
     for (i, name) in table.columns.iter().enumerate().skip(3) {
+        if crate::rsa_extra::component(&table, name) {
+            continue;
+        }
         if weight_prefixes
             .iter()
             .any(|prefix| name.starts_with(prefix))
@@ -242,8 +261,8 @@ pub fn read(path: &Path) -> Result<Table> {
             table.effects.insert((model.into(), kind.into()), i);
         } else {
             ensure!(
-                auxiliary(name),
-                "unsupported RSA column '{name}'; this preset supports ordinary model r/b/pr effects (not commonality or unknown schemas)"
+                auxiliary(name) || crate::rsa_extra::component(&table, name),
+                "unsupported RSA column '{name}'; unknown scientific schema"
             );
         }
     }
@@ -294,6 +313,7 @@ pub fn read(path: &Path) -> Result<Table> {
             }
         }
     }
+    crate::rsa_extra::validate(&table)?;
     Ok(table)
 }
 #[derive(Clone, Debug)]
@@ -304,9 +324,80 @@ struct Selection {
     effect: String,
     pair: Vec<String>,
     heat_omitted: bool,
+    ci: Option<String>,
+}
+fn interval_columns(table: &Table, model: &str, method: &str) -> Option<[usize; 2]> {
+    Some([
+        table
+            .columns
+            .iter()
+            .position(|c| c == &format!("{model}_{method}Lo"))?,
+        table
+            .columns
+            .iter()
+            .position(|c| c == &format!("{model}_{method}Hi"))?,
+    ])
+}
+pub(crate) fn interval_label(table: &Table, method: &str) -> Result<String> {
+    let (prefix, label) = match method {
+        "boot" => ("bootstrap:", "Subject bootstrap"),
+        "cboot" => ("cond_bootstrap:", "Condition bootstrap"),
+        "dual" => ("dual_bootstrap:", "Dual bootstrap"),
+        _ => unreachable!(),
+    };
+    let mut level = None;
+    let mut construction = None;
+    for meta in table.metadata.iter().filter(|m| m.starts_with(prefix)) {
+        if let Some((_, tail)) = meta.split_once("CI:") {
+            let recorded = if meta.contains("corrected variance t CI:") {
+                Some("corrected-variance t")
+            } else if meta.contains("percentile CI:") {
+                Some("percentile")
+            } else {
+                None
+            };
+            if let Some(recorded) = recorded {
+                ensure!(
+                    construction.is_none_or(|old| old == recorded),
+                    "conflicting RSA CI construction metadata"
+                );
+                construction = Some(recorded);
+            }
+            let token = tail
+                .trim()
+                .split_once('%')
+                .context("invalid RSA confidence-level metadata")?
+                .0
+                .trim();
+            let value: f64 = token
+                .parse()
+                .context("invalid RSA confidence-level metadata")?;
+            ensure!(
+                value.is_finite() && value > 0. && value < 100.,
+                "confidence level must be between 0 and 100 percent"
+            );
+            ensure!(
+                level.is_none_or(|old| old == value),
+                "conflicting RSA confidence-level metadata"
+            );
+            level = Some(value);
+        }
+    }
+    let mut label = match level {
+        Some(level) => format!("{label} · {level}% CI"),
+        None => format!("{label} · CI level not recorded"),
+    };
+    if let Some(construction) = construction {
+        label.push_str(&format!(" ({construction})"));
+    }
+    Ok(label)
 }
 fn resolve(table: &Table, request: &Request) -> Result<Selection> {
     ensure!(request.version == 1, "unsupported RSA preset version");
+    ensure!(
+        request.times.is_none() && request.summaries.is_none(),
+        "-rsa-times/-rsa-summaries require a long RSA table"
+    );
     let models = request
         .models
         .clone()
@@ -367,9 +458,57 @@ fn resolve(table: &Table, request: &Request) -> Result<Selection> {
         !plots.is_empty()
             && plots
                 .iter()
-                .all(|s| ["histogram", "scatter", "heatmap"].contains(&s.as_str())),
-        "RSA plots must be histogram,scatter,heatmap"
+                .all(|s| ["histogram", "scatter", "heatmap", "intervals"].contains(&s.as_str())),
+        "RSA plots must be histogram,scatter,heatmap,intervals"
     );
+    ensure!(
+        ["auto", "boot", "cboot", "dual"].contains(&request.ci.as_str()),
+        "-rsa-ci must be auto, boot, cboot, or dual"
+    );
+    let ci = if plots.iter().any(|s| s == "intervals") {
+        ensure!(
+            rois.len() <= 40,
+            "interval plots support up to 40 ROIs; select -rsa-rois IDs"
+        );
+        ensure!(
+            effect != "pr",
+            "3dRSA regression CI bounds belong to beta (b), not partial r; use -rsa-effect b"
+        );
+        let available: Vec<_> = ["boot", "cboot", "dual"]
+            .into_iter()
+            .filter(|method| {
+                models
+                    .iter()
+                    .all(|m| interval_columns(table, m, method).is_some())
+            })
+            .collect();
+        let method = if request.ci == "auto" {
+            ensure!(
+                !available.is_empty(),
+                "no common supplied CI bounds for selected models; select models with matching interval columns"
+            );
+            ensure!(
+                available.len() == 1,
+                "multiple CI methods available ({}); choose -rsa-ci boot|cboot|dual",
+                available.join(", ")
+            );
+            available[0]
+        } else {
+            ensure!(
+                available.contains(&request.ci.as_str()),
+                "selected CI method {} has no bounds for every selected model",
+                request.ci
+            );
+            &request.ci
+        };
+        Some(method.to_owned())
+    } else {
+        ensure!(
+            request.ci == "auto",
+            "-rsa-ci requires intervals in -rsa-plots"
+        );
+        None
+    };
     ensure!(
         !plots.iter().any(|s| s == "heatmap") || rois.len() <= 40,
         "effect heatmaps support up to 40 ROIs; select -rsa-rois IDs or -rsa-plots histogram,scatter"
@@ -396,6 +535,7 @@ fn resolve(table: &Table, request: &Request) -> Result<Selection> {
         effect,
         pair,
         heat_omitted,
+        ci,
     })
 }
 /// Persist resolved names, ROI IDs, modes and version rather than rerunning future defaults.
@@ -404,7 +544,20 @@ pub fn freeze(o: &Options) -> Result<Vec<String>> {
         return Ok(o.arguments.clone());
     };
     let table = read(Path::new(file))?;
-    let selected = resolve(&table, &o.rsa)?;
+    if o.rsa.family != "effects" {
+        return crate::rsa_extra::freeze(o, &table);
+    }
+    ensure!(
+        o.rsa.measures.is_none(),
+        "-rsa-measures requires a fit/commonality family"
+    );
+    if let Some(long) = &table.long {
+        return crate::rsa_long::freeze(o, &table, long);
+    }
+    freeze_table(o, &table)
+}
+pub(crate) fn freeze_table(o: &Options, table: &Table) -> Result<Vec<String>> {
+    let selected = resolve(table, &o.rsa)?;
     let mut args = o.arguments.clone();
     for (flag, value) in [
         ("-rsa-version", "1".into()),
@@ -427,15 +580,29 @@ pub fn freeze(o: &Options) -> Result<Vec<String>> {
     }
     // Explicit auto must also freeze to the resolved effect.
     if let Some(i) = args.iter().position(|a| a == "-rsa-effect") {
-        args[i + 1] = resolve(&table, &o.rsa)?.effect;
+        args[i + 1] = resolve(table, &o.rsa)?.effect;
     }
     if selected.plots.iter().any(|s| s == "scatter") && o.rsa.pair.is_none() {
         args.extend(["-rsa-pair".into(), selected.pair.join(",")]);
     }
+    if let Some(method) = selected.ci {
+        if let Some(i) = args.iter().position(|a| a == "-rsa-ci") {
+            args[i + 1] = method;
+        } else {
+            args.extend(["-rsa-ci".into(), method]);
+        }
+    }
     Ok(args)
 }
-fn plot(content: Content, title: String, xlabel: String, ylabel: String, bounds: Bounds) -> Plot {
+pub(crate) fn plot(
+    content: Content,
+    title: String,
+    xlabel: String,
+    ylabel: String,
+    bounds: Bounds,
+) -> Plot {
     Plot {
+        style: Default::default(),
         id: 0,
         caption: String::new(),
         title,
@@ -453,17 +620,31 @@ fn plot(content: Content, title: String, xlabel: String, ylabel: String, bounds:
 pub fn figure(o: &Options) -> Result<Figure> {
     let path = Path::new(o.rsa.file.as_ref().context("missing -rsa FILE")?);
     let table = read(path)?;
-    let s = resolve(&table, &o.rsa)?;
+    if o.rsa.family != "effects" {
+        return crate::rsa_extra::figure(o, &table);
+    }
+    ensure!(
+        o.rsa.measures.is_none(),
+        "-rsa-measures requires a fit/commonality family"
+    );
+    if let Some(long) = &table.long {
+        return crate::rsa_long::figure(o, &table, long);
+    }
+    figure_table(o, &table, None)
+}
+pub(crate) fn figure_table(o: &Options, table: &Table, label: Option<&str>) -> Result<Figure> {
+    let path = Path::new(o.rsa.file.as_ref().context("missing RSA file")?);
+    let s = resolve(table, &o.rsa)?;
     ensure!(
         s.plots.iter().any(|p| p == "histogram")
             || (o.bins.is_none() && o.binwidth.is_none() && !o.density),
         "histogram settings require histogram in -rsa-plots"
     );
-    let kind = match s.effect.as_str() {
+    let kind = label.unwrap_or(match s.effect.as_str() {
         "b" => "beta (b)",
         "pr" => "partial r",
         _ => "RSA comparison (r)",
-    };
+    });
     let column = |m: &str| table.effects[&(m.into(), s.effect.clone())];
     let selected: Vec<_> = s.rois.iter().map(|id| &table.rows[id]).collect();
     if o.missing == Missing::Error {
@@ -493,6 +674,68 @@ pub fn figure(o: &Options) -> Result<Figure> {
     let mut plots = vec![];
     for mode in &s.plots {
         match mode.as_str() {
+            "intervals" => {
+                let method = s.ci.as_deref().unwrap();
+                let method_label = interval_label(table, method)?;
+                let mut interval_plots = vec![];
+                let (mut lo, mut hi) = (0_f64, 0_f64);
+                for (i, m) in s.models.iter().enumerate() {
+                    let [lower, upper] = interval_columns(table, m, method).unwrap();
+                    let mut rows = vec![];
+                    for r in &selected {
+                        let values = [r.values[column(m)], r.values[lower], r.values[upper]];
+                        let complete = values.iter().all(|v| v.is_finite());
+                        ensure!(
+                            complete || o.missing == Missing::Gap,
+                            "ROI {}: {m} effect/CI is incomplete; use -missing gap to retain its row marked missing",
+                            r.id
+                        );
+                        if complete {
+                            for v in values {
+                                lo = lo.min(v);
+                                hi = hi.max(v);
+                            }
+                        }
+                        rows.push(IntervalRow {
+                            label: format!("{}: {}", r.id, r.label),
+                            detail: format!("ROI {} · {} · nvox {}", r.id, r.label, r.nvox),
+                            values: complete.then_some(values),
+                        });
+                    }
+                    let count = rows.iter().filter(|r| r.values.is_some()).count();
+                    ensure!(
+                        count > 0,
+                        "model {m} has no complete effect/CI triplets in the selected ROIs"
+                    );
+                    let mut p = plot(
+                        Content::Intervals {
+                            rows,
+                            color: color(i)?,
+                            method: method_label.clone(),
+                        },
+                        format!("{m} · {kind}"),
+                        kind.into(),
+                        "ROI".into(),
+                        Bounds {
+                            x: [0., 1.],
+                            y: [0., selected.len() as f64],
+                        },
+                    );
+                    p.note = method_label.clone();
+                    p.caption = format!(
+                        "{count}/{} complete ROIs · supplied endpoints; no significance filter.",
+                        selected.len()
+                    );
+                    p.refs.push((0., None));
+                    interval_plots.push(p);
+                }
+                // Common effect scale across the models, including every endpoint and zero.
+                let range = model::padded(lo, hi);
+                for p in &mut interval_plots {
+                    p.bounds.x = range;
+                }
+                plots.extend(interval_plots);
+            }
             "histogram" => {
                 for (i, m) in s.models.iter().enumerate() {
                     let values: Vec<_> = selected
@@ -615,6 +858,7 @@ pub fn figure(o: &Options) -> Result<Figure> {
                             .map(|r| format!("{}: {}", r.id, r.label))
                             .collect(),
                         square_cells: false,
+                        named_conditions: false,
                         cmap: "Reds_and_Blues_Inv".into(),
                         clim: [-limit, limit],
                     },
@@ -657,7 +901,11 @@ pub fn figure(o: &Options) -> Result<Figure> {
         },
         o,
     )?;
-    let mut provenance = "Supplied effects only; p/q/FWE, intervals, fits, contrasts and reliability are not plotted or recomputed.".to_string();
+    let mut provenance = if s.ci.is_some() {
+        "Supplied effects and CI endpoints; no recalculation or scale conversion. Missing triplets retain a labeled row without a point or interval. p/q/FWE, fits, contrasts and reliability are not plotted."
+    } else {
+        "Supplied effects only; p/q/FWE, intervals, fits, contrasts and reliability are not plotted or recomputed."
+    }.to_string();
     if s.heat_omitted {
         provenance.push_str(" Heatmap omitted above 40 ROIs; select -rsa-rois to include it.");
     }
@@ -673,12 +921,13 @@ pub fn figure(o: &Options) -> Result<Figure> {
     Ok(figure)
 }
 
-/// Leave enough vertical room for every ROI label in an effect heatmap.
+/// Leave enough vertical room for every ROI label in an effect heatmap or interval plot.
 pub fn minimum_height(fig: &Figure, width: u32) -> u32 {
     let panel = fig
         .plots
         .iter()
         .filter_map(|p| match &p.content {
+            Content::Intervals { rows, .. } => Some(rows.len() as f64 * 17. + 290.),
             Content::Heat {
                 matrix,
                 square_cells: false,
@@ -705,6 +954,226 @@ mod tests {
         let mut args = vec!["-rsa".to_owned(), file.to_owned()];
         args.extend(extra.iter().map(|s| s.to_string()));
         crate::cli::parse(&args).unwrap()
+    }
+    #[test]
+    fn intervals_preserve_asymmetric_endpoints_roi_order_and_effect_scale() {
+        let f = figure(&options(
+            &fixture("ordinary"),
+            &["-rsa-plots", "intervals", "-rsa-rois", "12,3"],
+        ))
+        .unwrap();
+        assert_eq!(f.plots.len(), 2);
+        let Content::Intervals { rows, method, .. } = &f.plots[0].content else {
+            panic!()
+        };
+        assert_eq!(rows[0].label, "12: Occipital");
+        assert_eq!(rows[0].values, Some([0.18, -0.04, 0.34]));
+        assert_eq!(rows[1].values, Some([0.68, 0.51, 0.79]));
+        assert_eq!(method, "Subject bootstrap · 95% CI (percentile)");
+        assert_eq!(f.plots[0].bounds.x, f.plots[1].bounds.x);
+        assert!(f.plots[0].bounds.x[0] < -0.04 && f.plots[0].bounds.x[1] > 0.82);
+        let hover = f.plots[0].hover(0.18, 1.5);
+        assert!(
+            hover.contains("ROI 12")
+                && hover.contains("[-0.04000, 0.34000]")
+                && hover.contains("95% CI")
+        );
+        assert!(f.plots[0].hover(0., 2.).is_empty());
+        let file = fixture("regression");
+        let f = figure(&options(
+            &file,
+            &["-rsa-plots", "intervals", "-rsa-rois", "9,2"],
+        ))
+        .unwrap();
+        let Content::Intervals { rows, method, .. } = &f.plots[0].content else {
+            panic!()
+        };
+        assert_eq!(rows[0].values, Some([1.4, 0.8, 1.8])); // No tanh or clipping to correlation range.
+        assert_eq!(method, "Dual bootstrap · 90% CI (corrected-variance t)");
+        assert!(f.plots[0].xlabel.contains("beta"));
+        assert!(
+            figure(&options(
+                &file,
+                &["-rsa-plots", "intervals", "-rsa-effect", "pr"]
+            ))
+            .unwrap_err()
+            .to_string()
+            .contains("not partial r")
+        );
+    }
+    #[test]
+    fn interval_method_is_explicit_when_ambiguous_and_level_is_never_assumed() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("methods.1D");
+        let data = "#ROI label nvox M_r M_p M_q M_bootLo M_bootHi M_cbootLo M_cbootHi\n1 A 20 .4 1 1 .1 .5 -.2 .8\n";
+        std::fs::write(&path, format!("# bootstrap: 1000 percentile CI: 95%\n# cond_bootstrap: 1000 groups: 6 usable: 999 percentile CI: 80%\n{data}")).unwrap();
+        let file = path.to_str().unwrap();
+        assert!(
+            figure(&options(file, &["-rsa-plots", "intervals"]))
+                .unwrap_err()
+                .to_string()
+                .contains("multiple CI methods")
+        );
+        for (method, bounds, level) in [
+            ("boot", [0.4, 0.1, 0.5], "95%"),
+            ("cboot", [0.4, -0.2, 0.8], "80%"),
+        ] {
+            let f = figure(&options(
+                file,
+                &["-rsa-plots", "intervals", "-rsa-ci", method],
+            ))
+            .unwrap();
+            let Content::Intervals { rows, method, .. } = &f.plots[0].content else {
+                panic!()
+            };
+            assert_eq!(rows[0].values, Some(bounds));
+            assert!(method.contains(level));
+        }
+        for extra in [
+            vec!["-rsa-plots", "intervals", "-rsa-ci", "dual"],
+            vec!["-rsa-ci", "boot"],
+            vec!["-rsa-plots", "intervals", "-rsa-ci", "unknown"],
+        ] {
+            assert!(figure(&options(file, &extra)).is_err());
+        }
+        std::fs::write(
+            &path,
+            format!("# loo bootstrap: 1000 percentile CI: 99%\n{data}"),
+        )
+        .unwrap();
+        let f = figure(&options(
+            file,
+            &["-rsa-plots", "intervals", "-rsa-ci", "boot"],
+        ))
+        .unwrap();
+        assert!(f.plots[0].note.contains("level not recorded"));
+        for metadata in [
+            "# bootstrap: 10 percentile CI: 100%",
+            "# bootstrap: 10 percentile CI: NaN%",
+            "# bootstrap: 10 percentile CI: bad",
+            "# bootstrap: 10 percentile CI: 95%\n# bootstrap: 10 percentile CI: 90%",
+        ] {
+            std::fs::write(&path, format!("{metadata}\n{data}")).unwrap();
+            assert!(
+                figure(&options(
+                    file,
+                    &["-rsa-plots", "intervals", "-rsa-ci", "boot"]
+                ))
+                .is_err()
+            );
+        }
+    }
+    #[test]
+    fn missing_ci_triplets_retain_identity_without_fabricating_points() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("missing.1D");
+        let data = "#ROI label nvox M_r M_p M_q M_bootLo M_bootHi\n1 good 20 .4 1 1 .1 .5\n2 no_lo 20 .3 1 1 NA .7\n3 no_effect 20 NA 1 1 -.2 .8\n4 no_hi 20 .1 1 1 -.1 NA\n";
+        std::fs::write(&path, data).unwrap();
+        let file = path.to_str().unwrap();
+        assert!(
+            figure(&options(
+                file,
+                &["-rsa-plots", "intervals", "-rsa-rois", "1,2"]
+            ))
+            .unwrap_err()
+            .to_string()
+            .contains("incomplete")
+        );
+        let f = figure(&options(
+            file,
+            &["-rsa-plots", "intervals", "-missing", "gap"],
+        ))
+        .unwrap();
+        let Content::Intervals { rows, .. } = &f.plots[0].content else {
+            panic!()
+        };
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].values, Some([0.4, 0.1, 0.5]));
+        assert!(rows[1..].iter().all(|r| r.values.is_none()));
+        assert!(f.plots[0].hover(0., 2.5).contains("ROI 2 · no_lo"));
+        assert!(
+            figure(&options(
+                file,
+                &[
+                    "-rsa-plots",
+                    "intervals",
+                    "-missing",
+                    "gap",
+                    "-rsa-rois",
+                    "2,3,4"
+                ]
+            ))
+            .unwrap_err()
+            .to_string()
+            .contains("no complete")
+        );
+    }
+    #[test]
+    fn forty_interval_rows_render_at_automatic_height_and_larger_selections_fail() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("many.1D");
+        let mut text = "#ROI label nvox M_r M_p M_q M_bootLo M_bootHi\n".to_owned();
+        for id in 1..=41 {
+            text.push_str(&format!("{id} ROI_{id} 10 .4 1 1 .1 .5\n"));
+        }
+        std::fs::write(&path, text).unwrap();
+        let file = path.to_str().unwrap();
+        assert!(
+            figure(&options(file, &["-rsa-plots", "intervals"]))
+                .unwrap_err()
+                .to_string()
+                .contains("40 ROIs")
+        );
+        let ids = (1..=40)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let f = figure(&options(
+            file,
+            &["-rsa-plots", "intervals", "-rsa-rois", &ids],
+        ))
+        .unwrap();
+        let renderer = crate::render::Renderer::new();
+        let h = minimum_height(&f, 1200);
+        let scene = renderer.scene(&f, &[f.plots[0].bounds], 1200, h).unwrap();
+        assert!(scene.areas[0].h / 40. >= 13.);
+        assert!(renderer.scene(&f, &[f.plots[0].bounds], 1200, 500).is_err());
+    }
+    #[test]
+    fn interval_recipe_freezes_auto_method_and_replays_current_view_pixels() {
+        let file = fixture("ordinary");
+        let o = options(&file, &["-rsa-plots", "intervals", "-rsa-ci", "auto"]);
+        let f = figure(&o).unwrap();
+        let origin = crate::document::Origin::capture(&o).unwrap();
+        let mut views: Vec<_> = f.plots.iter().map(|p| p.bounds).collect();
+        views[0] = Bounds {
+            x: [0.1, 0.6],
+            y: [1., 6.],
+        };
+        let state = crate::document::Snapshot {
+            presentation: crate::document::Presentation::capture(&f),
+            views,
+            width: 1500,
+            height: 1000,
+            full_plot: false,
+        };
+        let d = tempfile::tempdir().unwrap();
+        let recipe = d.path().join("intervals.json");
+        crate::document::save(&recipe, &origin, &state, false).unwrap();
+        let json = std::fs::read_to_string(&recipe).unwrap();
+        assert!(
+            json.contains("-rsa-ci") && json.contains("\"boot\"") && !json.contains("\"auto\"")
+        );
+        let loaded = crate::document::load(&recipe).unwrap();
+        let r = crate::render::Renderer::new();
+        let pixels = |fig: &Figure| {
+            r.raster(
+                &r.scene(fig, &state.views, state.width, state.height)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(pixels(&f).data(), pixels(&loaded.figure).data());
     }
     #[test]
     fn ordinary_roles_pair_by_roi_and_rectangular_heatmap_matches_source() {

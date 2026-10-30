@@ -41,9 +41,21 @@ pub struct Series {
     pub point_labels: Vec<String>,
 }
 #[derive(Clone, Debug)]
+pub struct IntervalRow {
+    pub label: String,
+    pub detail: String,
+    /// Estimate, lower endpoint, upper endpoint. None means an incomplete triplet.
+    pub values: Option<[f64; 3]>,
+}
+#[derive(Clone, Debug)]
 pub enum Content {
     Lines(Vec<Series>),
     Scatter(Vec<Series>),
+    Intervals {
+        rows: Vec<IntervalRow>,
+        color: String,
+        method: String,
+    },
     #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     Histogram {
         series: Vec<Series>,
@@ -55,12 +67,14 @@ pub enum Content {
         labels: Vec<String>,
         row_labels: Vec<String>,
         square_cells: bool,
+        named_conditions: bool,
         cmap: String,
         clim: [f64; 2],
     },
 }
 #[derive(Clone, Debug)]
 pub struct Plot {
+    pub style: crate::style::PlotStyle,
     pub id: usize,
     pub caption: String,
     pub title: String,
@@ -99,14 +113,29 @@ impl Plot {
     pub fn kind(&self) -> &str {
         match self.content {
             Content::Lines(_) => "TIME SERIES",
+            Content::Scatter(_) if self.qc.xticks.is_some() => "RUN SUMMARIES",
             Content::Scatter(_) => "SCATTER",
             Content::Histogram { .. } => "DISTRIBUTION",
             Content::Heat { .. } => "HEATMAP",
+            Content::Intervals { .. } => "CONFIDENCE INTERVALS",
         }
     }
     #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     pub fn hover(&self, x: f64, y: f64) -> String {
         match &self.content {
+            Content::Intervals { rows, method, .. } => {
+                if y < 0. || y >= rows.len() as f64 {
+                    return String::new();
+                }
+                let row = &rows[rows.len() - 1 - y.floor() as usize];
+                match row.values {
+                    Some([estimate, lo, hi]) => format!(
+                        "{} · {} · estimate {estimate:.5} · CI [{lo:.5}, {hi:.5}] · {method}",
+                        row.detail, self.xlabel
+                    ),
+                    None => format!("{} · incomplete effect/CI · {method}", row.detail),
+                }
+            }
             Content::Heat {
                 matrix,
                 labels,
@@ -130,11 +159,11 @@ impl Plot {
                 density,
             } => {
                 let mut out = vec![];
-                for (s, e) in series.iter().zip(edges) {
+                for (si, (s, e)) in series.iter().zip(edges).enumerate() {
                     if let Some(i) = e.windows(2).position(|v| x >= v[0] && x <= v[1]) {
                         out.push(format!(
                             "{}: [{:.3}, {:.3}] {} = {:.4}",
-                            s.label,
+                            self.style.label(si, &s.label),
                             e[i],
                             e[i + 1],
                             if *density { "density" } else { "count" },
@@ -149,22 +178,23 @@ impl Plot {
                 let dy = self.bounds.y[1] - self.bounds.y[0];
                 let best = ss
                     .iter()
-                    .flat_map(|s| {
+                    .enumerate()
+                    .flat_map(|(si, s)| {
                         s.points
                             .iter()
                             .enumerate()
                             .filter(|(_, p)| p[1].is_finite())
-                            .map(move |(i, p)| (s, i, p))
+                            .map(move |(i, p)| (s, i, p, si))
                     })
                     .min_by(|a, b| {
                         let d =
                             |p: &[f64; 2]| ((p[0] - x) / dx).powi(2) + ((p[1] - y) / dy).powi(2);
                         d(a.2).total_cmp(&d(b.2))
                     });
-                best.map(|(s, i, p)| {
+                best.map(|(s, i, p, si)| {
                     format!(
                         "{} · {}   x = {:.4}   y = {:.4}",
-                        s.label,
+                        self.style.label(si, &s.label),
                         s.point_labels
                             .get(i)
                             .cloned()
@@ -190,7 +220,7 @@ pub fn padded(lo: f64, hi: f64) -> [f64; 2] {
     };
     [lo - gap, hi + gap]
 }
-fn bounds(ss: &[Series], include_band: bool) -> Bounds {
+pub(crate) fn bounds(ss: &[Series], include_band: bool) -> Bounds {
     let mut x = [f64::INFINITY, f64::NEG_INFINITY];
     let mut y = x;
     for s in ss {
@@ -312,6 +342,9 @@ pub fn color(value: &str) -> Result<String> {
     Ok(c.into())
 }
 pub fn from_options(o: &Options) -> Result<Figure> {
+    if !o.rdm.files.is_empty() {
+        return crate::rdm::figure(o);
+    }
     if o.rsa.file.is_some() {
         return crate::rsa::figure(o);
     }
@@ -339,6 +372,8 @@ pub fn from_options(o: &Options) -> Result<Figure> {
         .chain(o.xfile.iter())
         .chain(o.reorder.iter())
         .chain(o.qc.pm.iter())
+        .chain(o.qc.lower.iter())
+        .chain(o.qc.upper.iter())
         .chain(o.qc.censor_files.iter())
         .filter(|s| s.trim_end_matches('\'').split(['[', '{']).next() == Some("-"))
         .count();
@@ -406,6 +441,7 @@ pub fn from_options(o: &Options) -> Result<Figure> {
         });
         ensure!(o.ylabels.len() <= 1, "heatmap accepts one y-axis label");
         plots.push(Plot {
+            style: Default::default(),
             id: plots.len(),
             caption: String::new(),
             title: "Representational dissimilarity".into(),
@@ -421,6 +457,7 @@ pub fn from_options(o: &Options) -> Result<Figure> {
                 row_labels: labels.clone(),
                 labels,
                 square_cells: true,
+                named_conditions: false,
                 cmap: o.cmap.clone(),
                 clim,
             },
@@ -502,6 +539,14 @@ pub fn from_options(o: &Options) -> Result<Figure> {
         } else {
             vec![crate::qc::Decoration::default(); ss.len()]
         };
+        if let Some(column) = &o.group_by {
+            ss = crate::grouping::split(ss, &o.files[0], column)?;
+            if !o.colors.is_empty() {
+                for (i, s) in ss.iter_mut().enumerate() {
+                    s.color = color(&o.colors[i % o.colors.len()])?;
+                }
+            }
+        }
         let common = bounds(&ss, o.qc.use_pm);
         ensure!(
             o.qc.ylimits.is_empty()
@@ -534,6 +579,16 @@ pub fn from_options(o: &Options) -> Result<Figure> {
             }
             let (content, ylabel, xlabel) = if o.kind == "histogram" {
                 let mut edges = vec![];
+                let shared_edges = if o.group_by.is_some() {
+                    let all: Vec<_> = series
+                        .iter()
+                        .flat_map(|s| s.points.iter().map(|p| p[1]))
+                        .filter(|v| v.is_finite())
+                        .collect();
+                    Some(histogram(&all, o.bins, o.binwidth, false)?.0)
+                } else {
+                    None
+                };
                 for s in &mut series {
                     let values = s
                         .points
@@ -541,7 +596,33 @@ pub fn from_options(o: &Options) -> Result<Figure> {
                         .map(|p| p[1])
                         .filter(|v| v.is_finite())
                         .collect::<Vec<_>>();
-                    let (e, p) = histogram(&values, o.bins, o.binwidth, o.density)?;
+                    let (e, p) = if let Some(edges) = &shared_edges {
+                        let mut counts = vec![0.; edges.len() - 1];
+                        for v in &values {
+                            let index = edges
+                                .partition_point(|e| e <= v)
+                                .saturating_sub(1)
+                                .min(counts.len() - 1);
+                            counts[index] += 1.;
+                        }
+                        let points = counts
+                            .iter()
+                            .enumerate()
+                            .map(|(i, count)| {
+                                [
+                                    (edges[i] + edges[i + 1]) / 2.,
+                                    if o.density {
+                                        count / (values.len() as f64 * (edges[i + 1] - edges[i]))
+                                    } else {
+                                        *count
+                                    },
+                                ]
+                            })
+                            .collect();
+                        (edges.clone(), points)
+                    } else {
+                        histogram(&values, o.bins, o.binwidth, o.density)?
+                    };
                     edges.push(e);
                     s.points = p;
                 }
@@ -611,6 +692,7 @@ pub fn from_options(o: &Options) -> Result<Figure> {
                 b = Bounds { x: r, y: r };
             }
             plots.push(Plot {
+                style: Default::default(),
                 id: plots.len(),
                 caption: String::new(),
                 title,
@@ -654,6 +736,19 @@ pub fn from_options(o: &Options) -> Result<Figure> {
     }
     for p in &mut plots {
         p.qc.annotations = annotations.clone();
+        let mut notes = vec![];
+        if !p.note.is_empty() {
+            notes.push(p.note.clone());
+        }
+        if !o.qc.lower.is_empty() {
+            notes.push("Supplied lower/upper bounds".into());
+        } else if !o.qc.pm.is_empty() {
+            notes.push("Supplied ± widths".into());
+        }
+        if o.group_by.is_some() {
+            notes.push("Grouped series · no aggregation".into());
+        }
+        p.note = notes.join(" · ");
         if matches!(p.content, Content::Heat { .. }) {
             if let Some(x) = o.xlim {
                 p.bounds.x = x;
@@ -750,6 +845,7 @@ pub fn demo() -> Figure {
         ]);
     }
     let line = Plot {
+        style: Default::default(),
         id: 0,
         caption: String::new(),
         title: "Model evidence through time".into(),
@@ -776,6 +872,7 @@ pub fn demo() -> Figure {
     let (e, p) = histogram(&vals, Some(22), None, false).unwrap();
     let ymax = p.iter().map(|p| p[1]).fold(0., f64::max) * 1.18;
     let hist = Plot {
+        style: Default::default(),
         id: 1,
         caption: String::new(),
         title: "Effects across regions".into(),
@@ -815,6 +912,7 @@ pub fn demo() -> Figure {
         point_labels: vec![],
     };
     let scatter = Plot {
+        style: Default::default(),
         id: 2,
         caption: String::new(),
         title: "Compare model associations".into(),
@@ -857,6 +955,7 @@ pub fn demo() -> Figure {
         })
         .collect();
     let heat = Plot {
+        style: Default::default(),
         id: 3,
         caption: String::new(),
         title: "Representational structure".into(),
@@ -872,6 +971,7 @@ pub fn demo() -> Figure {
             row_labels: labels.clone(),
             labels,
             square_cells: true,
+            named_conditions: false,
             cmap: "viridis".into(),
             clim: [0., 0.7],
         },

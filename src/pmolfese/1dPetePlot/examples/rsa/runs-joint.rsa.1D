@@ -1,0 +1,21 @@
+# Synthetic 3dRSA run-resolved output; no biological interpretation.
+# run order/length: rest=100 task=100
+# run contrast: task_minus_rest = mean(state:task) - mean(state:rest); equal run weights; fixed-run estimand
+# MEAN is the equal-run arithmetic mean of signed association statistics
+#ROI label nvox summary model beta partial_r p q z
+12 Occipital 210 MEAN semantic 0.510000 0.255000 0.2 0.4 0.8
+12 Occipital 210 rest semantic 0.300000 0.150000 0.2 0.4 0.8
+12 Occipital 210 task semantic 0.720000 0.360000 0.2 0.4 0.8
+12 Occipital 210 task_minus_rest semantic 0.420000 0.210000 0.2 0.4 0.8
+3 Left temporal 185 MEAN semantic 0.830000 0.415000 0.2 0.4 0.8
+3 Left temporal 185 rest semantic 0.620000 0.310000 0.2 0.4 0.8
+3 Left temporal 185 task semantic 1.040000 0.520000 0.2 0.4 0.8
+3 Left temporal 185 task_minus_rest semantic 0.420000 0.210000 0.2 0.4 0.8
+12 Occipital 210 MEAN visual 0.640000 0.320000 0.2 0.4 0.8
+12 Occipital 210 rest visual 0.500000 0.250000 0.2 0.4 0.8
+12 Occipital 210 task visual 0.780000 0.390000 0.2 0.4 0.8
+12 Occipital 210 task_minus_rest visual 0.280000 0.140000 0.2 0.4 0.8
+3 Left temporal 185 MEAN visual 0.960000 0.480000 0.2 0.4 0.8
+3 Left temporal 185 rest visual 0.820000 0.410000 0.2 0.4 0.8
+3 Left temporal 185 task visual 1.100000 0.550000 0.2 0.4 0.8
+3 Left temporal 185 task_minus_rest visual 0.280000 0.140000 0.2 0.4 0.8

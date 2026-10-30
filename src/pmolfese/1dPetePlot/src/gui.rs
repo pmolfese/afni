@@ -1,3 +1,7 @@
+#[path = "gui_sources.rs"]
+mod sources;
+#[path = "gui_style.rs"]
+mod styling;
 use crate::{
     cli::Options,
     document,
@@ -115,7 +119,22 @@ struct TextEditor {
     first: bool,
     position: Option<egui::Pos2>,
 }
+#[derive(Clone)]
+struct DataVersion {
+    width: u32,
+    height: u32,
+    full_plot: bool,
+    figure: Figure,
+    origin: Option<document::Origin>,
+    views: Vec<Bounds>,
+    dormant: std::collections::BTreeMap<usize, Plot>,
+    dormant_views: std::collections::BTreeMap<usize, Bounds>,
+}
 struct App {
+    sources: Option<sources::Editor>,
+    data_revision: u64,
+    saved_data_revision: u64,
+    data_versions: std::collections::BTreeMap<u64, DataVersion>,
     import: crate::import_ui::ImportUi,
     dormant: std::collections::BTreeMap<usize, Plot>,
     dormant_views: std::collections::BTreeMap<usize, Bounds>,
@@ -126,6 +145,8 @@ struct App {
     saved: document::Snapshot,
     history: document::History,
     editor: Option<TextEditor>,
+    styling: Option<styling::Editor>,
+    duplicate_pending: Option<usize>,
     closing: bool,
     window_title: String,
     text_regions: Vec<TextRegion>,
@@ -177,6 +198,10 @@ impl App {
             Err(e) => (None, format!("Cannot save project: {e:#}")),
         };
         App {
+            sources: None,
+            data_revision: 0,
+            saved_data_revision: 0,
+            data_versions: Default::default(),
             import: Default::default(),
             dormant: Default::default(),
             dormant_views: Default::default(),
@@ -187,6 +212,8 @@ impl App {
             project_path: None,
             history: Default::default(),
             editor: None,
+            styling: None,
+            duplicate_pending: None,
             closing: false,
             window_title: String::new(),
             text_regions: vec![],
@@ -228,7 +255,10 @@ impl App {
         }
     }
     fn modified(&self) -> bool {
-        self.editor.is_some() || self.snapshot() != self.saved
+        self.editor.is_some()
+            || self.styling.is_some()
+            || self.snapshot() != self.saved
+            || self.data_revision != self.saved_data_revision
     }
     fn edited(&mut self, before: document::Presentation) {
         self.history
@@ -240,6 +270,8 @@ impl App {
         if let Some(origin) = &mut self.origin {
             origin.retain_imports(&ids);
         }
+        let revisions = self.history.revisions();
+        self.data_versions.retain(|r, _| revisions.contains(r));
         self.thumbnails.clear();
         self.dirty = true;
     }
@@ -287,7 +319,7 @@ impl App {
         self.dirty = true;
     }
     fn undo(&mut self, redo: bool) {
-        if self.editor.is_some() {
+        if self.editor.is_some() || self.styling.is_some() {
             return;
         }
         let current = document::Presentation::capture(&self.fig);
@@ -297,9 +329,97 @@ impl App {
             self.history.undo(current)
         };
         if let Some(p) = next {
+            if self.data_revision != self.history.revision() {
+                self.cache_data();
+                let version = self.data_versions[&self.history.revision()].clone();
+                self.export_width = version.width;
+                self.export_height = version.height;
+                self.full_plot = version.full_plot;
+                self.fig = version.figure;
+                self.origin = version.origin;
+                self.views = version.views;
+                self.dormant = version.dormant;
+                self.dormant_views = version.dormant_views;
+                self.data_revision = self.history.revision();
+            }
             self.restore_presentation(p);
             self.status = if redo { "Redone" } else { "Undone" }.into();
             self.error = false;
+        }
+    }
+    fn cache_data(&mut self) {
+        self.data_versions.insert(
+            self.data_revision,
+            DataVersion {
+                width: self.export_width,
+                height: self.export_height,
+                full_plot: self.full_plot,
+                figure: self.fig.clone(),
+                origin: self.origin.clone(),
+                views: self.views.clone(),
+                dormant: self.dormant.clone(),
+                dormant_views: self.dormant_views.clone(),
+            },
+        );
+    }
+    fn apply_data(&mut self, project: document::Loaded) -> Result<()> {
+        project.origin.verify_all()?;
+        project.state.validate(&project.figure)?;
+        self.renderer.scene(
+            &project.figure,
+            &project.state.views,
+            project.state.width,
+            project.state.height,
+        )?;
+        self.cache_data();
+        self.history
+            .record_data(document::Presentation::capture(&self.fig));
+        self.data_revision = self.history.revision();
+        self.fig = project.figure;
+        self.origin = Some(project.origin);
+        self.views = project.state.views;
+        self.export_width = project.state.width;
+        self.export_height = project.state.height;
+        self.full_plot = project.state.full_plot;
+        self.thumbnails.clear();
+        self.texture = None;
+        self.areas.clear();
+        self.text_regions.clear();
+        self.dirty = true;
+        let revisions = self.history.revisions();
+        self.data_versions.retain(|r, _| revisions.contains(r));
+        while self.data_versions.len() > 8 {
+            let oldest = *self.data_versions.keys().next().unwrap();
+            self.data_versions.remove(&oldest);
+        }
+        let retained = self
+            .data_versions
+            .keys()
+            .copied()
+            .chain([self.data_revision])
+            .collect();
+        self.history.retain_revisions(&retained);
+        self.status="Data changes applied · Undo restores the previous plotted data; Save Project records the new sources".into();
+        self.error = false;
+        Ok(())
+    }
+    fn begin_sources(&mut self, ctx: &egui::Context) {
+        if !self.commit_edit() {
+            return;
+        }
+        if let Some(origin) = &self.origin {
+            let mut origin = origin.clone();
+            origin.retain_imports(&self.fig.plots.iter().map(|p| p.id).collect());
+            self.sources = Some(sources::Editor::new(
+                origin,
+                self.snapshot(),
+                Some(self.fig.clone()),
+                None,
+                ctx,
+            ));
+        } else {
+            self.status = self.origin_error.clone();
+            self.error = true;
         }
     }
     fn text(&self, target: TextTarget) -> &str {
@@ -424,7 +544,7 @@ impl App {
         }
     }
     fn project_save(&mut self, save_as: bool) -> bool {
-        if !self.commit_edit() {
+        if !self.commit_style() || !self.commit_edit() {
             return false;
         }
         let Some(origin) = &self.origin else {
@@ -484,6 +604,7 @@ impl App {
         match result {
             Ok(()) => {
                 self.saved = state;
+                self.saved_data_revision = self.data_revision;
                 self.project_path = Some(path.clone());
                 self.status = format!("Project saved: {}", path.display());
                 self.error = false;
@@ -510,6 +631,10 @@ impl App {
     }
     fn install_project(&mut self, project: document::Loaded, path: PathBuf) {
         self.import.cancel();
+        self.sources = None;
+        self.data_versions.clear();
+        self.data_revision = 0;
+        self.saved_data_revision = 0;
         self.dormant.clear();
         self.dormant_views.clear();
         self.next_id = project
@@ -530,6 +655,8 @@ impl App {
         self.project_path = Some(path);
         self.history = Default::default();
         self.editor = None;
+        self.styling = None;
+        self.duplicate_pending = None;
         self.focus = None;
         self.edit_panel = 0;
         self.drag_panel = None;
@@ -544,7 +671,7 @@ impl App {
         self.status = "Project opened · source fingerprints verified".into();
         self.error = false;
     }
-    fn project_open(&mut self) {
+    fn project_open(&mut self, ctx: &egui::Context) {
         let Some(path) = rfd::FileDialog::new()
             .set_title("Open editable project")
             .add_filter("1dPetePlot project", &["json"])
@@ -566,14 +693,77 @@ impl App {
                 }
             }
             Err(e) => {
+                if let Ok((origin, state)) = document::read_project(&path) {
+                    let mut editor = sources::Editor::new(origin, state, None, Some(path), ctx);
+                    editor.reject(format!("Project could not be rebuilt: {e:#}"));
+                    self.sources = Some(editor);
+                }
                 self.status = format!("Project not opened: {e:#}");
                 self.error = true;
             }
         }
     }
 
+    fn begin_attachments(&mut self, index: usize, ctx: &egui::Context) {
+        if !self.commit_edit() {
+            return;
+        }
+        let result = (|| -> Result<()> {
+            let plot = self
+                .fig
+                .plots
+                .get(index)
+                .ok_or_else(|| anyhow!("select a graph"))?;
+            let (o, roles) = self
+                .origin
+                .as_ref()
+                .ok_or_else(|| anyhow!("graph has no reusable source"))?
+                .editable(plot.id)?;
+            let panel = document::Presentation::capture(&self.fig).panels[index].clone();
+            self.import.edit(plot.id, o, roles, panel, ctx)
+        })();
+        if let Err(e) = result {
+            self.status = format!("Cannot edit attachments: {e:#}");
+            self.error = true;
+        }
+    }
+    fn replace_import(&mut self, id: usize, prepared: crate::import::Prepared) -> Result<()> {
+        prepared.origin.verify_all()?;
+        let mut figure = self.fig.clone();
+        let mut views = self.views.clone();
+        let index = figure
+            .plots
+            .iter()
+            .position(|p| p.id == id)
+            .ok_or_else(|| anyhow!("edited graph no longer exists"))?;
+        anyhow::ensure!(
+            prepared.figure.plots.len() == 1,
+            "graph edit needs one graph"
+        );
+        let mut plot = prepared.figure.plots[0].clone();
+        plot.id = id;
+        views[index] = plot.bounds;
+        figure.plots[index] = plot;
+        let mut origin = self
+            .origin
+            .clone()
+            .ok_or_else(|| anyhow!("missing source recipe"))?;
+        origin.retain_imports(&self.fig.plots.iter().map(|p| p.id).collect());
+        origin.replace_graph(id, prepared.origin, prepared.roles);
+        let mut state = self.snapshot();
+        state.presentation = document::Presentation::capture(&figure);
+        state.views = views;
+        state.height = state
+            .height
+            .max(crate::rsa::minimum_height(&figure, state.width));
+        self.apply_data(document::Loaded {
+            figure,
+            origin,
+            state,
+        })
+    }
     fn open_data(&mut self, ctx: &egui::Context) {
-        if self.editor.is_some() {
+        if self.editor.is_some() || self.styling.is_some() {
             self.status = "Finish editing before importing data".into();
             return;
         }
@@ -658,6 +848,9 @@ impl App {
             document::Origin::capture(&crate::cli::parse(&["-demo".into()]).unwrap()).unwrap(),
         );
         self.next_id = self.fig.plots.len();
+        self.data_versions.clear();
+        self.data_revision = 0;
+        self.saved_data_revision = 0;
         self.history = Default::default();
         self.dormant.clear();
         self.dormant_views.clear();
@@ -710,6 +903,19 @@ impl App {
     fn graph_context_menu(&mut self, ui: &mut egui::Ui, panel: Option<usize>) {
         if let Some(i) = panel {
             ui.label(&self.fig.plots[i].title);
+            if ui.button("Style this graph…").clicked() {
+                self.begin_style(i);
+                ui.close();
+            }
+            if ui.button("Duplicate this graph").clicked() {
+                self.duplicate_pending = Some(self.fig.plots[i].id);
+                ui.close();
+            }
+            if ui.button("Edit scientific attachments…").clicked() {
+                self.begin_attachments(i, ui.ctx());
+                ui.close();
+            }
+            ui.separator();
             if ui.button("Copy this graph").clicked() {
                 self.copy_image(Some(i));
                 ui.close();
@@ -916,11 +1122,27 @@ impl App {
         }
     }
     fn action(&mut self, action: &str, ctx: &egui::Context) {
-        if self.import.visible() && !matches!(action, "data-open" | "quit" | "fullscreen") {
+        if self.sources.is_some() && !matches!(action, "quit" | "fullscreen") {
+            self.status = "Apply or cancel source changes first".into();
+            return;
+        }
+        if self.styling.is_some() && !matches!(action, "quit" | "fullscreen") {
+            self.status = "Apply or cancel styling before changing the figure".into();
+            return;
+        }
+        if self.import.visible()
+            && (!matches!(action, "data-open" | "quit" | "fullscreen")
+                || self.import.edit_target.is_some() && action == "data-open")
+        {
             self.status = "Finish or cancel the import before changing the figure".into();
             return;
         }
-        if self.fig.plots.is_empty() && matches!(action, "save" | "copy" | "copy-all" | "reset") {
+        if self.fig.plots.is_empty()
+            && matches!(
+                action,
+                "save" | "copy" | "copy-all" | "reset" | "style" | "duplicate"
+            )
+        {
             self.status = "Open or drop data to add your first graph".into();
             return;
         }
@@ -941,13 +1163,26 @@ impl App {
             return;
         }
         if self.editor.is_some()
-            && matches!(action, "reset" | "overview" | "copy" | "copy-all" | "save")
+            && matches!(
+                action,
+                "reset" | "overview" | "copy" | "copy-all" | "save" | "style" | "duplicate"
+            )
         {
             return;
         }
         match action {
+            "style" => self.begin_style(self.focus.unwrap_or(self.edit_panel)),
+            "duplicate" => {
+                self.duplicate_pending = self
+                    .fig
+                    .plots
+                    .get(self.focus.unwrap_or(self.edit_panel))
+                    .map(|p| p.id)
+            }
             "data-open" => self.open_data(ctx),
-            "project-open" => self.project_open(),
+            "project-open" => self.project_open(ctx),
+            "sources" => self.begin_sources(ctx),
+            "attachments" => self.begin_attachments(self.focus.unwrap_or(self.edit_panel), ctx),
             "project-save" => {
                 self.project_save(false);
             }
@@ -1163,7 +1398,7 @@ impl App {
                 Color32::WHITE,
             );
         }
-        if self.editor.is_some() {
+        if self.editor.is_some() || self.styling.is_some() {
             return;
         }
         if self.drag_panel.is_none()
@@ -1339,12 +1574,22 @@ impl eframe::App for App {
         {
             self.import.cancel();
         }
-        if self.pending.is_none() && self.editor.is_none() && !was_importing {
+        if self.pending.is_none()
+            && self.editor.is_none()
+            && self.styling.is_none()
+            && !was_importing
+            && self.sources.is_none()
+        {
             exit_fullscreen_on_escape(&ctx);
         }
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         if !dropped.is_empty() {
-            if self.editor.is_some() || self.pending.is_some() {
+            if self.editor.is_some()
+                || self.styling.is_some()
+                || self.pending.is_some()
+                || self.sources.is_some()
+                || self.import.edit_target.is_some()
+            {
                 self.status =
                     "Finish the current edit/save dialog, then drop the file again".into();
             } else {
@@ -1406,6 +1651,7 @@ impl eframe::App for App {
                         ("Open Project…    Ctrl+O", "project-open"),
                         ("Save Project…    Ctrl+Shift+S", "project-save"),
                         ("Save Project As…", "project-save-as"),
+                        ("Reload / relink sources…", "sources"),
                     ] {
                         if ui.button(label).clicked() {
                             ui.close();
@@ -1419,9 +1665,13 @@ impl eframe::App for App {
                     }
                 });
                 ui.menu_button("Edit", |ui| {
-                    for (label, action) in
-                        [("Undo    Ctrl+Z", "undo"), ("Redo    Ctrl+Shift+Z", "redo")]
-                    {
+                    for (label, action) in [
+                        ("Undo    Ctrl+Z", "undo"),
+                        ("Redo    Ctrl+Shift+Z", "redo"),
+                        ("Style graph…", "style"),
+                        ("Edit scientific attachments…", "attachments"),
+                        ("Duplicate graph    Ctrl+D", "duplicate"),
+                    ] {
                         if ui.button(label).clicked() {
                             ui.close();
                             self.action(action, &ctx);
@@ -1460,11 +1710,49 @@ impl eframe::App for App {
                 });
             });
         });
+        if self.styling.is_some() {
+            self.style_workspace(ui);
+            return;
+        }
+        if let Some(editor) = &mut self.sources {
+            let recovery = editor.recovery.clone();
+            let (cancel, project) = editor.show(ui);
+            if cancel {
+                self.sources = None;
+            }
+            if let Some(project) = project {
+                if let Some(path) = recovery {
+                    if self.may_discard() {
+                        self.install_project(project, path);
+                        self.saved_data_revision = u64::MAX;
+                        self.status="Recovered project preview applied · Save Project to retain the new source references".into();
+                    }
+                } else {
+                    match self.apply_data(project) {
+                        Ok(()) => self.sources = None,
+                        Err(e) => {
+                            self.status = format!("Apply failed: {e:#}");
+                            if let Some(editor) = &mut self.sources {
+                                editor.reject(self.status.clone());
+                            }
+                            self.error = true;
+                        }
+                    }
+                }
+            }
+            return;
+        }
         // Import replaces the workspace so its approval controls use the whole window.
         if self.import.visible() {
             if let Some(prepared) = self.import.show(ui) {
-                match self.add_import(*prepared) {
-                    Ok(()) => self.import.advance(),
+                let edit = self.import.edit_target;
+                let result = if let Some(id) = edit {
+                    self.replace_import(id, *prepared)
+                } else {
+                    self.add_import(*prepared)
+                };
+                match result {
+                    Ok(()) => if edit.is_some(){self.import.cancel()}else{self.import.advance()},
                     Err(e) => self.import.reject(format!(
                         "Graph was not added: {e:#}. Cancel import to adjust the layout, then retry."
                     )),
@@ -1511,7 +1799,7 @@ impl eframe::App for App {
                 ui.separator();
                 ui.label(RichText::new(if self.modified() { "PROJECT · Modified" } else { "PROJECT" }).size(11.).color(Color32::from_rgb(20,125,146)));
                 ui.horizontal(|ui| {
-                    if ui.button("Open…").clicked() { self.project_open(); }
+                    if ui.button("Open…").clicked() { self.project_open(ui.ctx()); }
                     if ui.button("Save Project…").clicked() { self.project_save(false); }
                 });
                 ui.horizontal(|ui| {
@@ -1526,6 +1814,12 @@ impl eframe::App for App {
                 }
                 if self.fig.plots.is_empty() { ui.small("Your figure is empty. Add graphs by opening or dropping data files."); return; }
                 ui.small("Click titles, axis labels, or captions to edit.");
+                ui.separator();
+                let selected = self.focus.unwrap_or(self.edit_panel);
+                ui.label(format!("GRAPH {} · STYLE & DUPLICATE", selected + 1));
+                ui.small(&self.fig.plots[selected].title);
+                if ui.add_sized([210.,32.], egui::Button::new("Style graph…")).clicked() { self.begin_style(selected); }
+                if ui.add_sized([210.,32.], egui::Button::new("Duplicate graph")).clicked() { self.duplicate_pending = Some(self.fig.plots[selected].id); }
                 ui.separator();
                 ui.label(RichText::new("VIEW").size(11.).color(Color32::from_rgb(20,125,146)));
                 if is_fullscreen(&ctx) && ui.add_sized([210., 30.], egui::Button::new("Exit full screen   Esc")).clicked() {
@@ -1588,6 +1882,13 @@ impl eframe::App for App {
             )
             .show(ui, |ui| self.canvas(ui));
         self.edit_window(&ctx);
+        if let Some(id) = self.duplicate_pending.take()
+            && let Some(index) = self.fig.plots.iter().position(|p| p.id == id)
+            && let Err(e) = self.duplicate_graph(index)
+        {
+            self.status = format!("Graph was not duplicated: {e:#}");
+            self.error = true;
+        }
         if !ctx.input(|i| i.raw.hovered_files.is_empty()) {
             egui::Area::new(egui::Id::new("drop-hint"))
                 .order(egui::Order::Tooltip)
@@ -1601,13 +1902,14 @@ impl eframe::App for App {
         }
         if !self.import.visible()
             && self.editor.is_none()
+            && self.styling.is_none()
             && !ctx.egui_wants_keyboard_input()
             && ctx.input(|i| i.key_pressed(egui::Key::R))
         {
             self.reset();
         }
         #[cfg(not(target_os = "macos"))]
-        if self.editor.is_none() {
+        if self.editor.is_none() && self.styling.is_none() {
             for (key, modifiers, action) in [
                 (
                     egui::Key::S,
@@ -1623,6 +1925,7 @@ impl eframe::App for App {
                     "redo",
                 ),
                 (egui::Key::Z, egui::Modifiers::COMMAND, "undo"),
+                (egui::Key::D, egui::Modifiers::COMMAND, "duplicate"),
             ] {
                 if ctx.input_mut(|i| i.consume_key(modifiers, key)) {
                     self.action(action, &ctx);
@@ -1723,6 +2026,226 @@ mod tests {
         assert!(document::load(&path).is_err());
     }
     #[test]
+    fn rdm_add_undo_and_project_replay_preserve_label_sources_and_pixels() {
+        let d = tempfile::tempdir().unwrap();
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/rdm");
+        let labels = d.path().join("conditions.txt");
+        std::fs::copy(base.join("conditions.txt"), &labels).unwrap();
+        let table = crate::import::inspect(&base.join("model.1D"), || false).unwrap();
+        let mut mapping = crate::import::Mapping::for_kind(&table, crate::import::Kind::Rdm);
+        mapping.rdm.labels = labels.to_str().unwrap().into();
+        mapping.rdm.clim = "0:1".into();
+        let mut app = App::new(Figure::empty(), Options::default(), Renderer::new());
+        app.add_import(crate::import::prepare(&table, &mapping, || false).unwrap())
+            .unwrap();
+        app.undo(false);
+        assert!(app.fig.plots.is_empty());
+        app.undo(true);
+        assert_eq!(app.fig.plots.len(), 1);
+        let path = d.path().join("rdm.json");
+        document::save(&path, app.origin.as_ref().unwrap(), &app.snapshot(), false).unwrap();
+        let loaded = document::load(&path).unwrap();
+        let pixels = |f: &Figure| {
+            app.renderer
+                .raster(
+                    &app.renderer
+                        .scene(f, &app.views, app.export_width, app.export_height)
+                        .unwrap(),
+                )
+                .unwrap()
+        };
+        assert_eq!(pixels(&app.fig).data(), pixels(&loaded.figure).data());
+        let prepared = crate::import::prepare(&table, &mapping, || false).unwrap();
+        std::fs::write(&labels, "Changed\nlabels\n").unwrap();
+        assert!(prepared.origin.verify().is_err()); // Add confirmation also checks attached labels.
+        assert!(document::load(&path).is_err());
+    }
+    #[test]
+    fn reloaded_data_and_text_edits_undo_redo_in_order_and_reject_stale_apply() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("values.1D");
+        std::fs::write(&p, "1\n2\n3\n").unwrap();
+        let o = crate::cli::parse(&["-infiles".into(), p.to_string_lossy().into(), "-one".into()])
+            .unwrap();
+        let f = crate::model::from_options(&o).unwrap();
+        let mut app = App::new(f, o, Renderer::new());
+        let before = document::Presentation::capture(&app.fig);
+        app.fig.plots[0].title = "My scientific title".into();
+        app.edited(before);
+        std::fs::write(&p, "4\n5\n6\n7\n").unwrap();
+        let choices = vec![sources::Choice {
+            original: p.to_string_lossy().into(),
+            replacement: p.to_string_lossy().into(),
+            status: "Changed".into(),
+        }];
+        let preview = sources::prepare(
+            app.origin.as_ref().unwrap(),
+            &app.snapshot(),
+            Some(&app.fig),
+            &choices,
+            false,
+        )
+        .unwrap();
+        app.apply_data(preview.project).unwrap();
+        assert!(app.modified());
+        let before = document::Presentation::capture(&app.fig);
+        app.fig.plots[0].caption = "After reloading".into();
+        app.edited(before);
+        app.undo(false);
+        assert!(app.fig.plots[0].caption.is_empty());
+        app.undo(false);
+        let crate::model::Content::Lines(ss) = &app.fig.plots[0].content else {
+            panic!()
+        };
+        assert_eq!(ss[0].points[0][1], 1.);
+        assert_eq!(ss[0].points.len(), 3);
+        assert_eq!(app.fig.plots[0].title, "My scientific title");
+        assert!(app.origin.as_ref().unwrap().verify().is_err());
+        app.undo(true);
+        let crate::model::Content::Lines(ss) = &app.fig.plots[0].content else {
+            panic!()
+        };
+        assert_eq!(ss[0].points.len(), 4);
+        assert_eq!(ss[0].points[0][1], 4.);
+        app.undo(true);
+        assert_eq!(app.fig.plots[0].caption, "After reloading");
+        let preview = sources::prepare(
+            app.origin.as_ref().unwrap(),
+            &app.snapshot(),
+            Some(&app.fig),
+            &choices,
+            false,
+        )
+        .unwrap();
+        let old = app.snapshot();
+        std::fs::write(&p, "9\n").unwrap();
+        assert!(app.apply_data(preview.project).is_err());
+        assert_eq!(app.snapshot(), old);
+    }
+    #[test]
+    fn attachment_edits_fork_duplicates_and_replay_with_data_undo() {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/attachments");
+        let table = crate::import::inspect(&base.join("signals.tsv"), || false).unwrap();
+        let mut m = crate::import::Mapping::for_kind(&table, crate::import::Kind::Line);
+        m.x = Some(0);
+        m.y = vec![1];
+        m.attachments.uncertainty = "bounds".into();
+        m.attachments.bands.insert(1, [Some(2), Some(3)]);
+        let mut app = App::new(Figure::empty(), Options::default(), Renderer::new());
+        app.add_import(crate::import::prepare(&table, &m, || false).unwrap())
+            .unwrap();
+        app.duplicate_graph(0).unwrap();
+        let (o, roles) = app.origin.as_ref().unwrap().editable(0).unwrap();
+        let panel = document::Presentation::capture(&app.fig).panels[0].clone();
+        let mut edit = crate::import::Mapping::restore(&table, &o, &roles, panel).unwrap();
+        assert_eq!(edit.attachments.bands[&1], [Some(2), Some(3)]);
+        edit.attachments.uncertainty = "none".into();
+        edit.attachments.censor_column = Some(6);
+        edit.attachments.xmat = base.join("X.mat.1D").to_string_lossy().into();
+        assert!(crate::import::prepare(&table, &edit, || false).is_err());
+        edit.attachments.aligned = true;
+        app.replace_import(0, crate::import::prepare(&table, &edit, || false).unwrap())
+            .unwrap();
+        let has_band = |app: &App, id| {
+            let crate::model::Content::Lines(ss) =
+                &app.fig.plots.iter().find(|p| p.id == id).unwrap().content
+            else {
+                panic!()
+            };
+            ss[0].band.is_some()
+        };
+        assert!(!has_band(&app, 0));
+        assert!(has_band(&app, 1));
+        assert!(!app.fig.plots[0].qc.annotations.is_empty());
+        app.duplicate_graph(0).unwrap();
+        assert!(!has_band(&app, 2));
+        app.undo(false);
+        app.undo(false);
+        assert!(has_band(&app, 0));
+        app.undo(true);
+        assert!(!has_band(&app, 0));
+        app.undo(true);
+        assert!(!has_band(&app, 2));
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("edited.json");
+        document::save(&path, app.origin.as_ref().unwrap(), &app.snapshot(), false).unwrap();
+        let loaded = document::load(&path).unwrap();
+        let r = Renderer::new();
+        let pix = |f: &Figure| {
+            r.raster(
+                &r.scene(f, &app.views, app.export_width, app.export_height)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(pix(&app.fig).data(), pix(&loaded.figure).data());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&path).unwrap())
+                .unwrap()["version"],
+            4
+        );
+        // Remove the design from both edited copies. It must stop being a replay
+        // dependency, while the unchanged original copy still retains its bands.
+        for id in [0, 2] {
+            let (o, roles) = app.origin.as_ref().unwrap().editable(id).unwrap();
+            let panel = document::Presentation::capture(&app.fig)
+                .panels
+                .into_iter()
+                .find(|p| p.id == id)
+                .unwrap();
+            let mut edit = crate::import::Mapping::restore(&table, &o, &roles, panel).unwrap();
+            edit.attachments.xmat.clear();
+            app.replace_import(id, crate::import::prepare(&table, &edit, || false).unwrap())
+                .unwrap();
+        }
+        assert!(
+            !app.origin
+                .as_ref()
+                .unwrap()
+                .source_paths()
+                .iter()
+                .any(|p| p.ends_with("X.mat.1D"))
+        );
+        assert!(has_band(&app, 1));
+        document::save(&path, app.origin.as_ref().unwrap(), &app.snapshot(), true).unwrap();
+        assert!(document::load(&path).is_ok());
+    }
+    #[test]
+    fn long_rsa_imports_add_undo_and_replay_keep_categories_and_bands() {
+        let mut app = App::new(Figure::empty(), Options::default(), Renderer::new());
+        for (name, kind) in [
+            ("series", crate::import::Kind::Line),
+            ("runs-joint", crate::import::Kind::Scatter),
+        ] {
+            let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("examples/rsa/{name}.rsa.1D"));
+            let table = crate::import::inspect(&p, || false).unwrap();
+            let mut mapping = crate::import::Mapping::for_kind(&table, kind);
+            mapping.roi_filter = "12".into();
+            mapping.rsa_band = true;
+            app.add_import(crate::import::prepare(&table, &mapping, || false).unwrap())
+                .unwrap();
+        }
+        app.undo(false);
+        assert_eq!(app.fig.plots.len(), 1);
+        app.undo(true);
+        assert_eq!(app.fig.plots.len(), 2);
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("long.json");
+        document::save(&p, app.origin.as_ref().unwrap(), &app.snapshot(), false).unwrap();
+        let loaded = document::load(&p).unwrap();
+        let pixels = |f: &Figure| {
+            app.renderer
+                .raster(
+                    &app.renderer
+                        .scene(f, &app.views, app.export_width, app.export_height)
+                        .unwrap(),
+                )
+                .unwrap()
+        };
+        assert_eq!(pixels(&app.fig).data(), pixels(&loaded.figure).data());
+    }
+    #[test]
     fn rsa_imports_add_undo_and_replay_their_semantic_recipes() {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rsa/ordinary.rsa.1D");
@@ -1732,17 +2255,18 @@ mod tests {
             crate::import::Kind::Histogram,
             crate::import::Kind::Scatter,
             crate::import::Kind::Heat,
+            crate::import::Kind::Intervals,
         ] {
             let mut mapping = crate::import::Mapping::for_kind(&table, kind);
             mapping.roi_filter = "3,12,27".into();
             let preview = crate::import::prepare(&table, &mapping, || false).unwrap();
             app.add_import(preview).unwrap();
         }
-        assert_eq!(app.fig.plots.len(), 3);
+        assert_eq!(app.fig.plots.len(), 4);
         app.undo(false);
-        assert_eq!(app.fig.plots.len(), 2);
-        app.undo(true);
         assert_eq!(app.fig.plots.len(), 3);
+        app.undo(true);
+        assert_eq!(app.fig.plots.len(), 4);
         let d = tempfile::tempdir().unwrap();
         let project = d.path().join("rsa.json");
         document::save(
@@ -1753,7 +2277,8 @@ mod tests {
         )
         .unwrap();
         let loaded = document::load(&project).unwrap();
-        assert_eq!(loaded.figure.plots.len(), 3);
+        assert_eq!(loaded.figure.plots.len(), 4);
+        assert!(loaded.figure.plots[3].hover(0.68, 2.5).contains("95% CI"));
         assert!(loaded.figure.plots[1].hover(0.68, 0.21).contains("ROI 3"));
         assert_eq!(
             document::Presentation::capture(&loaded.figure),
@@ -2357,5 +2882,45 @@ mod tests {
         assert_eq!(f.plots[0].qc.boxes[1].n, 3);
         assert!(f.plots[0].hover(1., 1.).contains("CENSORED"));
         assert!(app.renderer.scene(&f, &v, 900, 600).is_ok());
+    }
+    #[test]
+    fn attached_graph_add_undo_duplicate_and_replay_keep_scientific_roles() {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/attachments");
+        let table = crate::import::inspect(&base.join("signals.tsv"), || false).unwrap();
+        let mut m = crate::import::Mapping::for_kind(&table, crate::import::Kind::Line);
+        m.x = Some(0);
+        m.y = vec![1];
+        m.attachments.uncertainty = "bounds".into();
+        m.attachments.bands.insert(1, [Some(2), Some(3)]);
+        m.attachments.group = Some(5);
+        m.attachments.censor_column = Some(6);
+        m.attachments.xmat = base.join("X.mat.1D").display().to_string();
+        m.attachments.aligned = true;
+        let preview = crate::import::prepare(&table, &m, || false).unwrap();
+        let mut app = App::new(Figure::empty(), Options::default(), Renderer::new());
+        app.add_import(preview).unwrap();
+        app.undo(false);
+        assert!(app.fig.plots.is_empty());
+        app.undo(true);
+        app.duplicate_graph(0).unwrap();
+        let pixels = |app: &App| {
+            app.renderer
+                .raster(
+                    &app.renderer
+                        .scene(&app.fig, &app.views, app.export_width, app.export_height)
+                        .unwrap(),
+                )
+                .unwrap()
+                .data()
+                .to_vec()
+        };
+        let before = pixels(&app);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("attachments.json");
+        document::save(&path, app.origin.as_ref().unwrap(), &app.snapshot(), false).unwrap();
+        app.install_project(document::load(&path).unwrap(), path);
+        assert_eq!(pixels(&app), before);
+        assert_eq!(app.fig.plots[0].qc.censored, app.fig.plots[1].qc.censored);
+        assert_eq!(app.fig.plots[0].qc.annotations.len(), 3);
     }
 }

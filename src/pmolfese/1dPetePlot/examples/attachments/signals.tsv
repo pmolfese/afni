@@ -1,0 +1,7 @@
+time	effect	lower	upper	width	condition	keep
+0	0.2	0.1	0.35	0.1	Rest	1
+2	0.4	0.2	0.55	0.15	Rest	1
+4	0.8	0.6	1.1	0.2	Task	0
+6	0.9	0.7	1.05	0.15	Task	1
+8	0.5	0.3	0.8	0.2	Rest	1
+10	0.3	0.2	0.5	0.1	Rest	0

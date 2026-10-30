@@ -19,15 +19,35 @@ Plots:     -scatter [-diagonal]       points; identity line with equal scaling
            -heat [-reorder FILE] [-zerocenter] [-cbar NAME]
            -one_graph/-one | -sep     overlay or separate panels (default separate)
            -sepscl                    independent y ranges
-RSA:       -rsa RESULTS.rsa.1D       ordinary ROI-wide results; preset v1
+RSA:       -rsa RESULTS.rsa.1D       ROI-wide, time-series or run results; preset v1
+           -rsa-family effects|fit|weights|fit-contrast|commonality|partial-r2
+           -rsa-measures COL,COL    explicit named quantities in a non-effects family
            -rsa-models A,B           select up to 8 models (default all)
-           -rsa-effect auto|r|b|pr   auto: r, or b for regression
+           -rsa-effect auto|r|b|pr|effect   auto: r (wide), effect (long), b (regression)
            -rsa-rois 3,12,27         ROI IDs in chosen order (default all, ID order)
-           -rsa-plots histogram,scatter,heatmap
+           -rsa-plots histogram,scatter,heatmap,intervals
+           Long tables: curves/intervals (time), points (runs), heatmap (both)
+           -rsa-times 0,2,5          Select time_index IDs; retain index order
+           -rsa-summaries MEAN,A,B   Select run/contrast summaries in chosen order
+           -rsa-ci auto|boot|cboot|dual   Supplied CI method for intervals (auto requires one).
+                                        Up to 40 ROIs; regression CIs are beta, never partial r.
            -rsa-pair XMODEL,YMODEL   one comparison (default first two models)
-           Default: distributions, one comparison, heatmap if <=40 ROIs.
+           Wide default: distributions, one comparison, heatmap if <=40 ROIs.
+           Long default: curves (time), categorical points (runs), one panel per ROI.
+           Explicit -rsa-ci boot|cboot|dual also adds supplied bands to time curves.
            -missing gap omits missing effects/pairs; RSA imputation is rejected.
+           For intervals, incomplete effect/CI triplets retain a row marked missing.
+           CI levels come from source metadata; missing levels are never assumed.
            Recognized RSA files also work with Open Data / drop-to-preview.
+RDM:       -rdm MATRIX.1D ...         1..8 saved square symmetric matrices
+           -rdm-labels FILE          one unique condition name per line in source order;
+                                     one shared file, or repeat once per matrix
+           -rdm-order FILE           desired condition names, one per line (both axes)
+           -rdm-kind unspecified|similarity|dissimilarity (default unspecified)
+           -rdm-scale independent|shared (default independent; shared is opt-in)
+           -clim MIN:MAX             fixed common color limits; -cbar/-zerocenter supported
+           Labels must match exactly; negatives/diagonal preserved, no conversion.
+           Open/drop a numeric .1D matrix, choose RDM / named matrix, attach labels.
 Project:   -recipe FILE.peteplot.json [-prefix FILE.png|FILE.svg] [-show]
            Replay saved edits, panel order, views, and dimensions.
 Drawing:   -caption TEXT -panel-caption N TEXT (repeatable; 1-based)
@@ -50,7 +70,10 @@ Shading:   -shade START:END           x-coordinate interval on all panels; repea
            -shade-xmat-colors COLOR ...   condition palette override
            -shade-xmat-threshold F    fraction of condition peak |response| (default .05)
            Matrix shading shows modeled activity, NOT exact stimulus timing.
-QC/lines:  -yfiles_pm FILE ... [-ylim_use_pm]  symmetric bands, absolute widths
+Grouping:  -group-by COLUMN -one      original column name/index; no aggregation
+           groups retain original rows; at most 16 series; no mean imputation
+QC/lines:  -yfiles_lo FILE ... -yfiles_hi FILE ...   supplied asymmetric endpoints
+           -yfiles_pm FILE ... [-ylim_use_pm]  symmetric bands, absolute widths
            -censor_files FILE ...     0=censored, 1=retained; -censor FILE alias
            -censor_trs '0..3,8,$' ...  union of selected-row indices and masks
            -censor_RGB 'red 0.3'      color [opacity] or 'R G B [A]'
@@ -86,6 +109,7 @@ pub struct Options {
     pub arguments: Vec<String>,
     pub source_args: Vec<usize>,
     pub rsa: crate::rsa::Request,
+    pub rdm: crate::rdm::Request,
     pub caption: String,
     pub panel_captions: Vec<(usize, String)>,
     pub shades: Vec<crate::shading::Shade>,
@@ -95,6 +119,7 @@ pub struct Options {
     pub auto_size: bool,
     pub files: Vec<String>,
     pub xfile: Option<String>,
+    pub group_by: Option<String>,
     pub demo: Option<String>,
     pub kind: String,
     pub one: bool,
@@ -134,6 +159,7 @@ impl Default for Options {
             arguments: vec![],
             source_args: vec![],
             rsa: Default::default(),
+            rdm: Default::default(),
             caption: String::new(),
             panel_captions: vec![],
             shades: vec![],
@@ -143,6 +169,7 @@ impl Default for Options {
             auto_size: true,
             files: vec![],
             xfile: None,
+            group_by: None,
             demo: None,
             kind: "line".into(),
             one: false,
@@ -238,10 +265,18 @@ pub fn parse(args: &[String]) -> Result<Options> {
         let flag = args[i].as_str();
         used_flags.push(flag);
         match flag {
+            "-rdm" => o.rdm.files.extend(list(args, &mut i)?),
+            "-rdm-labels" => o.rdm.labels.push(argument(args, &mut i)?.into()),
+            "-rdm-order" => o.rdm.order = Some(argument(args, &mut i)?.into()),
+            "-rdm-scale" => o.rdm.scale = argument(args, &mut i)?.into(),
+            "-rdm-kind" => o.rdm.sense = argument(args, &mut i)?.into(),
+            "-rdm-version" => o.rdm.version = argument(args, &mut i)?.parse()?,
             "-rsa" => {
                 ensure!(o.rsa.file.is_none(), "specify one RSA table per preset");
                 o.rsa.file = Some(argument(args, &mut i)?.into());
             }
+            "-rsa-family" => o.rsa.family = argument(args, &mut i)?.into(),
+            "-rsa-measures" => o.rsa.measures = Some(crate::rsa::names(argument(args, &mut i)?)?),
             "-rsa-models" => o.rsa.models = Some(crate::rsa::names(argument(args, &mut i)?)?),
             "-rsa-rois" => {
                 o.rsa.rois = Some(
@@ -253,6 +288,9 @@ pub fn parse(args: &[String]) -> Result<Options> {
             }
             "-rsa-plots" => o.rsa.plots = Some(crate::rsa::names(argument(args, &mut i)?)?),
             "-rsa-effect" => o.rsa.effect = argument(args, &mut i)?.into(),
+            "-rsa-times" => o.rsa.times = Some(crate::rsa::names(argument(args, &mut i)?)?),
+            "-rsa-summaries" => o.rsa.summaries = Some(crate::rsa::names(argument(args, &mut i)?)?),
+            "-rsa-ci" => o.rsa.ci = argument(args, &mut i)?.into(),
             "-rsa-pair" => o.rsa.pair = Some(crate::rsa::names(argument(args, &mut i)?)?),
             "-rsa-version" => o.rsa.version = argument(args, &mut i)?.parse()?,
             "-caption" => o.caption = argument(args, &mut i)?.into(),
@@ -500,6 +538,9 @@ pub fn parse(args: &[String]) -> Result<Options> {
                 );
                 o.shade_design.threshold = t;
             }
+            "-group-by" => o.group_by = Some(argument(args, &mut i)?.into()),
+            "-yfiles_lo" => o.qc.lower.extend(list(args, &mut i)?),
+            "-yfiles_hi" => o.qc.upper.extend(list(args, &mut i)?),
             "-yfiles_pm" => o.qc.pm.extend(list(args, &mut i)?),
             "-ylim_use_pm" => o.qc.use_pm = true,
             "-censor_files" => o.qc.censor_files.extend(list(args, &mut i)?),
@@ -564,15 +605,64 @@ pub fn parse(args: &[String]) -> Result<Options> {
             _ => o.files.push(flag.into()),
         }
         match flag {
-            "-infiles" | "-yfiles" | "-yfiles_pm" | "-censor_files" | "-xfile" | "-x"
-            | "-reorder" | "-censor" | "-shade-xmat" | "-rsa" => {
-                o.source_args.extend(start + 1..=i)
-            }
+            "-infiles" | "-yfiles" | "-yfiles_pm" | "-yfiles_lo" | "-yfiles_hi"
+            | "-censor_files" | "-xfile" | "-x" | "-reorder" | "-censor" | "-shade-xmat"
+            | "-rsa" | "-rdm" | "-rdm-labels" | "-rdm-order" => o.source_args.extend(start + 1..=i),
             "-stdin" | "-" => o.source_args.push(start),
             _ if !flag.starts_with('-') => o.source_args.push(start),
             _ => {}
         }
         i += 1;
+    }
+    if !o.rdm.files.is_empty() {
+        ensure!(
+            o.files.is_empty(),
+            "use -rdm FILE ... for all matrix inputs"
+        );
+        for flag in &used_flags {
+            ensure!(
+                [
+                    "-rdm",
+                    "-rdm-labels",
+                    "-rdm-order",
+                    "-rdm-scale",
+                    "-rdm-kind",
+                    "-rdm-version",
+                    "-prefix",
+                    "-png",
+                    "-svg",
+                    "-show",
+                    "-overwrite",
+                    "-width",
+                    "-height",
+                    "-figsize",
+                    "-dpi",
+                    "-title",
+                    "-plabel",
+                    "-caption",
+                    "-panel-title",
+                    "-panel-caption",
+                    "-panel-order",
+                    "-columns",
+                    "-reverse_order",
+                    "-missing",
+                    "-cbar",
+                    "-clim",
+                    "-zerocenter"
+                ]
+                .contains(flag),
+                "{flag} is not supported with -rdm; condition order uses -rdm-order"
+            );
+        }
+        ensure!(
+            o.missing != crate::input::Missing::Mean,
+            "RDMs do not impute values"
+        );
+    } else {
+        ensure!(
+            !used_flags.iter().any(|f| f.starts_with("-rdm-")),
+            "RDM options require -rdm FILE ..."
+        );
     }
     if o.rsa.file.is_some() {
         for flag in &used_flags {
@@ -580,8 +670,13 @@ pub fn parse(args: &[String]) -> Result<Options> {
                 [
                     "-rsa",
                     "-rsa-models",
+                    "-rsa-family",
+                    "-rsa-measures",
                     "-rsa-rois",
                     "-rsa-plots",
+                    "-rsa-ci",
+                    "-rsa-times",
+                    "-rsa-summaries",
                     "-rsa-effect",
                     "-rsa-pair",
                     "-rsa-version",
@@ -664,7 +759,8 @@ pub fn parse(args: &[String]) -> Result<Options> {
         "histogram options require -histogram"
     );
     ensure!(
-        o.kind == "heat"
+        !o.rdm.files.is_empty()
+            || o.kind == "heat"
             || (o.reorder.is_none() && !o.zerocenter && o.clim.is_none() && o.cmap == "viridis"),
         "heatmap options require -heat"
     );
@@ -685,12 +781,38 @@ pub fn parse(args: &[String]) -> Result<Options> {
         "demo cannot be combined with input files"
     );
     ensure!(
-        o.rsa.file.is_some() || o.demo.is_some() || !o.files.is_empty(),
+        !o.rdm.files.is_empty() || o.rsa.file.is_some() || o.demo.is_some() || !o.files.is_empty(),
         "supply a .1D file or -demo (see -help)"
     );
     ensure!(
-        !o.qc.use_pm || !o.qc.pm.is_empty(),
-        "ylim_use_pm requires yfiles_pm"
+        o.group_by.is_none()
+            || (o.demo.is_none()
+                && o.files.len() == 1
+                && o.one
+                && o.kind != "heat"
+                && o.rsa.file.is_none()
+                && o.rdm.files.is_empty()),
+        "group-by requires one ordinary data file and -one, with lines, scatter, or histogram"
+    );
+    ensure!(
+        o.group_by.is_none() || o.missing != crate::input::Missing::Mean,
+        "group-by does not impute across groups; choose error or gap"
+    );
+    ensure!(
+        o.qc.lower.is_empty() == o.qc.upper.is_empty(),
+        "supply both -yfiles_lo and -yfiles_hi"
+    );
+    ensure!(
+        o.qc.pm.is_empty() || o.qc.lower.is_empty(),
+        "choose symmetric widths or lower/upper bounds, not both"
+    );
+    ensure!(
+        o.qc.lower.is_empty() || o.missing != crate::input::Missing::Mean,
+        "supplied bounds cannot be mean-imputed; choose error or gap"
+    );
+    ensure!(
+        !o.qc.use_pm || !o.qc.pm.is_empty() || !o.qc.lower.is_empty(),
+        "ylim_use_pm requires supplied uncertainty widths or bounds"
     );
     ensure!(
         o.qc.box_view.is_empty() || o.qc.boxplot,
