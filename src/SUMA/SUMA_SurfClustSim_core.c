@@ -88,59 +88,65 @@ static int sscs_graph_copy(SUMA_SurfaceObject *SO, float rmm,
    return count;
 }
 
-SUMA_SURFCLUSTSIM_GRAPH *SUMA_SurfClustSim_MakeGraph(
-   SUMA_SurfaceObject *SO, float rmm)
+/* Populate a caller-owned graph; leave partial arrays for its destructor.
+   off is borrowed scratch, needed only for connections beyond one edge. */
+static int sscs_build_graph(SUMA_SurfaceObject *SO, float rmm,
+                            SUMA_SURFCLUSTSIM_GRAPH *graph,
+                            SUMA_GET_OFFSET_STRUCT *off)
 {
-   SUMA_SURFCLUSTSIM_GRAPH *graph = NULL;
-   SUMA_GET_OFFSET_STRUCT *off = NULL;
    int node, item, count;
-
-   if (!SO || !SO->FN || rmm == 0.0f || (-1.0f < rmm && rmm < 0.0f))
-      return NULL;
-
-   graph = (SUMA_SURFCLUSTSIM_GRAPH *)calloc(1, sizeof(*graph));
-   if (!graph) return NULL;
    graph->nnode = SO->N_Node;
    graph->offset = (int *)calloc((size_t)graph->nnode + 1, sizeof(int));
-   if (!graph->offset) goto fail;
+   if (!graph->offset) return 0;
 
    if (rmm == -1.0f) {
       for (node = 0; node < graph->nnode; ++node)
          graph->offset[node + 1] = graph->offset[node] + SO->FN->N_Neighb[node];
       graph->nedge = graph->offset[graph->nnode];
       graph->neighbor = (int *)malloc((size_t)graph->nedge * sizeof(int));
-      if (!graph->neighbor) goto fail;
+      if (!graph->neighbor) return 0;
       for (node = 0; node < graph->nnode; ++node)
          for (item = 0; item < SO->FN->N_Neighb[node]; ++item)
             graph->neighbor[graph->offset[node] + item] =
                SO->FN->FirstNeighb[node][item];
-      return graph;
+      return 1;
    }
 
-   off = SUMA_Initialize_getoffsets(SO->N_Node);
-   if (!off) goto fail;
+   if (!off) return 0;
    for (node = 0; node < graph->nnode; ++node) {
-      if (!SUMA_getoffsets2(node, SO, rmm, off, NULL, 0)) goto fail;
+      if (!SUMA_getoffsets2(node, SO, rmm, off, NULL, 0)) return 0;
       count = sscs_graph_count(SO, rmm, off);
       graph->offset[node + 1] = graph->offset[node] + count;
       SUMA_Recycle_getoffsets(off);
    }
    graph->nedge = graph->offset[graph->nnode];
    graph->neighbor = (int *)malloc((size_t)graph->nedge * sizeof(int));
-   if (!graph->neighbor) goto fail;
+   if (!graph->neighbor) return 0;
    for (node = 0; node < graph->nnode; ++node) {
-      if (!SUMA_getoffsets2(node, SO, rmm, off, NULL, 0)) goto fail;
+      if (!SUMA_getoffsets2(node, SO, rmm, off, NULL, 0)) return 0;
       count = sscs_graph_copy(SO, rmm, off, graph->neighbor + graph->offset[node]);
-      if (count != graph->offset[node + 1] - graph->offset[node]) goto fail;
+      if (count != graph->offset[node + 1] - graph->offset[node]) return 0;
       SUMA_Recycle_getoffsets(off);
    }
-   SUMA_Free_getoffsets(off);
-   return graph;
+   return 1;
+}
 
-fail:
+/* Return a complete adjacency graph or release every partial allocation. */
+SUMA_SURFCLUSTSIM_GRAPH *SUMA_SurfClustSim_MakeGraph(
+   SUMA_SurfaceObject *SO, float rmm)
+{
+   SUMA_SURFCLUSTSIM_GRAPH *graph;
+   SUMA_GET_OFFSET_STRUCT *off = NULL;
+   int ok;
+   if (!SO || !SO->FN || rmm == 0.0f || (-1.0f < rmm && rmm < 0.0f))
+      return NULL;
+   graph = (SUMA_SURFCLUSTSIM_GRAPH *)calloc(1, sizeof(*graph));
+   if (!graph) return NULL;
+   if (rmm != -1.0f) off = SUMA_Initialize_getoffsets(SO->N_Node);
+   ok = sscs_build_graph(SO, rmm, graph, off);
    if (off) SUMA_Free_getoffsets(off);
-   SUMA_SurfClustSim_FreeGraph(graph);
-   return NULL;
+   if (!ok) { SUMA_SurfClustSim_FreeGraph(graph); return NULL; }
+   return graph;
 }
 
 void SUMA_SurfClustSim_FreeGraph(SUMA_SURFCLUSTSIM_GRAPH *graph)
@@ -350,11 +356,12 @@ int SUMA_SurfClustSim_SmoothFixed(SUMA_SurfaceObject *SO, double **wgt,
    return 1;
 }
 
+/* Detrend and scale each masked node across fields; own reference scratch. */
 static int sscs_detrend_master(float **field, int nfield, int nnode,
                                const byte *mask)
 {
    float **ref = NULL, *series = NULL;
-   int order, nref, node, iter, rr;
+   int order, nref, node, iter, rr, ok;
    double mean, sumsq, scale;
 
    if (nfield < 3) return 1;
@@ -368,9 +375,9 @@ static int sscs_detrend_master(float **field, int nfield, int nnode,
    }
    if (!ref) return 0;
    series = (float *)malloc((size_t)nfield * sizeof(float));
-   if (!series) goto fail;
+   ok = (series != NULL);
 
-   for (node = 0; node < nnode; ++node) {
+   for (node = 0; ok && node < nnode; ++node) {
       if (mask && !mask[node]) continue;
       for (iter = 0; iter < nfield; ++iter) series[iter] = field[iter][node];
       THD_generic_detrend_LSQ(nfield, series, -1, nref, ref, NULL);
@@ -388,37 +395,25 @@ static int sscs_detrend_master(float **field, int nfield, int nnode,
    free(series);
    for (rr = 0; rr < nref; ++rr) free(ref[rr]);
    free(ref);
-   return 1;
-
-fail:
-   for (rr = 0; rr < nref; ++rr) free(ref[rr]);
-   free(ref);
-   free(series);
-   return 0;
+   return ok;
 }
 
-int SUMA_SurfClustSim_ChooseCompatNiter(
+/* Adaptively smooth borrowed field copies, preserving serial iteration order. */
+static int sscs_choose_compat_niter(
    SUMA_SurfaceObject *SO, double **wgt, float **field, int nfield,
    const byte *mask, double target_fwhm, int max_iter, float *final_fwhm,
-   SUMA_SURFCLUSTSIM_PROGRESS_FN progress, void *progress_data)
+   SUMA_SURFCLUSTSIM_PROGRESS_FN progress, void *progress_data,
+   float **master, float **buffer, float *fwhm)
 {
-   float **master = NULL, **buffer = NULL, *fwhm = NULL;
    double mean_fwhm;
    int iter = 0, col, nvalid, stop = 0, result = -1;
-
-   if (!SO || !wgt || !field || nfield <= 0 || target_fwhm <= 0.0)
-      return -1;
-   master = (float **)calloc((size_t)nfield, sizeof(float *));
-   buffer = (float **)calloc((size_t)nfield, sizeof(float *));
-   fwhm = (float *)malloc((size_t)nfield * sizeof(float));
-   if (!master || !buffer || !fwhm) goto fail;
    for (col = 0; col < nfield; ++col) {
       master[col] = (float *)malloc((size_t)SO->N_Node * sizeof(float));
       buffer[col] = (float *)malloc((size_t)SO->N_Node * sizeof(float));
-      if (!master[col] || !buffer[col]) goto fail;
+      if (!master[col] || !buffer[col]) return -1;
       memcpy(master[col], field[col], (size_t)SO->N_Node * sizeof(float));
    }
-   if (!sscs_detrend_master(master, nfield, SO->N_Node, mask)) goto fail;
+   if (!sscs_detrend_master(master, nfield, SO->N_Node, mask)) return -1;
 
    /* Serial on purpose.  SurfClustSim now parallelizes across blocks, and
       this runs inside one of those blocks, so adding a second level here
@@ -460,8 +455,26 @@ int SUMA_SurfClustSim_ChooseCompatNiter(
       ++iter;
       if (progress) progress(iter, max_iter, progress_data);
    }
+   return result;
+}
 
-fail:
+/* Own the master fields and smoothing buffers, including partial columns. */
+int SUMA_SurfClustSim_ChooseCompatNiter(
+   SUMA_SurfaceObject *SO, double **wgt, float **field, int nfield,
+   const byte *mask, double target_fwhm, int max_iter, float *final_fwhm,
+   SUMA_SURFCLUSTSIM_PROGRESS_FN progress, void *progress_data)
+{
+   float **master = NULL, **buffer = NULL, *fwhm = NULL;
+   int col, result = -1;
+   if (!SO || !wgt || !field || nfield <= 0 || target_fwhm <= 0.0)
+      return -1;
+   master = (float **)calloc((size_t)nfield, sizeof(float *));
+   buffer = (float **)calloc((size_t)nfield, sizeof(float *));
+   fwhm = (float *)malloc((size_t)nfield * sizeof(float));
+   if (master && buffer && fwhm)
+      result = sscs_choose_compat_niter(SO, wgt, field, nfield, mask,
+         target_fwhm, max_iter, final_fwhm, progress, progress_data,
+         master, buffer, fwhm);
    if (master) for (col = 0; col < nfield; ++col) free(master[col]);
    if (buffer) for (col = 0; col < nfield; ++col) free(buffer[col]);
    free(master);
@@ -539,6 +552,7 @@ void SUMA_SurfClustSim_ACF_Free(SUMA_SURFCLUSTSIM_ACF *acf)
    free(acf);
 }
 
+/* Measure and fit one field; publish parameters only after a successful fit. */
 int SUMA_SurfClustSim_ACF_Measure(
    SUMA_SurfaceObject *SO, const float *field, const byte *mask,
    float radius, float dr, double *a, double *b, double *c, double *fwhm)
@@ -554,18 +568,19 @@ int SUMA_SurfClustSim_ACF_Measure(
    curve = (double *)calloc(nbins, sizeof(double));
    nacc  = (double *)calloc(nbins, sizeof(double));
    off   = SUMA_Initialize_getoffsets(SO->N_Node);
-   if (!curve || !nacc || !off) goto done;
-   if (!SUMA_SurfACF_accumulate(SO, field, mask, radius, dr, nbins,
-                                curve, nacc, off)) goto done;
-   SUMA_SurfACF_finalize(curve, nacc, nbins);
-   q = SUMA_SurfACF_fit(curve, nbins, dr);
-   if (q.a < 0.0f) goto done;
-   if (a)    *a    = q.a;
-   if (b)    *b    = q.b;
-   if (c)    *c    = q.c;
-   if (fwhm) *fwhm = q.d;
-   ok = 1;
-done:
+   if (curve && nacc && off &&
+       SUMA_SurfACF_accumulate(SO, field, mask, radius, dr, nbins,
+                               curve, nacc, off)) {
+      SUMA_SurfACF_finalize(curve, nacc, nbins);
+      q = SUMA_SurfACF_fit(curve, nbins, dr);
+      if (!(q.a < 0.0f)) {
+         if (a)    *a    = q.a;
+         if (b)    *b    = q.b;
+         if (c)    *c    = q.c;
+         if (fwhm) *fwhm = q.d;
+         ok = 1;
+      }
+   }
    free(curve); free(nacc);
    if (off) SUMA_Free_getoffsets(off);
    return ok;
@@ -593,63 +608,46 @@ static double sscs_field_sd(const float *field, int nnode, const byte *mask)
    return sqrt(sumsq/(double)(count-1));
 }
 
-SUMA_SURFCLUSTSIM_ACF *SUMA_SurfClustSim_ACF_Calibrate(
-   SUMA_SurfaceObject *SO, double **wgt, const byte *mask,
-   double a, double b, double c, int nbasis, int niter_ref,
-   float radius, float dr, unsigned long long seed, int verb)
+/* Calibration scratch belongs to the outer call, including failed setup. */
+typedef struct {
+   SUMA_SURFCLUSTSIM_WORK *work;
+   SUMA_GET_OFFSET_STRUCT *off;
+   double *nacc, *par, *w;
+   float *field;
+} SSCS_ACF_SCRATCH;
+
+/* Build and fit the basis bank in the established order. The caller releases
+   scratch and the file-static optimizer arrays after either return value. */
+static int sscs_acf_calibrate(SUMA_SurfaceObject *SO, double **wgt,
+   const byte *mask, double a, double b, double c, int nbasis, int niter_ref,
+   float radius, float dr, unsigned long long seed, int verb, int nbins,
+   int stride, SUMA_SURFCLUSTSIM_ACF *acf, SSCS_ACF_SCRATCH *scratch)
 {
-   SUMA_SURFCLUSTSIM_ACF *acf = NULL;
-   SUMA_SURFCLUSTSIM_WORK *work = NULL;
-   SUMA_GET_OFFSET_STRUCT *off = NULL;
-   double *nacc = NULL, *par = NULL, *w = NULL;
-   float *field = NULL;
-   int nbins, ib, k, ok = 0, stride;
+   int ib, k;
    double ratio = 0.0, lo = 0.0;
-
-   if (!SO || !wgt || nbasis < 2 || nbasis > 64 || niter_ref < 1) return NULL;
-   SUMA_SurfACF_defaults(SO, &radius, &dr);
-   /* The default radius is 20 edge steps, which suits MEASURING a field but
-      is far too short for FITTING an exponential tail: at 20 steps a c=36
-      component is still at 0.165, so the fit would never see the shape it is
-      being asked to reproduce.  Reach out to where the tail has actually
-      decayed. */
-   if (radius < 2.0f * (float)c) radius = 2.0f * (float)c;
-   /* Cost grows with radius^2 and the neighbourhood walk dominates startup,
-      so cap it: past a couple of decay lengths the tail contributes little
-      to the fit but a great deal to the runtime. */
-   if (radius > 45.0f * SO->EL->AvgLe) radius = 45.0f * SO->EL->AvgLe;
-   nbins = SUMA_SurfACF_nbins(radius, dr);
-   if (nbins < 5) return NULL;
-
-   /* ~4000 centre nodes is plenty for a curve that averages over every pair
-      inside each neighbourhood; visiting all of them would dominate startup. */
-   stride = SO->N_Node / 1500; if (stride < 1) stride = 1;
-
-   acf = (SUMA_SURFCLUSTSIM_ACF *)calloc(1, sizeof(*acf));
-   if (!acf) return NULL;
    acf->nbasis = nbasis;
    acf->niter  = (int    *)calloc(nbasis, sizeof(int));
    acf->weight = (double *)calloc(nbasis, sizeof(double));
    acf->scale  = (double *)calloc(nbasis, sizeof(double));
    acf->target_a = a; acf->target_b = b; acf->target_c = c;
-   if (!acf->niter || !acf->weight || !acf->scale) goto done;
+   if (!acf->niter || !acf->weight || !acf->scale) return 0;
 
    sscs_fit_nbasis = nbasis;
    sscs_fit_nbins  = nbins;
    sscs_fit_basis  = (double **)calloc(nbasis, sizeof(double *));
    sscs_fit_target = (double  *)calloc(nbins,  sizeof(double));
    sscs_fit_use    = (byte    *)calloc(nbins,  sizeof(byte));
-   nacc  = (double *)calloc(nbins, sizeof(double));
-   par   = (double *)calloc(nbasis, sizeof(double));
-   w     = (double *)calloc(nbasis, sizeof(double));
-   field = (float  *)malloc((size_t)SO->N_Node * sizeof(float));
-   work  = SUMA_SurfClustSim_NewWork(SO->N_Node);
-   off   = SUMA_Initialize_getoffsets(SO->N_Node);
-   if (!sscs_fit_basis || !sscs_fit_target || !sscs_fit_use || !nacc ||
-       !par || !w || !field || !work || !off) goto done;
+   scratch->nacc  = (double *)calloc(nbins, sizeof(double));
+   scratch->par   = (double *)calloc(nbasis, sizeof(double));
+   scratch->w     = (double *)calloc(nbasis, sizeof(double));
+   scratch->field = (float  *)malloc((size_t)SO->N_Node * sizeof(float));
+   scratch->work  = SUMA_SurfClustSim_NewWork(SO->N_Node);
+   scratch->off   = SUMA_Initialize_getoffsets(SO->N_Node);
+   if (!sscs_fit_basis || !sscs_fit_target || !sscs_fit_use || !scratch->nacc ||
+       !scratch->par || !scratch->w || !scratch->field || !scratch->work || !scratch->off) return 0;
    for (k = 0; k < nbasis; ++k) {
       sscs_fit_basis[k] = (double *)calloc(nbins, sizeof(double));
-      if (!sscs_fit_basis[k]) goto done;
+      if (!sscs_fit_basis[k]) return 0;
    }
 
    for (ib = 0; ib < nbins; ++ib)
@@ -682,11 +680,11 @@ SUMA_SURFCLUSTSIM_ACF *SUMA_SurfClustSim_ACF_Calibrate(
                ? r - step + step*(prev-0.5)/(prev-v) : r); break; }
          prev = v;
       }
-      if (dtarget <= 0.0) goto done;
+      if (dtarget <= 0.0) return 0;
 
       rung  = (double *)calloc(nbasis, sizeof(double));
       probe = (float  *)malloc((size_t)SO->N_Node * sizeof(float));
-      if (!rung || !probe) { free(rung); free(probe); goto done; }
+      if (!rung || !probe) { free(rung); free(probe); return 0; }
       /* Span the model's OWN two scales rather than a fixed multiple of its
          combined width.  The Gaussian component has ACF FWHM 2.355*b and the
          exponential has 2*c*ln2; dividing by sqrt(2) converts each to the
@@ -709,8 +707,8 @@ SUMA_SURFCLUSTSIM_ACF *SUMA_SurfClustSim_ACF_Calibrate(
       found = 0;
       for (pass = 1; pass <= 20000 && found < nbasis; ++pass) {
          float fw;
-         if (!SUMA_SurfClustSim_SmoothFixed(SO, wgt, 1, probe, mask, work)) {
-            free(rung); free(probe); goto done;
+         if (!SUMA_SurfClustSim_SmoothFixed(SO, wgt, 1, probe, mask, scratch->work)) {
+            free(rung); free(probe); return 0;
          }
          fw = sscs_estimate_fwhm_quiet(SO, probe, mask);
          if (!(fw > 0.0f)) continue;
@@ -744,20 +742,20 @@ SUMA_SURFCLUSTSIM_ACF *SUMA_SurfClustSim_ACF_Calibrate(
    for (k = 0; k < nbasis; ++k) {
       int rep;
       double sdsum = 0.0;
-      memset(nacc, 0, (size_t)nbins*sizeof(double));
+      memset(scratch->nacc, 0, (size_t)nbins*sizeof(double));
       memset(sscs_fit_basis[k], 0, (size_t)nbins*sizeof(double));
       for (rep = 0; rep < SSCS_ACF_NCAL; ++rep) {
-         if (!sscs_acf_basis_field(SO, wgt, field, mask, acf->niter[k],
+         if (!sscs_acf_basis_field(SO, wgt, scratch->field, mask, acf->niter[k],
                                    seed ^ UINT64_C(0x5bf03635),
-                                   rep * nbasis + k, work)) goto done;
-         sdsum += sscs_field_sd(field, SO->N_Node, mask);
-         if (!SUMA_SurfACF_accumulate_str(SO, field, mask, radius, dr, nbins,
-                                          sscs_fit_basis[k], nacc, off,
-                                          stride)) goto done;
+                                   rep * nbasis + k, scratch->work)) return 0;
+         sdsum += sscs_field_sd(scratch->field, SO->N_Node, mask);
+         if (!SUMA_SurfACF_accumulate_str(SO, scratch->field, mask, radius, dr, nbins,
+                                          sscs_fit_basis[k], scratch->nacc, scratch->off,
+                                          stride)) return 0;
       }
-      if (!(sdsum > 0.0)) goto done;
+      if (!(sdsum > 0.0)) return 0;
       acf->scale[k] = (double)SSCS_ACF_NCAL / sdsum;   /* reporting only */
-      SUMA_SurfACF_finalize(sscs_fit_basis[k], nacc, nbins);
+      SUMA_SurfACF_finalize(sscs_fit_basis[k], scratch->nacc, nbins);
       if (verb > 1)
          INFO_message("  ACF basis %d: %d smoothing passes", k, acf->niter[k]);
    }
@@ -769,10 +767,10 @@ SUMA_SURFCLUSTSIM_ACF *SUMA_SurfClustSim_ACF_Calibrate(
          if (sscs_fit_basis[k][ib] < -0.5) sscs_fit_use[ib] = 0;
    }
 
-   for (k = 0; k < nbasis; ++k) par[k] = 1.0;   /* start at equal weights */
-   if (powell_newuoa(nbasis, par, 0.3, 0.0001, 9999, sscs_acf_costfunc) < 0)
-      goto done;
-   sscs_fit_weights(par, acf->weight, nbasis);
+   for (k = 0; k < nbasis; ++k) scratch->par[k] = 1.0;   /* start at equal weights */
+   if (powell_newuoa(nbasis, scratch->par, 0.3, 0.0001, 9999, sscs_acf_costfunc) < 0)
+      return 0;
+   sscs_fit_weights(scratch->par, acf->weight, nbasis);
 
    {  /* residual, and the effective FWHM the fitted mixture actually gives */
       double sum = 0.0, model; int used = 0;
@@ -815,9 +813,9 @@ SUMA_SURFCLUSTSIM_ACF *SUMA_SurfClustSim_ACF_Calibrate(
          for (rep = 0; rep < SSCS_ACF_NCAL; ++rep) {
             if (!SUMA_SurfClustSim_ACF_Fill(SO, wgt, acf, check, mask,
                                             seed ^ UINT64_C(0x2545f491),
-                                            rep, work)) break;
+                                            rep, scratch->work)) break;
             if (SUMA_SurfACF_accumulate_str(SO, check, mask, radius, dr,
-                                            nbins, cc, cn, off, stride)) ++nok;
+                                            nbins, cc, cn, scratch->off, stride)) ++nok;
          }
          if (nok > 0) {
             float_quad q;
@@ -853,9 +851,42 @@ SUMA_SURFCLUSTSIM_ACF *SUMA_SurfClustSim_ACF_Calibrate(
       free(check); free(cc); free(cn);
    }
 
-   ok = 1;
+   return 1;
+}
 
-done:
+/* Return the calibrated model; release all scratch and reset optimizer state
+   on both success and failure. Calibration retains its serial-only contract. */
+SUMA_SURFCLUSTSIM_ACF *SUMA_SurfClustSim_ACF_Calibrate(
+   SUMA_SurfaceObject *SO, double **wgt, const byte *mask,
+   double a, double b, double c, int nbasis, int niter_ref,
+   float radius, float dr, unsigned long long seed, int verb)
+{
+   SUMA_SURFCLUSTSIM_ACF *acf = NULL;
+   SSCS_ACF_SCRATCH scratch = {0};
+   int nbins, k, ok, stride;
+   if (!SO || !wgt || nbasis < 2 || nbasis > 64 || niter_ref < 1) return NULL;
+   SUMA_SurfACF_defaults(SO, &radius, &dr);
+   /* The default radius is 20 edge steps, which suits MEASURING a field but
+      is far too short for FITTING an exponential tail: at 20 steps a c=36
+      component is still at 0.165, so the fit would never see the shape it is
+      being asked to reproduce.  Reach out to where the tail has actually
+      decayed. */
+   if (radius < 2.0f * (float)c) radius = 2.0f * (float)c;
+   /* Cost grows with radius^2 and the neighbourhood walk dominates startup,
+      so cap it: past a couple of decay lengths the tail contributes little
+      to the fit but a great deal to the runtime. */
+   if (radius > 45.0f * SO->EL->AvgLe) radius = 45.0f * SO->EL->AvgLe;
+   nbins = SUMA_SurfACF_nbins(radius, dr);
+   if (nbins < 5) return NULL;
+
+   /* ~4000 centre nodes is plenty for a curve that averages over every pair
+      inside each neighbourhood; visiting all of them would dominate startup. */
+   stride = SO->N_Node / 1500; if (stride < 1) stride = 1;
+
+   acf = (SUMA_SURFCLUSTSIM_ACF *)calloc(1, sizeof(*acf));
+   if (!acf) return NULL;
+   ok = sscs_acf_calibrate(SO, wgt, mask, a, b, c, nbasis, niter_ref,
+      radius, dr, seed, verb, nbins, stride, acf, &scratch);
    if (sscs_fit_basis) {
       for (k = 0; k < nbasis; ++k) free(sscs_fit_basis[k]);
       free(sscs_fit_basis); sscs_fit_basis = NULL;
@@ -863,13 +894,15 @@ done:
    free(sscs_fit_target); sscs_fit_target = NULL;
    free(sscs_fit_use);    sscs_fit_use    = NULL;
    sscs_fit_nbasis = sscs_fit_nbins = 0;
-   free(nacc); free(par); free(w); free(field);
-   if (work) SUMA_SurfClustSim_FreeWork(work);
-   if (off)  SUMA_Free_getoffsets(off);
+   free(scratch.nacc); free(scratch.par); free(scratch.w); free(scratch.field);
+   if (scratch.work) SUMA_SurfClustSim_FreeWork(scratch.work);
+   if (scratch.off)  SUMA_Free_getoffsets(scratch.off);
    if (!ok) { SUMA_SurfClustSim_ACF_Free(acf); acf = NULL; }
    return acf;
 }
 
+/* Sum independently seeded basis fields in order. On failure return zero;
+   the caller must discard the partially accumulated output field. */
 int SUMA_SurfClustSim_ACF_Fill(
    SUMA_SurfaceObject *SO, double **wgt, const SUMA_SURFCLUSTSIM_ACF *acf,
    float *field, const byte *mask, unsigned long long seed, int iteration,
@@ -883,6 +916,7 @@ int SUMA_SurfClustSim_ACF_Fill(
    if (!component) return 0;
 
    memset(field, 0, (size_t)SO->N_Node * sizeof(float));
+   ok = 1;
    for (k = 0; k < acf->nbasis; ++k) {
       double gain;
       if (acf->weight[k] <= 0.0) continue;
@@ -894,7 +928,7 @@ int SUMA_SurfClustSim_ACF_Fill(
       double sd;
       if (!sscs_acf_basis_field(SO, wgt, component, mask, acf->niter[k],
                                 seed, SSCS_BASIS_INDEX(iteration, k), work))
-         goto done;
+         { ok = 0; break; }
       /* Normalize by THIS realization's standard deviation, not by the one
          measured at calibration.  A heavily smoothed field retains only the
          lowest spatial modes, so its variance is set by a handful of random
@@ -902,13 +936,11 @@ int SUMA_SurfClustSim_ACF_Fill(
          Using a fixed scale then lets the broad components contribute the
          wrong share, and the mixture comes out narrower than requested. */
       sd = sscs_field_sd(component, SO->N_Node, mask);
-      if (!(sd > 0.0)) goto done;
+      if (!(sd > 0.0)) { ok = 0; break; }
       gain = sqrt(acf->weight[k]) / sd;
       for (n = 0; n < SO->N_Node; ++n)
          field[n] += (float)(gain * (double)component[n]);
    }
-   ok = 1;
-done:
    free(component);
    return ok;
 }

@@ -1010,6 +1010,7 @@ static void sscs_parse_options(int argc, char **argv, SSCS_OPTIONS *opt,
    if (!THD_filename_ok(opt->prefix)) ERROR_exit("Illegal output prefix");
 }
 
+/* Read the first numeric column as a mask; release all dataset scratch. */
 static byte *sscs_load_surface_mask(const char *name, SUMA_SurfaceObject *SO)
 {
    SUMA_DSET *dset;
@@ -1019,22 +1020,17 @@ static byte *sscs_load_surface_mask(const char *name, SUMA_SurfaceObject *SO)
    int *cols = NULL, ncols = 0, nmask = 0, node;
    if (!name) return NULL;
    dset = SUMA_LoadDset_s((char *)name, &form, 0);
-   if (!dset || !SUMA_OKassign(dset, SO)) goto fail;
-   cols = SUMA_FindNumericDataDsetCols(dset, &ncols);
-   if (!cols || ncols < 1) goto fail;
-   values = SUMA_DsetCol2FloatFullSortedColumn(
-      dset, cols[0], &defined, 0.0, SO->N_Node, &nmask, YUP);
-   if (!values) goto fail;
-   mask = (byte *)calloc((size_t)SO->N_Node, sizeof(byte));
-   if (!mask) goto fail;
-   for (node = 0; node < SO->N_Node; ++node)
+   if (dset && SUMA_OKassign(dset, SO))
+      cols = SUMA_FindNumericDataDsetCols(dset, &ncols);
+   if (cols && ncols > 0)
+      values = SUMA_DsetCol2FloatFullSortedColumn(
+         dset, cols[0], &defined, 0.0, SO->N_Node, &nmask, YUP);
+   if (values) mask = (byte *)calloc((size_t)SO->N_Node, sizeof(byte));
+   if (mask) for (node = 0; node < SO->N_Node; ++node)
       mask[node] = (!defined || defined[node]) && values[node] != 0.0f;
-   free(cols); SUMA_free(values); SUMA_free(defined); SUMA_FreeDset(dset);
-   return mask;
-fail:
-   free(mask); free(cols); SUMA_free(values); SUMA_free(defined);
+   free(cols); SUMA_free(values); SUMA_free(defined);
    if (dset) SUMA_FreeDset(dset);
-   return NULL;
+   return mask;
 }
 
 static int sscs_copy_surface(SUMA_SurfaceObject *SO, SUMA_surface *surface)
@@ -1112,25 +1108,20 @@ static float **sscs_acf_fields(const SSCS_OPTIONS *opt, int first, int count,
    return field;
 }
 
-static float **sscs_volume_fields(const SSCS_OPTIONS *opt, int first, int count,
-                                  int nnode, THD_3dim_dataset *mask_dset,
-                                  const byte *volmask, SUMA_surface *surf_a,
-                                  SUMA_surface *surf_b)
+/* Fill caller-owned noise bricks and map them to the surface. The returned
+   mapping belongs to the caller; the dataset owns every substituted brick. */
+static v2s_results *sscs_map_volume_noise(const SSCS_OPTIONS *opt, int first,
+   int count, int nnode, THD_3dim_dataset *noise_dset, const byte *volmask,
+   SUMA_surface *surf_a, SUMA_surface *surf_b)
 {
-   THD_3dim_dataset *noise_dset = NULL;
    v2s_opts_t vopt;
-   v2s_results *mapped = NULL;
-   float **field = NULL;
-   int nvox, col, row, node;
-
-   noise_dset = EDIT_empty_copy(mask_dset);
-   if (!noise_dset) goto fail;
+   int nvox, col;
    EDIT_dset_items(noise_dset, ADN_nvals, count, ADN_prefix, "SurfClustSimNoise",
                    ADN_none);
-   nvox = DSET_NVOX(mask_dset);
+   nvox = DSET_NVOX(noise_dset);
    for (col = 0; col < count; ++col) {
       float *brick = (float *)malloc((size_t)nvox * sizeof(float));
-      if (!brick) goto fail;
+      if (!brick) return NULL;
       SUMA_SurfClustSim_FillNoise(brick, nvox, volmask, opt->seed, first + col);
       EDIT_substitute_brick(noise_dset, col, MRI_float, brick);
       EDIT_BRICK_FACTOR(noise_dset, col, 0.0f);
@@ -1150,32 +1141,43 @@ static float **sscs_volume_fields(const SSCS_OPTIONS *opt, int first, int count,
    vopt.oob.show = 1;
    vopt.oob.index = -1;
    vopt.oob.value = 0.0f;
-   mapped = opt_vol2surf(noise_dset, &vopt, surf_a, surf_b, NULL);
-   if (!mapped || mapped->max_vals != count) goto fail;
+   return opt_vol2surf(noise_dset, &vopt, surf_a, surf_b, NULL);
+}
 
-   field = (float **)calloc((size_t)count, sizeof(float *));
-   if (!field) goto fail;
-   for (col = 0; col < count; ++col) {
-      field[col] = (float *)calloc((size_t)nnode, sizeof(float));
-      if (!field[col]) goto fail;
+/* Own the temporary volume and mapping; return only a complete field block. */
+static float **sscs_volume_fields(const SSCS_OPTIONS *opt, int first, int count,
+                                  int nnode, THD_3dim_dataset *mask_dset,
+                                  const byte *volmask, SUMA_surface *surf_a,
+                                  SUMA_surface *surf_b)
+{
+   THD_3dim_dataset *noise_dset = EDIT_empty_copy(mask_dset);
+   v2s_results *mapped;
+   float **field = NULL;
+   int col, row, node, ok;
+   if (!noise_dset) return NULL;
+   mapped = sscs_map_volume_noise(opt, first, count, nnode, noise_dset,
+                                   volmask, surf_a, surf_b);
+   ok = (mapped != NULL && mapped->max_vals == count);
+   if (ok) {
+      field = (float **)calloc((size_t)count, sizeof(float *));
+      ok = (field != NULL);
    }
-   for (row = 0; row < mapped->nused; ++row) {
+   for (col = 0; ok && col < count; ++col) {
+      field[col] = (float *)calloc((size_t)nnode, sizeof(float));
+      ok = (field[col] != NULL);
+   }
+   if (ok) for (row = 0; row < mapped->nused; ++row) {
       node = mapped->nodes[row];
       if (node < 0 || node >= nnode) continue;
       for (col = 0; col < count; ++col) field[col][node] = mapped->vals[col][row];
    }
-   free_v2s_results(mapped);
-   DSET_delete(noise_dset);
-   return field;
-
-fail:
    if (mapped) free_v2s_results(mapped);
-   if (noise_dset) DSET_delete(noise_dset);
-   if (field) {
+   DSET_delete(noise_dset);
+   if (!ok && field) {
       for (col = 0; col < count; ++col) free(field[col]);
-      free(field);
+      free(field); field = NULL;
    }
-   return NULL;
+   return field;
 }
 
 static void sscs_free_fields(float **field, int count)
@@ -1325,34 +1327,21 @@ static double sscs_calibrate_multithresh(const float *maxarea, int npthr,
    return fpr;
 }
 
-static int sscs_output_mthresh(const SSCS_OPTIONS *opt, int mode,
+/* Calibrate and write a table using caller-owned arrays. Return zero before
+   writing if setup fails; the caller also frees partially sorted columns. */
+static int sscs_write_mthresh(const SSCS_OPTIONS *opt, int mode,
                                const float *maxarea, const char *commandline,
                                const char *surface_label, double sigma,
-                               int niter_min, int niter_max)
+                               int niter_min, int niter_max, const char *filename,
+                               float **sorted, double *cutoff,
+                               double *achieved, double *table)
 {
-   char filename[THD_MAX_NAME];
    FILE *out;
-   float **sorted = NULL;
-   double *cutoff = NULL, *achieved = NULL, *table = NULL;
-   int pindex, aindex, ok = 0;
-
-   snprintf(filename, sizeof(filename), "%s.%s.mthresh.1D", opt->prefix,
-            sscs_mode_label(mode));
-   if (THD_is_file(filename) && !THD_ok_overwrite()) {
-      ERROR_message("Output file exists: %s", filename); return 0;
-   }
-
-   sorted = (float **)calloc((size_t)opt->npthr, sizeof(float *));
-   cutoff = (double *)malloc((size_t)opt->npthr * sizeof(double));
-   achieved = (double *)malloc((size_t)opt->nathr * sizeof(double));
-   table = (double *)malloc((size_t)opt->npthr * opt->nathr * sizeof(double));
-   if (!sorted || !cutoff || !achieved || !table) {
-      ERROR_message("Out of memory building multi-threshold table"); goto done;
-   }
+   int pindex, aindex;
    for (pindex = 0; pindex < opt->npthr; ++pindex) {
       sorted[pindex] = (float *)malloc((size_t)opt->niter * sizeof(float));
       if (!sorted[pindex]) {
-         ERROR_message("Out of memory sorting null areas"); goto done;
+         ERROR_message("Out of memory sorting null areas"); return 0;
       }
       memcpy(sorted[pindex], maxarea + (size_t)pindex * opt->niter,
              (size_t)opt->niter * sizeof(float));
@@ -1367,7 +1356,7 @@ static int sscs_output_mthresh(const SSCS_OPTIONS *opt, int mode,
    }
 
    out = fopen(filename, "w");
-   if (!out) { ERROR_message("Cannot open %s", filename); goto done; }
+   if (!out) { ERROR_message("Cannot open %s", filename); return 0; }
    fprintf(out,
       "# %s\n# SurfClustSim %s\n# Surface: %s\n# %s\n"
       "# Nodes: %d total, %d in mask; total area: %.9g; noise domain: %s\n"
@@ -1420,9 +1409,35 @@ static int sscs_output_mthresh(const SSCS_OPTIONS *opt, int mode,
                "to calibrate this finely.  Use more -niter.",
                opt->athr[aindex], achieved[aindex], opt->niter);
    }
-   ok = 1;
+   return 1;
+}
 
-done:
+/* Own multi-threshold scratch and retain the existing overwrite policy. */
+static int sscs_output_mthresh(const SSCS_OPTIONS *opt, int mode,
+                               const float *maxarea, const char *commandline,
+                               const char *surface_label, double sigma,
+                               int niter_min, int niter_max)
+{
+   char filename[THD_MAX_NAME];
+   float **sorted = NULL;
+   double *cutoff = NULL, *achieved = NULL, *table = NULL;
+   int pindex, ok = 0;
+   snprintf(filename, sizeof(filename), "%s.%s.mthresh.1D", opt->prefix,
+            sscs_mode_label(mode));
+   if (THD_is_file(filename) && !THD_ok_overwrite()) {
+      ERROR_message("Output file exists: %s", filename); return 0;
+   }
+
+   sorted = (float **)calloc((size_t)opt->npthr, sizeof(float *));
+   cutoff = (double *)malloc((size_t)opt->npthr * sizeof(double));
+   achieved = (double *)malloc((size_t)opt->nathr * sizeof(double));
+   table = (double *)malloc((size_t)opt->npthr * opt->nathr * sizeof(double));
+   if (!sorted || !cutoff || !achieved || !table)
+      ERROR_message("Out of memory building multi-threshold table");
+   else
+      ok = sscs_write_mthresh(opt, mode, maxarea, commandline, surface_label,
+                              sigma, niter_min, niter_max, filename,
+                              sorted, cutoff, achieved, table);
    if (sorted) {
       for (pindex = 0; pindex < opt->npthr; ++pindex) free(sorted[pindex]);
       free(sorted);

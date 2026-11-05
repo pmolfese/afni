@@ -95,38 +95,45 @@ static void usage(void)
 "This tool splits an existing design; it does not create new regressors.\n"
    );
 }
-/* NI_decode_int_list accepts trailing garbage; CLI run selections must not. */
-static NI_int_array *parse_runs(const char *p,int limit)
+/* Fill caller-owned arrays with unique one-based runs; reject trailing garbage. */
+static int parse_run_values(const char *p,int limit,NI_int_array *a,int *seen)
 {
-   NI_int_array *a=calloc(1,sizeof(*a));
-   int *seen=calloc((size_t)limit,sizeof(int));
-   if(!a || !seen){free(a);free(seen);return NULL;}
-   a->ar=malloc(sizeof(int)*(size_t)limit);
-   if(!a->ar){free(a);free(seen);return NULL;}
    while(*p){
       char *end; long first,last,v; int step;
       while(isspace((unsigned char)*p)) p++;
       errno=0; first=strtol(p,&end,10);
-      if(errno || p==end || first<1 || first>limit) goto bad;
+      if(errno || p==end || first<1 || first>limit) return 0;
       p=end; last=first;
       if(p[0]=='.' && p[1]=='.'){
          p+=2; errno=0; last=strtol(p,&end,10);
-         if(errno || p==end || last<1 || last>limit) goto bad;
+         if(errno || p==end || last<1 || last>limit) return 0;
          p=end;
       }
       while(isspace((unsigned char)*p)) p++;
-      if(*p && *p!=',') goto bad;
+      if(*p && *p!=',') return 0;
       step=last>=first?1:-1;
       for(v=first;;v+=step){
-         if(seen[v-1]) goto bad;
+         if(seen[v-1]) return 0;
          seen[v-1]=1; a->ar[a->num++]=(int)v;
          if(v==last) break;
       }
-      if(*p==','){p++;if(!*p) goto bad;}
+      if(*p==','){p++;if(!*p) return 0;}
    }
-   free(seen);return a;
-bad:
-   free(seen);NI_delete_int_array(a);return NULL;
+   return 1;
+}
+
+/* Own parsing storage; return a complete list or release it on invalid input. */
+static NI_int_array *parse_runs(const char *p,int limit)
+{
+   NI_int_array *a=calloc(1,sizeof(*a));
+   int *seen=calloc((size_t)limit,sizeof(int)),ok=0;
+   if(a && seen){
+      a->ar=malloc(sizeof(int)*(size_t)limit);
+      if(a->ar) ok=parse_run_values(p,limit,a,seen);
+   }
+   free(seen);
+   if(!ok){if(a)NI_delete_int_array(a);return NULL;}
+   return a;
 }
 static char *outname(const char *prefix,int run,const char *suffix)
 {
@@ -319,48 +326,81 @@ static int xt_mark_names(const THD_xmat *a,const char *list,int stimuli,unsigned
       if(!found){fprintf(stderr,"** unknown %s label: %s\n",stimuli?"stimulus":"column",v->str[i]);NI_delete_str_array(v);return 0;}
    }NI_delete_str_array(v);return 1;
 }
-static int xt_select(const THD_xmat *a,const XT_options *o,const char *prefix)
+/* Translate zero-based column ranges to the strict one-based run parser.
+   On success, add columns to the caller's mask; always release parsing storage. */
+static int xt_mark_columns(const THD_xmat *a,const char *columns,
+                           unsigned char *keep,char *err,int nerr)
 {
-   unsigned char *keep=calloc((size_t)a->ncol,1);THD_xmat *x=NULL;THD_xmat_run_map *m=NULL;
-   char err[1024]="",*paths[3]={NULL,NULL,NULL};int c,i,ok=0,wrote=0;
-   if(!keep || !prefix){fprintf(stderr,"** selection requires -prefix\n");free(keep);return 1;}
-   if(!xt_metadata(a,err,sizeof(err)))goto done;
-   if(o->columns){ /* parse_runs is strict and one-based; translate each token below. */
-      char *p=strdup(o->columns),*q=p;NI_int_array *v;char *one=NULL;
-      while(*q){char *end;long n;errno=0;n=strtol(q,&end,10);
-         if(errno || end==q || n<0 || n>=a->ncol){free(p);snprintf(err,sizeof(err),"invalid zero-based -select_columns");goto done;}
+   const char *q=columns;
+   NI_int_array *v=NULL;char *one=NULL;int i,ok=1;
+   while(*q && ok){
+      char *end;long n;errno=0;n=strtol(q,&end,10);
+      if(errno || end==q || n<0 || n>=a->ncol){
+         snprintf(err,nerr,"invalid zero-based -select_columns");ok=0;
+      }else{
          one=THD_zzprintf(one,"%ld",n+1);q=end;
          if(q[0]=='.' && q[1]=='.'){one=THD_zzprintf(one,"..");q+=2;}
          else if(*q==','){one=THD_zzprintf(one,",");q++;}
-         else if(*q){free(p);free(one);snprintf(err,sizeof(err),"invalid -select_columns");goto done;}
+         else if(*q){snprintf(err,nerr,"invalid -select_columns");ok=0;}
       }
-      v=one?parse_runs(one,a->ncol):NULL;free(one);free(p);
-      if(!v || !v->num){if(v)NI_delete_int_array(v);snprintf(err,sizeof(err),"invalid -select_columns");goto done;}
-      for(i=0;i<v->num;i++)keep[v->ar[i]-1]=1;NI_delete_int_array(v);
    }
-   if(o->labels && !xt_mark_names(a,o->labels,0,keep))goto done;
-   if(o->stimuli && !xt_mark_names(a,o->stimuli,1,keep))goto done;
-   if(o->groups){
-      const char *v=THD_xmat_attr(a,"ColumnGroups");NI_int_array *g=v?NI_decode_int_list((char *)v,","):NULL;
-      NI_str_array *groups=NI_decode_string_list((char *)o->groups,",");
-      if(!g || g->num!=a->ncol || !groups){if(g)NI_delete_int_array(g);if(groups)NI_delete_str_array(groups);snprintf(err,sizeof(err),"group selection needs valid ColumnGroups");goto done;}
-      for(i=0;i<groups->num;i++){
-         char *end;long n=strtol(groups->str[i],&end,10);int all=!strcmp(groups->str[i],"stimuli");
-         if(!strcmp(groups->str[i],"baseline"))n=-1;
-         else if(!strcmp(groups->str[i],"nuisance"))n=0;
-         else if(!all && (end==groups->str[i] || *end)){snprintf(err,sizeof(err),"unknown group: %s",groups->str[i]);NI_delete_int_array(g);NI_delete_str_array(groups);goto done;}
-         {int found=0;for(c=0;c<a->ncol;c++)if(all?g->ar[c]>0:g->ar[c]==n){keep[c]=1;found=1;}
-          if(!found){snprintf(err,sizeof(err),"group selects no columns: %s",groups->str[i]);NI_delete_int_array(g);NI_delete_str_array(groups);goto done;}}
-      }NI_delete_int_array(g);NI_delete_str_array(groups);
+   if(ok){
+      v=one?parse_runs(one,a->ncol):NULL;
+      if(!v || !v->num){snprintf(err,nerr,"invalid -select_columns");ok=0;}
+      else for(i=0;i<v->num;i++)keep[v->ar[i]-1]=1;
    }
-   x=THD_xmat_select_columns(a,keep,o->drop_glts,&m,err,sizeof(err));if(!x)goto done;
-   paths[0]=THD_zzprintf(NULL,"%s.xmat.1D",prefix);paths[1]=THD_zzprintf(NULL,"%s.rows.1D",prefix);paths[2]=THD_zzprintf(NULL,"%s.columns.1D",prefix);
-   if(!THD_xmat_write(x,paths[0],err,sizeof(err)))goto done;wrote=1;
-   if(!THD_xmat_write_run_map(a,x,m,paths[1],paths[2],err,sizeof(err)))goto done;
-   printf("# Selected %d/%d columns -> %s\n",x->ncol,a->ncol,paths[0]);ok=1;
-done:
-   if(!ok){if(wrote)unlink(paths[0]);fprintf(stderr,"** selection: %s\n",*err?err:"invalid selection");}
-   for(i=0;i<3;i++)free(paths[i]);free(keep);THD_xmat_free(x);THD_xmat_run_map_free(m);return !ok;
+   if(v)NI_delete_int_array(v);
+   free(one);return ok;
+}
+
+/* Resolve group names/numbers into the caller's mask, releasing decoded lists. */
+static int xt_mark_groups(const THD_xmat *a,const char *list,
+                          unsigned char *keep,char *err,int nerr)
+{
+   const char *v=THD_xmat_attr(a,"ColumnGroups");
+   NI_int_array *g=v?NI_decode_int_list((char *)v,","):NULL;
+   NI_str_array *groups=NI_decode_string_list((char *)list,",");
+   int i,c,ok=g && g->num==a->ncol && groups;
+   if(!ok)snprintf(err,nerr,"group selection needs valid ColumnGroups");
+   for(i=0;ok && i<groups->num;i++){
+      char *end;long n=strtol(groups->str[i],&end,10);
+      int all=!strcmp(groups->str[i],"stimuli"),found=0;
+      if(!strcmp(groups->str[i],"baseline"))n=-1;
+      else if(!strcmp(groups->str[i],"nuisance"))n=0;
+      else if(!all && (end==groups->str[i] || *end)){
+         snprintf(err,nerr,"unknown group: %s",groups->str[i]);ok=0;
+      }
+      if(ok){
+         for(c=0;c<a->ncol;c++)if(all?g->ar[c]>0:g->ar[c]==n){keep[c]=1;found=1;}
+         if(!found){snprintf(err,nerr,"group selects no columns: %s",groups->str[i]);ok=0;}
+      }
+   }
+   if(g)NI_delete_int_array(g);
+   if(groups)NI_delete_str_array(groups);
+   return ok;
+}
+
+/* Select and write a matrix plus provenance; roll back the matrix if maps fail. */
+static int xt_select(const THD_xmat *a,const XT_options *o,const char *prefix)
+{
+   unsigned char *keep=calloc((size_t)a->ncol,1);THD_xmat *x=NULL;THD_xmat_run_map *m=NULL;
+   char err[1024]="",*paths[3]={NULL,NULL,NULL};int i,ok,wrote=0;
+   if(!keep || !prefix){fprintf(stderr,"** selection requires -prefix\n");free(keep);return 1;}
+   ok=xt_metadata(a,err,sizeof(err));
+   if(ok && o->columns)ok=xt_mark_columns(a,o->columns,keep,err,sizeof(err));
+   if(ok && o->labels)ok=xt_mark_names(a,o->labels,0,keep);
+   if(ok && o->stimuli)ok=xt_mark_names(a,o->stimuli,1,keep);
+   if(ok && o->groups)ok=xt_mark_groups(a,o->groups,keep,err,sizeof(err));
+   if(ok){x=THD_xmat_select_columns(a,keep,o->drop_glts,&m,err,sizeof(err));ok=x!=NULL;}
+   if(ok){
+      paths[0]=THD_zzprintf(NULL,"%s.xmat.1D",prefix);paths[1]=THD_zzprintf(NULL,"%s.rows.1D",prefix);paths[2]=THD_zzprintf(NULL,"%s.columns.1D",prefix);
+      wrote=THD_xmat_write(x,paths[0],err,sizeof(err));
+      ok=wrote && THD_xmat_write_run_map(a,x,m,paths[1],paths[2],err,sizeof(err));
+   }
+   if(ok)printf("# Selected %d/%d columns -> %s\n",x->ncol,a->ncol,paths[0]);
+   else{if(wrote)unlink(paths[0]);fprintf(stderr,"** selection: %s\n",*err?err:"invalid selection");}
+   for(i=0;i<3;i++)free(paths[i]);
+   free(keep);THD_xmat_free(x);THD_xmat_run_map_free(m);return !ok;
 }
 static char *xt_beta_name(const XT_options *o,int run)
 {
@@ -373,9 +413,51 @@ static int xt_integer(const char *s,int *n)
 {
    char *e;long v;errno=0;v=strtol(s,&e,10);if(errno || e==s || *e || v<0 || v>INT_MAX)return 0;*n=(int)v;return 1;
 }
+/* Validate all event keys before opening a manifest output file. */
+static int xt_events_valid(const THD_xmat *a,const THD_datatable *events,
+                           int ri,int vi,int ci,char *err,int nerr)
+{
+   int r;
+   if(ri<0 || vi<0 || ci<0){
+      snprintf(err,nerr,"events need Run Volume Condition (optional Item)");return 0;
+   }
+   for(r=0;r<events->nrow;r++){
+      int rr,vv,j,rr2,vv2;
+      if(!xt_integer(DT_CELL(events,r,ri),&rr) || rr<1 || rr>a->nrun || !xt_integer(DT_CELL(events,r,vi),&vv) || !*DT_CELL(events,r,ci)){
+         snprintf(err,nerr,"invalid events Run/Volume/Condition on row %d",r+1);return 0;}
+      for(j=0;j<r;j++){xt_integer(DT_CELL(events,j,ri),&rr2);xt_integer(DT_CELL(events,j,vi),&vv2);
+         if(rr==rr2 && vv==vv2){snprintf(err,nerr,"duplicate Run/Volume in events");return 0;}}
+   }
+   return 1;
+}
+
+/* Write one run using borrowed resources, marking matched rows in seen. */
+static int xt_manifest_run(const THD_xmat *a,const THD_xmat *x,
+   const THD_xmat_run_map *m,const XT_options *o,const THD_datatable *events,
+   int ri,int vi,int ci,int ii,int im,int run,const char *beta,FILE *fp,
+   int *seen,int *total,char *err,int nerr)
+{
+   int c,r,local=0;
+   for(c=0;c<x->ncol;c++)if(m->columns[c]>=a->stim[im].bot && m->columns[c]<=a->stim[im].top){
+      for(r=0;r<events->nrow;r++){int rr,vv;xt_integer(DT_CELL(events,r,ri),&rr);xt_integer(DT_CELL(events,r,vi),&vv);if(rr==run+1 && vv==local)break;}
+      if(r==events->nrow){snprintf(err,nerr,"missing event for run %d volume %d",run+1,local);return 0;}
+      seen[r]=1;(*total)++;
+      {char *sample=THD_zzprintf(NULL,"%s_r%02d_v%04d",o->subject,run+1,local),*sel=NULL;
+       THD_1D_print_token(fp,sample);fputc(' ',fp);THD_1D_print_token(fp,o->subject);
+       fprintf(fp," %d ",run+1);THD_1D_print_token(fp,ii>=0?DT_CELL(events,r,ii):a->collab[m->columns[c]]);
+       fputc(' ',fp);THD_1D_print_token(fp,DT_CELL(events,r,ci));fprintf(fp," %d ",local);THD_1D_print_token(fp,a->fname);
+       fprintf(fp," %d ",m->columns[c]);
+       if(o->manifest_format && !strcmp(o->manifest_format,"selected"))sel=THD_zzprintf(NULL,"%s[%d]",beta,local);
+       THD_1D_print_token(fp,sel?sel:beta);fputc('\n',fp);free(sel);free(sample);}
+      local++;
+   }
+   return 1;
+}
+
+/* Own event, run and output resources; remove an incomplete manifest on failure. */
 static int xt_manifest(const THD_xmat *a,const THD_xmat *u,const XT_options *o,const char *prefix,double tol)
 {
-   THD_datatable *events=NULL;FILE *fp=NULL;int ri,vi,ci,ii,run,r,c,im=-1,ok=0,total=0;
+   THD_datatable *events=NULL;FILE *fp=NULL;int ri,vi,ci,ii,run,r,im=-1,ok=0,total=0;
    int *seen=NULL;char *path=NULL,err[1024]="";
    if(!prefix || !o->events || !o->subject || (!o->beta && !o->beta_pattern) || (o->beta && o->beta_pattern)){
       fprintf(stderr,"** export needs -prefix -events -subject and exactly one of -beta/-beta_pattern\n");return 1;
@@ -385,54 +467,160 @@ static int xt_manifest(const THD_xmat *a,const THD_xmat *u,const XT_options *o,c
    if(im<0){fprintf(stderr,"** export requires an IM family\n");return 1;}
    events=THD_read_datatable_file((char *)o->events);
    ri=THD_datatable_column(events,"Run");vi=THD_datatable_column(events,"Volume");ci=THD_datatable_column(events,"Condition");ii=THD_datatable_column(events,"Item");
-   if(ri<0 || vi<0 || ci<0){snprintf(err,sizeof(err),"events need Run Volume Condition (optional Item)");goto done;}
-   seen=calloc((size_t)events->nrow,sizeof(int));
-   /* Validate event keys before producing any output. */
-   for(r=0;r<events->nrow;r++){
-      int rr,vv,j,rr2,vv2;
-      if(!xt_integer(DT_CELL(events,r,ri),&rr) || rr<1 || rr>a->nrun || !xt_integer(DT_CELL(events,r,vi),&vv) || !*DT_CELL(events,r,ci)){
-         snprintf(err,sizeof(err),"invalid events Run/Volume/Condition on row %d",r+1);goto done;}
-      for(j=0;j<r;j++){xt_integer(DT_CELL(events,j,ri),&rr2);xt_integer(DT_CELL(events,j,vi),&vv2);
-         if(rr==rr2 && vv==vv2){snprintf(err,sizeof(err),"duplicate Run/Volume in events");goto done;}}
+   ok=xt_events_valid(a,events,ri,vi,ci,err,sizeof(err));
+   if(ok){
+      seen=calloc((size_t)events->nrow,sizeof(int));
+      if(!seen){snprintf(err,sizeof(err),"out of memory");ok=0;}
    }
-   path=THD_zzprintf(NULL,"%s.trials.1D",prefix);fp=xt_open(path);if(!fp)goto done;
-   fprintf(fp,"# 1dXmatTool trial manifest; Run is one-based, Volume/XColumn are zero-based.\n");
-   fprintf(fp,"# Columns: Sample Subj Run Item Condition Volume %s InputFile\n",
-      o->manifest_format && !strcmp(o->manifest_format,"selected")?"SourceXmat SourceColumn":"Xmat XColumn");
-   for(run=0;run<a->nrun;run++){
-      THD_xmat_run_map *m=NULL;THD_xmat *x=THD_xmat_extract_run(a,u,run,tol,&m,err,sizeof(err));char *beta=xt_beta_name(o,run+1);int local=0;
-      if(!x || !beta){THD_xmat_free(x);THD_xmat_run_map_free(m);free(beta);if(!*err)snprintf(err,sizeof(err),"beta pattern must contain exactly one {run}");goto done;}
-      for(c=0;c<x->ncol;c++)if(m->columns[c]>=a->stim[im].bot && m->columns[c]<=a->stim[im].top){
-         for(r=0;r<events->nrow;r++){int rr,vv;xt_integer(DT_CELL(events,r,ri),&rr);xt_integer(DT_CELL(events,r,vi),&vv);if(rr==run+1 && vv==local)break;}
-         if(r==events->nrow){snprintf(err,sizeof(err),"missing event for run %d volume %d",run+1,local);THD_xmat_free(x);THD_xmat_run_map_free(m);free(beta);goto done;}
-         seen[r]=1;total++;
-         {char *sample=THD_zzprintf(NULL,"%s_r%02d_v%04d",o->subject,run+1,local),*sel=NULL;
-          THD_1D_print_token(fp,sample);fputc(' ',fp);THD_1D_print_token(fp,o->subject);
-          fprintf(fp," %d ",run+1);THD_1D_print_token(fp,ii>=0?DT_CELL(events,r,ii):a->collab[m->columns[c]]);
-          fputc(' ',fp);THD_1D_print_token(fp,DT_CELL(events,r,ci));fprintf(fp," %d ",local);THD_1D_print_token(fp,a->fname);
-          fprintf(fp," %d ",m->columns[c]);
-          if(o->manifest_format && !strcmp(o->manifest_format,"selected"))sel=THD_zzprintf(NULL,"%s[%d]",beta,local);
-          THD_1D_print_token(fp,sel?sel:beta);fputc('\n',fp);free(sel);free(sample);}
-         local++;
-      }
+   if(ok){path=THD_zzprintf(NULL,"%s.trials.1D",prefix);fp=xt_open(path);ok=fp!=NULL;}
+   if(ok){
+      fprintf(fp,"# 1dXmatTool trial manifest; Run is one-based, Volume/XColumn are zero-based.\n");
+      fprintf(fp,"# Columns: Sample Subj Run Item Condition Volume %s InputFile\n",
+         o->manifest_format && !strcmp(o->manifest_format,"selected")?"SourceXmat SourceColumn":"Xmat XColumn");
+   }
+   for(run=0;ok && run<a->nrun;run++){
+      THD_xmat_run_map *m=NULL;
+      THD_xmat *x=THD_xmat_extract_run(a,u,run,tol,&m,err,sizeof(err));
+      char *beta=xt_beta_name(o,run+1);
+      if(!x || !beta){
+         if(!*err)snprintf(err,sizeof(err),"beta pattern must contain exactly one {run}");
+         ok=0;
+      }else ok=xt_manifest_run(a,x,m,o,events,ri,vi,ci,ii,im,run,beta,fp,
+                               seen,&total,err,sizeof(err));
       THD_xmat_free(x);THD_xmat_run_map_free(m);free(beta);
    }
-   for(r=0;r<events->nrow;r++)if(!seen[r]){snprintf(err,sizeof(err),"events contain unmatched rows");goto done;}
-   ok=xt_close(fp,path);fp=NULL;
+   for(r=0;ok && r<events->nrow;r++)if(!seen[r]){snprintf(err,sizeof(err),"events contain unmatched rows");ok=0;}
+   if(ok){ok=xt_close(fp,path);fp=NULL;}
    if(ok)printf("# Exported %d trials -> %s\n",total,path);
-done:
    if(fp){fclose(fp);unlink(path);}if(!ok)fprintf(stderr,"** manifest: %s\n",*err?err:"cannot write output");
    free(path);free(seen);THD_free_datatable(events);return !ok;
+}
+
+/* Validate operation combinations before acquiring input or output resources. */
+static const char *xt_options_error(const XT_options *ops,const char *in,
+   const char *unc,const char *prefix,const char *runlist,int split)
+{
+   if(!in) return "requires -infile (see -help)";
+   if(split+ops->select+ops->manifest+(ops->compare!=NULL)+((ops->describe||ops->validate)!=0)!=1)
+      return "choose one operation: split, describe/validate, select, compare, or export_manifest";
+   if(ops->for_tool && strcmp(ops->for_tool,"lss") && strcmp(ops->for_tool,"reml"))return "-for must be lss or reml";
+   if(ops->manifest_format && strcmp(ops->manifest_format,"selected") && strcmp(ops->manifest_format,"manifest"))return "-manifest_format must be manifest or selected";
+   if(ops->json && !(ops->describe||ops->validate))return "-json is available with describe/validate";
+   if(runlist && !split)return "-runs applies to -split_runs";
+   if(prefix && !*prefix)return "-prefix cannot be empty";
+   if(ops->for_tool && !(ops->describe||ops->validate))return "-for applies to describe/validate";
+   if(ops->drop_glts && !ops->select)return "-drop_glts applies to column selection";
+   if((ops->events || ops->subject || ops->beta || ops->beta_pattern || ops->manifest_format) && !ops->manifest)
+      return "event/beta options apply to -export_manifest";
+   if(unc && (ops->select || ops->compare))return "-uncensored applies to split, describe/validate and export_manifest";
+   return NULL;
+}
+
+/* Resources owned by one split operation, including only outputs we created. */
+typedef struct {
+   THD_xmat **x;
+   THD_xmat_run_map **maps;
+   NI_int_array *runs;
+   char **paths,*summary;
+   FILE *fp;
+   int n,done,summary_owned;
+} XT_split;
+
+static int xt_error(char *err,int nerr,const char *message)
+{
+   snprintf(err,nerr,"%s",message);return 1;
+}
+
+/* Prepare and write run subsets. The caller releases resources and rolls back
+   completed files on failure; done tracks precisely which paths we own. */
+static int xt_split_write(const THD_xmat *a,const THD_xmat *u,
+   const char *prefix,const char *runlist,double tol,XT_split *out,
+   char *err,int nerr)
+{
+   int i,j,fd;struct stat st;
+   if(!prefix || !*prefix)return xt_error(err,nerr,"split requires -prefix");
+   if(runlist){
+      out->runs=parse_runs(runlist,a->nrun);
+      if(!out->runs || out->runs->num<1) return xt_error(err,nerr,"invalid -runs list: use unique run numbers in range, e.g. 1,3..5");
+   }else{
+      out->runs=calloc(1,sizeof(*out->runs));
+      if(!out->runs)return xt_error(err,nerr,"out of memory");
+      out->runs->num=a->nrun;
+      out->runs->ar=malloc(sizeof(int)*(size_t)a->nrun);
+      if(!out->runs->ar)return xt_error(err,nerr,"out of memory");
+      for(i=0;i<a->nrun;i++) out->runs->ar[i]=i+1;
+   }
+   out->n=out->runs->num;
+   out->x=calloc((size_t)out->n,sizeof(*out->x)); out->maps=calloc((size_t)out->n,sizeof(*out->maps));
+   out->paths=calloc((size_t)out->n*3,sizeof(*out->paths)); out->summary=malloc(strlen(prefix)+16);
+   if(!out->x || !out->maps || !out->paths || !out->summary) return xt_error(err,nerr,"out of memory");
+   sprintf(out->summary,"%s.runs.1D",prefix);
+   if(!u && a->nrow<a->nfull)
+      fprintf(stderr,"++ Support inferred from retained rows only; use -uncensored for pre-censor support.\n");
+   for(i=0;i<out->n;i++){
+      if(out->runs->ar[i]<1 || out->runs->ar[i]>a->nrun) return xt_error(err,nerr,"-runs index outside the input run range");
+      for(j=0;j<i;j++) if(out->runs->ar[i]==out->runs->ar[j]) return xt_error(err,nerr,"duplicate run in -runs");
+      out->x[i]=THD_xmat_extract_run(a,u,out->runs->ar[i]-1,tol,out->maps+i,err,nerr);
+      if(!out->x[i]) return 1;
+      out->paths[3*i]=outname(prefix,out->runs->ar[i],"xmat.1D");
+      out->paths[3*i+1]=outname(prefix,out->runs->ar[i],"rows.1D");
+      out->paths[3*i+2]=outname(prefix,out->runs->ar[i],"columns.1D");
+      if(!out->paths[3*i] || !out->paths[3*i+1] || !out->paths[3*i+2]) return xt_error(err,nerr,"out of memory");
+   }
+   for(i=0;i<=3*out->n;i++){
+      const char *p=i==3*out->n?out->summary:out->paths[i];
+      if(!lstat(p,&st)){snprintf(err,nerr,"output already exists: %s",p);return 1;}
+      if(errno!=ENOENT){snprintf(err,nerr,"cannot access output path: %s",p);return 1;}
+   }
+   fd=open(out->summary,O_WRONLY|O_CREAT|O_EXCL,0666);
+   if(fd<0) return xt_error(err,nerr,"cannot create summary (prefix directory must exist)");
+   out->summary_owned=1; out->fp=fdopen(fd,"w");
+   if(!out->fp){close(fd);return xt_error(err,nerr,"cannot open summary stream");}
+   fputs("# Columns: Run Start Length NKept NColumns\n",out->fp);
+   for(i=0;i<out->n;i++){
+      if(!THD_xmat_write(out->x[i],out->paths[3*i],err,nerr)) return 1;
+      out->done=3*i+1;
+      if(!THD_xmat_write_run_map(a,out->x[i],out->maps[i],out->paths[3*i+1],out->paths[3*i+2],err,nerr)) return 1;
+      out->done=3*i+3;
+      fprintf(out->fp,"# RunFiles %d ",out->runs->ar[i]);
+      comment_text(out->fp,out->paths[3*i]); fputc(' ',out->fp);comment_text(out->fp,out->paths[3*i+1]);fputc(' ',out->fp);comment_text(out->fp,out->paths[3*i+2]);fputc('\n',out->fp);
+      fprintf(out->fp,"%d %d %d %d %d\n",out->runs->ar[i],out->maps[i]->start,out->x[i]->nfull,out->x[i]->nrow,out->x[i]->ncol);
+   }
+   j=ferror(out->fp); if(fclose(out->fp)) j=1; out->fp=NULL;
+   if(j) return xt_error(err,nerr,"failed writing summary");
+   for(i=0;i<out->n;i++) fprintf(stderr,"++ run %d: %d/%d rows, %d/%d columns -> %s\n",
+      out->runs->ar[i],out->x[i]->nrow,out->x[i]->nfull,out->x[i]->ncol,a->ncol,out->paths[3*i]);
+   fprintf(stderr,"++ Wrote %d run(s); provenance: %s\n",out->n,out->summary); return 0;
+}
+
+/* Release split storage once, removing only newly created outputs on failure. */
+static int xt_split_runs(const THD_xmat *a,const THD_xmat *u,
+   const char *prefix,const char *runlist,double tol)
+{
+   XT_split out={0};char err[1024]="";int i;
+   int rc=xt_split_write(a,u,prefix,runlist,tol,&out,err,sizeof(err));
+   if(out.fp)fclose(out.fp);
+   if(rc){
+      fprintf(stderr,"** 1dXmatTool: %s\n",err);
+      for(i=0;i<out.done;i++)unlink(out.paths[i]);
+      if(out.summary_owned)unlink(out.summary);
+   }
+   for(i=0;i<out.n;i++){
+      if(out.x)THD_xmat_free(out.x[i]);
+      if(out.maps)THD_xmat_run_map_free(out.maps[i]);
+   }
+   if(out.paths){for(i=0;i<3*out.n;i++)free(out.paths[i]);free(out.paths);}
+   free(out.x);free(out.maps);free(out.summary);
+   if(out.runs)NI_delete_int_array(out.runs);
+   return rc;
 }
 
 int main(int argc,char **argv)
 {
    XT_options ops={0};
    const char *in=NULL,*unc=NULL,*prefix=NULL,*runlist=NULL;
-   THD_xmat *a=NULL,*u=NULL,**x=NULL; THD_xmat_run_map **maps=NULL;
-   NI_int_array *runs=NULL; char **paths=NULL,*summary=NULL,err[1024]="";
-   double tol=THD_XMAT_SPLIT_TOL; int split=0,i,j,n=0,done=0,rc=1,fd=-1,summary_owned=0;
-   FILE *fp=NULL; struct stat st;
+   THD_xmat *a=NULL,*u=NULL;char err[1024]="";const char *problem;
+   double tol=THD_XMAT_SPLIT_TOL;int split=0,i,rc=1;
    ops.rank_tol=1.e-7;ops.atol=1.e-6;ops.rtol=1.e-6;
    if(argc==1){usage();return 0;}
    for(i=1;i<argc;i++){
@@ -471,91 +659,17 @@ int main(int argc,char **argv)
          }
       }else{fprintf(stderr,"** unknown option: %s\n",argv[i]);return 1;}
    }
-#define XT_FAIL(MSG) do{snprintf(err,sizeof(err),"%s",MSG);goto cleanup;}while(0)
    ops.select=ops.columns || ops.labels || ops.stimuli || ops.groups;
-   if(!in) XT_FAIL("requires -infile (see -help)");
-   if(split+ops.select+ops.manifest+(ops.compare!=NULL)+((ops.describe||ops.validate)!=0)!=1)
-      XT_FAIL("choose one operation: split, describe/validate, select, compare, or export_manifest");
-   if(ops.for_tool && strcmp(ops.for_tool,"lss") && strcmp(ops.for_tool,"reml"))XT_FAIL("-for must be lss or reml");
-   if(ops.manifest_format && strcmp(ops.manifest_format,"selected") && strcmp(ops.manifest_format,"manifest"))XT_FAIL("-manifest_format must be manifest or selected");
-   if(ops.json && !(ops.describe||ops.validate))XT_FAIL("-json is available with describe/validate");
-   if(runlist && !split)XT_FAIL("-runs applies to -split_runs");
-   if(prefix && !*prefix)XT_FAIL("-prefix cannot be empty");
-   if(ops.for_tool && !(ops.describe||ops.validate))XT_FAIL("-for applies to describe/validate");
-   if(ops.drop_glts && !ops.select)XT_FAIL("-drop_glts applies to column selection");
-   if((ops.events || ops.subject || ops.beta || ops.beta_pattern || ops.manifest_format) && !ops.manifest)
-      XT_FAIL("event/beta options apply to -export_manifest");
-   if(unc && (ops.select || ops.compare))XT_FAIL("-uncensored applies to split, describe/validate and export_manifest");
-   a=THD_xmat_read(in,err,sizeof(err)); if(!a) goto cleanup;
-   if(unc){u=THD_xmat_read(unc,err,sizeof(err));if(!u) goto cleanup;}
-   if(ops.describe||ops.validate)rc=xt_report(a,u,&ops,tol);
+   problem=xt_options_error(&ops,in,unc,prefix,runlist,split);
+   if(problem){fprintf(stderr,"** 1dXmatTool: %s\n",problem);return 1;}
+   a=THD_xmat_read(in,err,sizeof(err));
+   if(a && unc)u=THD_xmat_read(unc,err,sizeof(err));
+   if(!a || (unc && !u))fprintf(stderr,"** 1dXmatTool: %s\n",err);
+   else if(split)rc=xt_split_runs(a,u,prefix,runlist,tol);
+   else if(ops.describe||ops.validate)rc=xt_report(a,u,&ops,tol);
    else if(ops.compare)rc=xt_compare(a,&ops);
    else if(ops.select)rc=xt_select(a,&ops,prefix);
    else if(ops.manifest)rc=xt_manifest(a,u,&ops,prefix,tol);
-   if(!split){THD_xmat_free(a);THD_xmat_free(u);return rc;}
-   if(!prefix || !*prefix)XT_FAIL("split requires -prefix");
-   if(runlist){
-      runs=parse_runs(runlist,a->nrun);
-      if(!runs || runs->num<1) XT_FAIL("invalid -runs list: use unique run numbers in range, e.g. 1,3..5");
-   }else{
-      runs=calloc(1,sizeof(*runs)); runs->num=a->nrun;
-      runs->ar=malloc(sizeof(int)*(size_t)a->nrun);
-      for(i=0;i<a->nrun;i++) runs->ar[i]=i+1;
-   }
-   n=runs->num;
-   x=calloc((size_t)n,sizeof(*x)); maps=calloc((size_t)n,sizeof(*maps));
-   paths=calloc((size_t)n*3,sizeof(*paths)); summary=malloc(strlen(prefix)+16);
-   if(!x || !maps || !paths || !summary) XT_FAIL("out of memory");
-   sprintf(summary,"%s.runs.1D",prefix);
-   if(!u && a->nrow<a->nfull)
-      fprintf(stderr,"++ Support inferred from retained rows only; use -uncensored for pre-censor support.\n");
-   for(i=0;i<n;i++){
-      if(runs->ar[i]<1 || runs->ar[i]>a->nrun) XT_FAIL("-runs index outside the input run range");
-      for(j=0;j<i;j++) if(runs->ar[i]==runs->ar[j]) XT_FAIL("duplicate run in -runs");
-      x[i]=THD_xmat_extract_run(a,u,runs->ar[i]-1,tol,maps+i,err,sizeof(err));
-      if(!x[i]) goto cleanup;
-      paths[3*i]=outname(prefix,runs->ar[i],"xmat.1D");
-      paths[3*i+1]=outname(prefix,runs->ar[i],"rows.1D");
-      paths[3*i+2]=outname(prefix,runs->ar[i],"columns.1D");
-      if(!paths[3*i] || !paths[3*i+1] || !paths[3*i+2]) XT_FAIL("out of memory");
-   }
-   for(i=0;i<=3*n;i++){
-      const char *p=i==3*n?summary:paths[i];
-      if(!lstat(p,&st)){snprintf(err,sizeof(err),"output already exists: %s",p);goto cleanup;}
-      if(errno!=ENOENT){snprintf(err,sizeof(err),"cannot access output path: %s",p);goto cleanup;}
-   }
-   fd=open(summary,O_WRONLY|O_CREAT|O_EXCL,0666);
-   if(fd<0) XT_FAIL("cannot create summary (prefix directory must exist)");
-   summary_owned=1; fp=fdopen(fd,"w");
-   if(!fp){close(fd);XT_FAIL("cannot open summary stream");}
-   fputs("# Columns: Run Start Length NKept NColumns\n",fp);
-   for(i=0;i<n;i++){
-      if(!THD_xmat_write(x[i],paths[3*i],err,sizeof(err))) goto cleanup;
-      done=3*i+1;
-      if(!THD_xmat_write_run_map(a,x[i],maps[i],paths[3*i+1],paths[3*i+2],err,sizeof(err))) goto cleanup;
-      done=3*i+3;
-      fprintf(fp,"# RunFiles %d ",runs->ar[i]);
-      comment_text(fp,paths[3*i]); fputc(' ',fp);comment_text(fp,paths[3*i+1]);fputc(' ',fp);comment_text(fp,paths[3*i+2]);fputc('\n',fp);
-      fprintf(fp,"%d %d %d %d %d\n",runs->ar[i],maps[i]->start,x[i]->nfull,x[i]->nrow,x[i]->ncol);
-   }
-   j=ferror(fp); if(fclose(fp)) j=1; fp=NULL;
-   if(j) XT_FAIL("failed writing summary");
-   for(i=0;i<n;i++) fprintf(stderr,"++ run %d: %d/%d rows, %d/%d columns -> %s\n",
-      runs->ar[i],x[i]->nrow,x[i]->nfull,x[i]->ncol,a->ncol,paths[3*i]);
-   fprintf(stderr,"++ Wrote %d run(s); provenance: %s\n",n,summary); rc=0;
-cleanup:
-   if(fp) fclose(fp);
-   if(rc){
-      fprintf(stderr,"** 1dXmatTool: %s\n",err);
-      for(i=0;i<done;i++) unlink(paths[i]);
-      if(summary_owned) unlink(summary);
-   }
-   for(i=0;i<n;i++){
-      if(x) THD_xmat_free(x[i]); if(maps) THD_xmat_run_map_free(maps[i]);
-   }
-   if(paths){for(i=0;i<3*n;i++) free(paths[i]);free(paths);}
-   free(x);free(maps);free(summary);
-   if(runs) NI_delete_int_array(runs); THD_xmat_free(a);THD_xmat_free(u);
+   THD_xmat_free(a);THD_xmat_free(u);
    return rc;
-#undef XT_FAIL
 }
