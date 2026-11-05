@@ -1,8 +1,11 @@
 #ifndef _THD_INSYNC_HEADER_
 #define _THD_INSYNC_HEADER_
 
+#include "thd_datatable.h"
+
 /*----------------------------------------------------------------------------
-  Dataset-agnostic numerical helpers for 3dInSync.
+  Analysis driver and dataset-agnostic numerical helpers for 3dInSync.
+  The numerical helpers are implemented separately in thd_insync_stats.c.
 
   Time-series data are subject-major: subject s begins at data+s*ntime.
   Pairwise matrices are dense, symmetric, row-major nsub x nsub arrays.
@@ -18,6 +21,116 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Dataset-analysis options. Strings and the table passed to INSYNC_run are
+   borrowed from the caller and must remain valid for the entire run. */
+#define INSYNC_METHOD_PAIRWISE 1
+#define INSYNC_METHOD_LOO      2
+#define INSYNC_TNULL_NONE      0
+#define INSYNC_TNULL_TIMESHIFT 1
+#define INSYNC_TNULL_PHASE     2
+#define INSYNC_MISSING_ERROR   0
+#define INSYNC_MISSING_COMMON  1
+#define INSYNC_PROGRESS_AUTO   0
+#define INSYNC_PROGRESS_BAR    1
+#define INSYNC_PROGRESS_LINE   2
+#define INSYNC_PROGRESS_OFF    3
+#define INSYNC_TAIL_BI  2
+
+typedef struct {
+   int edges ;         /* -edges: ISC of every ROI-pair edge series           */
+   int rss ;           /* -edges_rss: ISC of global cofluctuation amplitude   */
+   int events ;        /* -edges_events: shared high-amplitude frames         */
+   int matrix ;        /* -edges_matrix: also write .netcc matrices           */
+   float event_frac ;  /* fraction of frames called "high" in each subject    */
+   int nnull ;         /* -edges_nnull: surrogate sets, identity slot included */
+   int min_shift ;     /* minimum circular distance of a null shift           */
+   long seed ;
+} INSYNC_edge_opts ;
+
+typedef struct {
+   /* Core analysis and reporting options. */
+   int method ;
+   int summary ;
+   int show_table ;
+   int corr_metric ;
+   int missing_policy ;
+   int quiet ;
+   int progress_mode ;
+   int memory_override ;
+   int memory_limit_given ;
+   double memory_limit_gib ;
+
+   /* M1/M2 selection preflight; estimation is enabled in later milestones. */
+   int check_table, window, step, step_given, tr_given, whole_summary ;
+   double selection_tr ;
+   char *run_starts ;
+   int xmat_blocks, xmat_across_runs, xmat_threshold_given ;
+   double xmat_threshold ;
+   char *xmat_stims, *xmat_runs ;
+   int min_valid, min_valid_given, min_valid_frac_given;
+   double min_valid_frac;
+   int combine_pool, combine_given, segment_center, segment_center_given;
+   int block_summary, block_summary_given, block_drop_common, block_missing_given;
+   int min_blocks, min_blocks_given, min_block_frac_given, block_weight_given;
+   double min_block_frac;
+
+   /* Resampling and inference options. */
+   int nboot ;
+   int nperm ;
+   int do_exact ;
+   int tail ;
+   int temporal_censor ; /* explicit joint signal/mask shifts; 0 rejects censoring */
+   int temporal_mode ;
+   int nnull ;
+   int min_shift ;
+   int min_shift_given ;
+   int temporal_tail ;
+   int temporal_tail_given ;
+   int ncondperm ;
+   int condition_exact ;
+   int condition_tail ;
+   long seed ;
+   float boot_alpha ;
+
+   /* Input column names, contrasts, and optional output names. */
+   int condition_column_given ;
+   int have_contrast ;
+   char *prefix ;
+   char *maskname ;
+   char *group_column ;
+   char *condition_column ;
+   char *contrast_name0 ;
+   char *contrast_name1 ;
+   char *pair_prefix ;
+   char *isc_model, *isc_qvars, *isc_centers;
+   char **isc_glt_names, **isc_glt_weights;
+   int isc_nglt, isc_jobs, isc_jobs_given;
+   char *censor_name ;
+   char *censor_column;
+   int censor_column_given;
+   int do_zcensor ;
+   int zcensor_warn_given ;
+   float zcensor_warn ;
+   char *atlas_name ;
+   char *roi_sel ;
+   char *matrix_name ;
+   int roi_only ;
+   int use_half ;
+   INSYNC_edge_opts eo ;
+} INSYNC_options ;
+
+/*! Initialize all options to the 3dInSync command-line defaults. */
+extern void INSYNC_options_default( INSYNC_options *opts ) ;
+
+/*! One-shot AFNI dataset driver: validate options/table, load input, estimate
+    ISC and null models, and write requested outputs. argc/argv are used only
+    for output history. The caller performs AFNI process initialization.
+    Like an AFNI command, failures call ERROR_exit and some analysis resources
+    live until process exit; this is not a repeated-call, in-memory API.
+    The caller's options and table are not modified or freed. */
+extern int INSYNC_run( const INSYNC_options *opts, THD_datatable *tab,
+                       int argc, char **argv ) ;
 
 /*! Summarize finite values using INSYNC_SUMMARY_*.  scratch must hold n
     floats.  Returns NaN when no finite values are present. */
@@ -64,6 +177,22 @@ extern float INSYNC_loo_indexed_metric( int nsub, int ntime, const float *data,
                                         int summary, int metric, float *ref,
                                         float *values, float *rank1,
                                         float *rank2, int *nvalid ) ;
+
+/* Selection kernel: one reusable workspace per worker, no evaluation-time
+   allocations. Matrix entries and invalid group statistics are NaN; nvalid
+   counts finite edges/LOO subjects, complete tests the within-group pair graph. */
+typedef struct INSYNC_kernel INSYNC_kernel;
+extern INSYNC_kernel *INSYNC_kernel_new(int,int);
+extern void INSYNC_kernel_free(INSYNC_kernel *);
+extern void INSYNC_kernel_eval(INSYNC_kernel *,int,const float *,int,int,int,
+                               int,const int *,int **,float *,int *,int *);
+extern const float *INSYNC_kernel_matrix(const INSYNC_kernel *);
+extern const float *INSYNC_kernel_loo(const INSYNC_kernel *);
+/* Caller supplies a single admitted block set for all required components.
+   blocks is block-major: nsub*nsub pair matrices or nsub LOO values. */
+extern void INSYNC_kernel_aggregate(INSYNC_kernel *,int,const float *,const unsigned char *,
+   int,int,int,int,const int *,int **,float *,int *,int *);
+extern void INSYNC_kernel_fisher_matrix(const INSYNC_kernel *,float *);
 
 /*! Linear-interpolated percentile.  x is scratch and is sorted in place. */
 extern float INSYNC_percentile( float *x, int n, float probability ) ;

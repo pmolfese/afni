@@ -53,6 +53,47 @@
 
 afni_history_struct rickr_history[] = {
 
+ {  4, Nov, 2026, RCR, "afni_proc.py", MICRO, TYPE_GENERAL,
+   "change wildcard imports to aliases",
+   "This should have no functional change."
+ } ,
+
+ {  4, Nov, 2026, RCR, "afni-general", MICRO, TYPE_GENERAL,
+   "quiet some compiler warnings",
+   "suma_datasets.h: DSET_WRITE_1D_PURE[_TRANSPOSE]: hide stderr vs NULL test"
+ } ,
+
+ {  3, Nov, 2026, RCR, "afni_proc.py", MINOR, TYPE_NEW_OPT,
+   "add -find_var_line_npc, apply -find_var_line_opts",
+   NULL
+ } ,
+
+ {  3, Nov, 2026, RCR, "ap_run_simple_rest.tcsh", MINOR, TYPE_NEW_OPT,
+   "add -vline_num_pc",
+   NULL
+ } ,
+
+ {  3, Nov, 2026, RCR, "ap_run_simple_rest_me.tcsh", MINOR, TYPE_NEW_OPT,
+   "add -vline_num_pc",
+   NULL
+ } ,
+
+ { 30, Oct, 2026, RCR, "1d_tool.py", MICRO, TYPE_ENHANCE,
+   "add example getting the slice timing pattern from a JSON sidecar",
+   NULL
+ } ,
+
+ { 29, Oct, 2026, RCR, "afni_open", MINOR, TYPE_ENHANCE,
+   "have afni_open -e respect the common EDITOR or VISUAL env vars",
+   "Also, if vi, vim or nano, run in the foreground.\n"
+   "We might want to add other editors to check for foreground execution."
+ } ,
+
+ { 27, Oct, 2026, RCR, "gen_ss_review_table.py", MINOR, TYPE_ENHANCE,
+   "add example using APQC out.ss_review.*.json files",
+   NULL
+ } ,
+
  { 23, Oct, 2026, RCR, "make_random_timing.py", MINOR, TYPE_NEW_OPT,
    "add option -post_elist_merge, to finally merge one condition into another",
    "Added for C Walsh."
