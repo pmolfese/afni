@@ -668,3 +668,145 @@ int THD_foldplan_check_permutation_blocks(const THD_foldplan *plan,
    }
    free(side);free(owner);return ok;
 }
+
+
+/* Deep copy preserves excluded rows as well as test identities. Reconstructing
+   from test assignments alone would silently discard temporal exclusion gaps.
+ */
+THD_foldplan *THD_foldplan_copy(const THD_foldplan *src, char *err, int nerr)
+{
+   THD_foldplan *p;
+   int f;
+   if (!THD_foldplan_validate(src, err, nerr))
+      return NULL;
+   p = cv_alloc(src->kind, src->nsample, src->nfold, src->nstratum,
+                src->group_column, src->within_column, src->stratum_label, err,
+                nerr);
+   if (!p)
+      return NULL;
+   memcpy(p->sample_test_fold, src->sample_test_fold,
+          (size_t)src->nsample * sizeof(int));
+   for (f = 0; f < src->nfold; ++f) {
+      p->name[f] = strdup(src->name[f]);
+      p->fold_stratum[f] = src->fold_stratum[f];
+      p->ntrain[f] = src->ntrain[f];
+      p->ntest[f] = src->ntest[f];
+      p->train[f] = malloc((size_t)p->ntrain[f] * sizeof(int));
+      p->test[f] = malloc((size_t)p->ntest[f] * sizeof(int));
+      if (!p->name[f] || !p->train[f] || !p->test[f])
+         return cv_fail(p, err, nerr, "cannot copy fold indices");
+      memcpy(p->train[f], src->train[f], (size_t)p->ntrain[f] * sizeof(int));
+      memcpy(p->test[f], src->test[f], (size_t)p->ntest[f] * sizeof(int));
+   }
+   return p;
+}
+
+THD_foldplan *THD_foldplan_time_series(int n, const int *rows, const int *runs,
+                                       int nr, const int *starts,
+                                       const int *groups, int block_size,
+                                       int gap, char *err, int nerr)
+{
+   int i, j, f, nf = 0, ok = 1;
+   int *assignment, *first;
+   char **names;
+   THD_foldplan *p = NULL;
+   if (n < 2 || !rows || !runs || nr < 1 || !starts || starts[0] != 0 ||
+       block_size < 0 || gap < 0 || (groups && block_size)) {
+      cv_error(err, nerr, "invalid numeric time-series fold inputs");
+      return NULL;
+   }
+   for (i = 1; i < nr; ++i)
+      if (starts[i] <= starts[i - 1]) {
+         cv_error(err, nerr, "run starts must increase");
+         return NULL;
+      }
+   for (i = 0; i < n; ++i)
+      if (rows[i] < 0 || (i && rows[i] <= rows[i - 1]) || runs[i] < 0 ||
+          runs[i] >= nr || rows[i] < starts[runs[i]] ||
+          (runs[i] + 1 < nr && rows[i] >= starts[runs[i] + 1]) ||
+          (groups && groups[i] < 0)) {
+         cv_error(err, nerr, "invalid original row/run/group identities");
+         return NULL;
+      }
+   assignment = calloc((size_t)n, sizeof(int));
+   first = calloc((size_t)n, sizeof(int));
+   names = calloc((size_t)n, sizeof(char *));
+   if (!assignment || !first || !names)
+      ok = 0;
+   for (i = 0; i < n && ok; ++i) {
+      for (f = 0; f < nf; ++f) {
+         j = first[f];
+         if (groups ? groups[i] == groups[j]
+                    : (runs[i] == runs[j] &&
+                       (!block_size ||
+                        (rows[i] - starts[runs[i]]) / block_size ==
+                           (rows[j] - starts[runs[j]]) / block_size)))
+            break;
+      }
+      assignment[i] = f;
+      if (f == nf) {
+         char label[96];
+         first[nf++] = i;
+         if (groups)
+            snprintf(label, sizeof(label), "group_%d", groups[i]);
+         else if (block_size)
+            snprintf(label, sizeof(label), "run_%d_block_%d", runs[i],
+                     (rows[i] - starts[runs[i]]) / block_size);
+         else
+            snprintf(label, sizeof(label), "run_%d", runs[i]);
+         names[f] = strdup(label);
+         if (!names[f])
+            ok = 0;
+      }
+   }
+   if (ok)
+      p = THD_foldplan_from_assignments(n, nf, assignment,
+                                        (const char *const *)names, err, nerr);
+   else
+      cv_error(err, nerr, "cannot allocate numeric folds");
+   free(assignment);
+   free(first);
+   if (names)
+      for (f = 0; f < nf; ++f)
+         free(names[f]);
+   free(names);
+   if (!p)
+      return NULL;
+   /* Distances are measured before censoring, and only within the same run. */
+   if (gap)
+      for (f = 0; f < nf; ++f) {
+         int kept = 0;
+         for (i = 0; i < p->ntrain[f]; ++i) {
+            int row = p->train[f][i], excluded = 0;
+            for (j = 0; j < p->ntest[f]; ++j) {
+               int test = p->test[f][j];
+               if (runs[row] == runs[test] &&
+                   llabs((long long)rows[row] - rows[test]) <= gap)
+                  excluded = 1;
+            }
+            if (!excluded)
+               p->train[f][kept++] = row;
+         }
+         p->ntrain[f] = kept;
+      }
+   if (!THD_foldplan_validate(p, err, nerr)) {
+      THD_foldplan_free(p);
+      return NULL;
+   }
+   return p;
+}
+
+int THD_cv_path_search(const THD_foldplan *p, const THD_cv_path_ops *ops,
+                       void *context, char *err, int nerr)
+{
+   int f;
+   if (!p || p->nfold < 1 || !ops || !ops->prepare || !ops->path ||
+       !ops->finish)
+      return cv_error(err, nerr, "invalid path traversal callbacks/plan");
+   for (f = 0; f < p->nfold; ++f)
+      if (!ops->prepare(context, f, p->train[f], p->ntrain[f], p->test[f],
+                        p->ntest[f], err, nerr) ||
+          !ops->path(context, f, err, nerr))
+         return 0;
+   return ops->finish(context, err, nerr);
+}

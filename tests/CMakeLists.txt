@@ -534,9 +534,19 @@ if(ENABLE_TESTS)
   add_test(NAME thd_crossval:unit COMMAND thd_crossval_unit)
   set_tests_properties(thd_crossval:unit PROPERTIES LABELS "3dMVPA;numeric;unit")
 
+  add_executable(thd_regression_unit
+    ${CMAKE_SOURCE_DIR}/src/thd_regression.c
+    ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_regression.c
+  )
+  target_include_directories(thd_regression_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(thd_regression_unit PRIVATE eispack m)
+  add_test(NAME thd_regression:unit COMMAND thd_regression_unit)
+  set_tests_properties(thd_regression:unit PROPERTIES LABELS "3dMVPA;3dPicard;numeric;unit")
+
   add_executable(
     thd_mvpa_unit
     ${CMAKE_SOURCE_DIR}/src/thd_mvpa.c
+    ${CMAKE_SOURCE_DIR}/src/thd_regression.c
     ${CMAKE_SOURCE_DIR}/src/thd_crossval.c
     ${CMAKE_SOURCE_DIR}/src/thd_sampleset.c
     ${CMAKE_SOURCE_DIR}/src/thd_datatable.c
@@ -545,8 +555,40 @@ if(ENABLE_TESTS)
   target_include_directories(thd_mvpa_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(
     thd_mvpa_unit
-    PRIVATE AFNI::mri NIFTI::nifti2 NIFTI::nifticdf m
+    PRIVATE AFNI::mri eispack NIFTI::nifti2 NIFTI::nifticdf m
   )
   add_test(NAME thd_mvpa:unit COMMAND thd_mvpa_unit)
   set_tests_properties(thd_mvpa:unit PROPERTIES LABELS "3dMVPA;numeric;unit")
+endif()
+
+if(TARGET 3dPicard)
+  # Keep focused behavioral tests even though the implementations now share
+  # one source file. Prediction uses the existing generic fold traversal.
+  foreach(component linproj picard picard_predict picard_candidates picard_single)
+    add_executable(thd_${component}_unit
+      ${CMAKE_SOURCE_DIR}/src/thd_picard.c
+      ${CMAKE_SOURCE_DIR}/src/thd_regression.c
+      ${CMAKE_SOURCE_DIR}/src/thd_crossval.c
+      ${CMAKE_SOURCE_DIR}/src/thd_sampleset.c
+      ${CMAKE_SOURCE_DIR}/src/thd_datatable.c
+      ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_${component}.c)
+    target_include_directories(thd_${component}_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(thd_${component}_unit PRIVATE
+      AFNI::mri eispack NIFTI::nifti2 NIFTI::nifticdf m)
+    add_test(NAME thd_${component}:unit COMMAND thd_${component}_unit)
+    set_tests_properties(thd_${component}:unit PROPERTIES LABELS "3dPicard;numeric;unit")
+  endforeach()
+  if(TARGET 3dDeconvolve AND TARGET 3dinfo AND TARGET 3dcopy)
+    add_test(NAME 3dPicard:single COMMAND ${Python_EXECUTABLE}
+      ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_picard_single.py
+      $<TARGET_FILE:3dPicard> $<TARGET_FILE:3dDeconvolve>)
+    set_tests_properties(3dPicard:single PROPERTIES LABELS "3dPicard;numeric;integration"
+      ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1;VECLIB_MAXIMUM_THREADS=1")
+    # Independent Python oracles require numpy, scipy, nibabel and scikit-learn.
+    add_test(NAME 3dPicard:integration COMMAND ${Python_EXECUTABLE}
+      ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_picard.py
+      $<TARGET_FILE:3dPicard> $<TARGET_FILE:3dDeconvolve>)
+    set_tests_properties(3dPicard:integration PROPERTIES LABELS "3dPicard;numeric;integration"
+      ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1;VECLIB_MAXIMUM_THREADS=1")
+  endif()
 endif()

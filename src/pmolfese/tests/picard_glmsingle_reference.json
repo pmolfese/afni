@@ -1,0 +1,111 @@
+{
+  "repository": "https://github.com/cvnlab/GLMsingle",
+  "commit": "082851f9db87ff30c49370f27365ac1112f18ff7",
+  "source_sha256": {
+    "calcbadness.py": "a87a3a1d7f6ff286a253c3caef0eb1b08c037781cfcd5b942bc5413f2b373d75",
+    "zerodiv.py": "645df415d007063cdaec4be3ad07eb2413f022aca7a5bffb5a5ad711a0aa9232"
+  },
+  "scope": "calcbadness ordered-pair scoring; one session; no autoscale",
+  "note": "Upstream SSE is in reference sample-SD units. Picard MSE is in supplied coefficient units. Convert by pair_count/reference_variance. Equal singular values make full-data and fold-local fractions agree for this component fixture; no end-to-end equivalence is claimed.",
+  "betas": [
+    [
+      3.0,
+      1.0,
+      4.0
+    ],
+    [
+      0.0,
+      1.0,
+      3.0
+    ],
+    [
+      2.0,
+      2.0,
+      -1.0
+    ],
+    [
+      1.0,
+      1.0,
+      -2.0
+    ],
+    [
+      4.0,
+      2.0,
+      5.0
+    ],
+    [
+      2.0,
+      1.0,
+      0.0
+    ],
+    [
+      -1.0,
+      2.0,
+      -4.0
+    ],
+    [
+      7.0,
+      -3.0,
+      2.0
+    ]
+  ],
+  "conditions": [
+    0,
+    0,
+    1,
+    0,
+    1,
+    0,
+    1,
+    9
+  ],
+  "run_ids": [
+    0,
+    0,
+    0,
+    1,
+    1,
+    2,
+    2,
+    2
+  ],
+  "fractions": [
+    1,
+    0.75,
+    0.5,
+    0.25,
+    0
+  ],
+  "badness": [
+    [
+      15.770114942528732,
+      0.0,
+      43.905626134301265
+    ],
+    [
+      12.581896551724135,
+      0.7880794701986756,
+      33.85662431941924
+    ],
+    [
+      10.902298850574711,
+      3.1523178807947025,
+      25.66243194192377
+    ],
+    [
+      10.731321839080458,
+      7.09271523178808,
+      19.32304900181488
+    ],
+    [
+      12.068965517241379,
+      12.609271523178805,
+      14.838475499092558
+    ]
+  ],
+  "winners": [
+    3,
+    0,
+    4
+  ]
+}

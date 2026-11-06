@@ -311,11 +311,13 @@ add_afni_executable(
   thd_patterns.c
   thd_permute.c
   thd_mvpa.c
+  thd_regression.c
 )
 target_link_libraries(
   3dMVPA
   PRIVATE
     AFNI::mri
+    eispack
     NIFTI::nifti2
     NIFTI::nifticdf
     $<TARGET_NAME_IF_EXISTS:OpenMP::OpenMP_C>
@@ -326,6 +328,17 @@ target_compile_definitions(
   PRIVATE
     "$<IF:$<TARGET_EXISTS:OpenMP::OpenMP_C>,USE_OMP,>"
 )
+
+# Picard's numerical/workflow modules are new; existing xmat and AFNI APIs
+# are consumed without changing their implementations.
+add_afni_executable(3dPicard
+  3dPicard.c thd_picard.c thd_regression.c
+  thd_xmat.c thd_datatable.c thd_crossval.c thd_sampleset.c
+)
+target_link_libraries(3dPicard PRIVATE AFNI::mri eispack NIFTI::nifti2
+  NIFTI::nifticdf $<TARGET_NAME_IF_EXISTS:OpenMP::OpenMP_C> m)
+target_compile_definitions(3dPicard PRIVATE
+  "$<IF:$<TARGET_EXISTS:OpenMP::OpenMP_C>,USE_OMP,>")
 
 # Direct ISC estimation plus subject and temporal inference from aligned time
 # series.  Similarity, permutation, FFT, and map-inference modules are shared
