@@ -1,7 +1,0 @@
-*+ WARNING: -stim_times 1 has all times equal to 0 or 1 ?!?!
-*+ WARNING: -------------------------------------------------
-*+ WARNING: Problems with the X matrix columns, listed below:
-*+ WARNING:    * Column 0 [event#0] is all zeros
-*+ WARNING: -------------------------------------------------
-** ERROR: ----- !! Signal+Baseline matrix condition:  UNDEFINED ** VERY BAD **
-** ERROR: ----- !! Signal-only matrix condition:  UNDEFINED ** VERY BAD **

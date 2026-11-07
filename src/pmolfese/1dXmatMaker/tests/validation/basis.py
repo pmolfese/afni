@@ -15,7 +15,7 @@ import argparse
 import json
 import subprocess
 import tempfile
-from . import ROOT
+from . import ROOT, FIXTURES
 from pathlib import Path
 from .reference import digest, read_matrix, run_case
 from .designs import compare_events as compare, afni_run, invoke
@@ -26,15 +26,15 @@ from .designs import compare_events as compare, afni_run, invoke
 # ------------------------------------------------------------------------
 
 
-CASES = ROOT / 'fixtures/afni/basis/cases.json'
-REFERENCE = ROOT / 'fixtures/afni/basis/reference'
+CASES = FIXTURES / 'afni/basis/cases.json'
+REFERENCE = FIXTURES / 'afni/basis/reference'
 
 
 def m0_cases():
     """Reuse original oracle bytes; map only already-understood CLI acquisition
     spelling, without editing formulas, labels, timing files or matrix values.
     """
-    for case in json.loads((ROOT/'fixtures/afni/compatibility/cases.json').read_text()):
+    for case in json.loads((FIXTURES / 'afni/compatibility/cases.json').read_text()):
         a=case['args']
         if case['outcome']!='success' or '-stim_times' not in a:
             continue
@@ -55,8 +55,8 @@ def check_expression_contract(probe):
     Count=0 parses without evaluating a distribution at invented parameters.
     Disabled source routines must fail explicitly; unknown names never fall back.
     """
-    arities=json.loads((ROOT/'fixtures/afni/basis/expression_arities.json').read_text())['arities']
-    policies=json.loads((ROOT/'fixtures/afni/basis/expression_coverage.json').read_text())
+    arities=json.loads((FIXTURES / 'afni/basis/expression_arities.json').read_text())['arities']
+    policies=json.loads((FIXTURES / 'afni/basis/expression_coverage.json').read_text())
     inventory=json.loads((ROOT/'tests/validation/source_inventory.json').read_text())
     assert set(arities)==set(policies)=={f['name'] for f in inventory['expression_functions']}
     checks=0
@@ -111,7 +111,7 @@ def basis_main(argv=None):
         # Requiring the exact M0 executable prevents a changed producer from
         # moving the expected answer to match a bug in the Rust implementation.
         executable=a.capture_reference.resolve(strict=True)
-        pin=json.loads((ROOT/'fixtures/afni/compatibility/reference/manifest.json').read_text())
+        pin=json.loads((FIXTURES / 'afni/compatibility/reference/manifest.json').read_text())
         assert digest(executable)==pin['executable_sha256']
         a.reference_dir.mkdir()  # A capture must always use a new directory.
         records=[]
@@ -136,7 +136,7 @@ def basis_main(argv=None):
         work=Path(temporary)
         random_checks=check_random_cli(maker,work)
         selected=[(c,a.reference_dir/c['id']) for c in cases]
-        selected += [(c,ROOT/'fixtures/afni/compatibility/reference'/c['id']) for c in m0_cases()]
+        selected += [(c,FIXTURES / 'afni/compatibility/reference'/c['id']) for c in m0_cases()]
         for index,(case,reference) in enumerate(selected):
             directory=work/f'{index}_{case["id"]}';directory.mkdir()
             try:

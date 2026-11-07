@@ -20,7 +20,7 @@ import os
 import re
 import subprocess
 import tempfile
-from . import ROOT
+from . import ROOT, FIXTURES
 from pathlib import Path
 
 
@@ -29,8 +29,8 @@ from pathlib import Path
 # ------------------------------------------------------------------------
 
 REPO = ROOT.parents[2]
-CASES = ROOT / "fixtures/afni/compatibility/cases.json"
-GOLDEN = ROOT / "fixtures/afni/compatibility/reference"
+CASES = FIXTURES / "afni/compatibility/cases.json"
+GOLDEN = FIXTURES / "afni/compatibility/reference"
 
 # Clear inherited AFNI settings; -skip_afnirc suppresses the user's .afnirc.
 # This is a

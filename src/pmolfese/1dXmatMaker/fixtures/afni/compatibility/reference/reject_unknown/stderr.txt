@@ -1,3 +1,0 @@
-[7m** ERROR:[0m 'NOT_A_BASIS' is unknown response function type
-[7m** FATAL ERROR:[0m '-stim_times 1': don't understand basis function model 'NOT_A_BASIS' [nopt=12]
-** Program compile date = Nov  6 2026

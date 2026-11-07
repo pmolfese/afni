@@ -28,8 +28,17 @@ for another run. `tests/run.py --help` lists focused commands. Add `--help` afte
 any command for its options. Cargo tests are a separate gate, also run by Make's
 `check` and CMake's ctest target.
 
-`fixtures/` holds independent reference values and capture provenance; normal
-tests never change them. The layout groups data by reference implementation:
+`fixtures.tgz` holds independent reference values and capture provenance; normal
+tests never change them. The adjacent `fixtures.manifest.json` lists each member's
+relative path, byte size, SHA-256 and last update date, plus group descriptions,
+an archive checksum and dated update notes. Dates record first inventory or later
+byte changes; they do not replace original scientific capture provenance.
+
+The runner checks the archive and extracts to `target/fixtures/<archive-sha256>/`
+on demand. It verifies every cached file before reuse; a changed archive gets a
+new cache directory. Help commands do not extract anything. If a cached copy is
+corrupted, remove that hash directory and rerun; never edit the cache to update
+reference results. The layout inside the archive groups data by implementation:
 
 - `afni/compatibility/`: shared reference cases and pinned AFNI executable provenance.
 - `afni/baselines/`: polynomial baselines, sampled signals and nuisance.
@@ -54,8 +63,33 @@ python3 tests/run.py reference audit
 python3 tests/run.py inventory --check
 ```
 
-Reference capture, `capture-hrfs`, and inventory regeneration are explicit
-maintenance operations. Review upstream changes before replacing expectations.
+Reference capture, `capture-hrfs --output NEW.json`, and inventory regeneration
+are explicit maintenance operations. Review upstream changes before replacing
+expectations. To update archived fixtures, unpack into a separate working tree,
+apply reviewed reference changes there, then create a new pair:
+
+```sh
+python3 tests/fixture_archive.py unpack --output-dir target/fixture-edit
+# Apply reviewed changes under target/fixture-edit, preserving capture provenance.
+python3 tests/fixture_archive.py pack --input target/fixture-edit \
+  --output-dir target/fixture-update --date YYYY-MM-DD \
+  --note "Describe the reference changes and why they were made"
+```
+
+The output directory must be new. Packing uses the distributed manifest by default
+to retain unchanged files' dates and append an update record; `--source-revision`
+can record the revision supplying the inputs. Review the JSON diff, then replace
+both root-level `fixtures.tgz` and `fixtures.manifest.json` with the new pair and
+run the scientific checks. File order, ownership, modes and archive timestamps
+are normalized, so identical input files produce identical tgz bytes. Licenses
+and original capture manifests remain inside the archive unchanged.
+
+Archive handling has focused standard-library tests:
+
+```sh
+python3 -m unittest discover -s tests -p 'test_fixture_archive.py'
+```
+
 Rust integration tests are `tests/*.rs`; API probes live in `tests/probes/`;
 Python checks and helpers live in `tests/validation/`. Preserve independent
 oracles and documented numerical tolerances when updating them.
@@ -73,8 +107,8 @@ python3 tests/run.py package --release-dir target/release-packages \
   --report target/release-packages/verification.json
 ```
 
-The source archive includes tests, fixtures and compile-time data. The binary
-archive includes the executable, README, examples and notices;
+The source archive includes tests, the fixture tgz/JSON pair and compile-time
+data. The binary archive includes the executable, README, examples and notices;
 it excludes tests, fixtures and the already-embedded waveform table. Sorted
 entries and normalized timestamps make archives reproducible for identical input
 bytes. Verification builds/tests the extracted source with an empty Cargo cache

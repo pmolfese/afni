@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 import csv
 import io
-from . import ROOT
+from . import ROOT, FIXTURES
 from pathlib import Path
 from .reference import digest, integers, read_matrix, run_case, ENV
 
@@ -28,8 +28,8 @@ from .reference import digest, integers, read_matrix, run_case, ENV
 # ------------------------------------------------------------------------
 
 
-BASELINE_CASES = ROOT / "fixtures/afni/baselines/cases.json"
-BASELINE_REFERENCE = ROOT / "fixtures/afni/baselines/reference"
+BASELINE_CASES = FIXTURES / "afni/baselines/cases.json"
+BASELINE_REFERENCE = FIXTURES / "afni/baselines/reference"
 
 
 def compare_baselines(actual, expected):
@@ -162,7 +162,7 @@ def baselines_main(argv=None):
     cases = json.loads(BASELINE_CASES.read_text())
     if args.capture_reference:
         reference = args.capture_reference.resolve(strict=True)
-        pinned = json.loads((ROOT / "fixtures/afni/compatibility/reference/manifest.json").read_text())
+        pinned = json.loads((FIXTURES / "afni/compatibility/reference/manifest.json").read_text())
         assert digest(reference) == pinned["executable_sha256"], "use the pinned M0 reference binary"
         args.reference_dir.mkdir(exist_ok=False)
         records = [run_case(reference, c, args.reference_dir / c["id"])
@@ -191,7 +191,7 @@ def baselines_main(argv=None):
                 (directory / name).write_text(content)
             output = ["-x1D", "X.xmat.1D", "-x1D_uncensored", "X.full.xmat.1D"]
             invoke(maker, case["maker_args"] + output, directory)
-            expected = ROOT / "fixtures/afni/compatibility/reference" / case["m0_case"] if "m0_case" in case else args.reference_dir / case["id"]
+            expected = FIXTURES / "afni/compatibility/reference" / case["m0_case"] if "m0_case" in case else args.reference_dir / case["id"]
             errors = [compare_baselines(directory / name, expected / name)
                       for name in ("X.xmat.1D", "X.full.xmat.1D")]
             attrs, retained = read_matrix(directory / "X.xmat.1D")
@@ -224,8 +224,8 @@ def baselines_main(argv=None):
 # ------------------------------------------------------------------------
 
 
-EVENT_CASES = ROOT / 'fixtures/afni/events/cases.json'
-EVENT_REFERENCE = ROOT / 'fixtures/afni/events/reference'
+EVENT_CASES = FIXTURES / 'afni/events/cases.json'
+EVENT_REFERENCE = FIXTURES / 'afni/events/reference'
 
 
 def compare_events(actual, expected):
@@ -397,7 +397,7 @@ def events_main(argv=None):
     args=parser.parse_args(argv);cases=json.loads(EVENT_CASES.read_text())
     if args.capture_reference:
         exe=args.capture_reference.resolve(strict=True)
-        pinned=json.loads((ROOT/'fixtures/afni/compatibility/reference/manifest.json').read_text())
+        pinned=json.loads((FIXTURES / 'afni/compatibility/reference/manifest.json').read_text())
         assert digest(exe)==pinned['executable_sha256']
         args.reference_dir.mkdir(exist_ok=False)
         records=[run_case(exe,c,args.reference_dir/c['id']) for c in cases if 'm0_case' not in c]
@@ -417,7 +417,7 @@ def events_main(argv=None):
             directory=work/case['id'];directory.mkdir()
             for name,text in case['inputs'].items():(directory/name).write_text(text)
             invoke(maker,case['maker_args']+['-x1D','X.xmat.1D','-x1D_uncensored','X.full.xmat.1D','-event_manifest','events.tsv'],directory)
-            expected=ROOT/'fixtures/afni/compatibility/reference'/case['m0_case'] if 'm0_case' in case else args.reference_dir/case['id']
+            expected=FIXTURES / 'afni/compatibility/reference'/case['m0_case'] if 'm0_case' in case else args.reference_dir/case['id']
             error=max(compare_events(directory/name,expected/name) for name in ('X.xmat.1D','X.full.xmat.1D'))
             attrs,retained=read_matrix(directory/'X.xmat.1D');_,full=read_matrix(directory/'X.full.xmat.1D')
             assert retained==[full[i] for i in integers(attrs['GoodList'])]

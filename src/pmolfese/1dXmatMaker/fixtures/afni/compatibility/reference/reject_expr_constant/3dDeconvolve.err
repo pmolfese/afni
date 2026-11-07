@@ -1,2 +1,0 @@
-** ERROR: illegal EXPRession '2' lacks symbol t, x, or z
-** FATAL ERROR: '-stim_times 1': don't understand basis function model 'EXPR(0,12) 2' [nopt=12]

@@ -49,7 +49,7 @@ the developer's installation; its source/binaries are not vendored or linked.
 ## GLMsingle sampled library
 
 The embedded `data/glmsingle/getcanonicalhrflibrary.tsv` and unmodified reference
-Python files under `fixtures/glmsingle/upstream/` come from
+Python files at `glmsingle/upstream/` inside `fixtures.tgz` come from
 [cvnlab/GLMsingle](https://github.com/cvnlab/GLMsingle/tree/082851f9db87ff30c49370f27365ac1112f18ff7),
 commit **082851f9db87ff30c49370f27365ac1112f18ff7**. Copyright (c) 2021,
 Kendrick Kay; licensed under BSD-3-Clause. Preserve the complete notice and

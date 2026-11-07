@@ -1,3 +1,0 @@
-** ERROR: 'TENT(0,12,1)' is illegal
-** ERROR:  Correct format: 'TENT(bot,top,n)' with bot < top and n > 1.
-** FATAL ERROR: '-stim_times 1': don't understand basis function model 'TENT(0,12,1)' [nopt=12]

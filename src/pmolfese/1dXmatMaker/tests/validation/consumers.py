@@ -20,7 +20,7 @@ import tempfile
 import subprocess
 import csv
 import sys
-from . import ROOT
+from . import ROOT, FIXTURES
 from pathlib import Path
 from .reference import integers, read_matrix, digest
 from .designs import invoke, afni_run
@@ -142,9 +142,9 @@ def cases():
     wanted={'events':['event_censored','mixed_sources','im_spmg_pair'],
             'semantics':['am1_TENT_plain','am2_SPMG3_plain','am2_dmUBLOCK_norm','fsl_3fields','im_duration','lag_nptr2_base0','glt_ranges']}
     for group,names in wanted.items():
-        for case in json.loads((R/f'fixtures/afni/{group}/cases.json').read_text()):
+        for case in json.loads((FIXTURES / f'afni/{group}/cases.json').read_text()):
             if case['id'] in names:
-                ref=R/'fixtures/afni/compatibility/reference'/case['m0_case'] if 'm0_case' in case else R/f'fixtures/afni/{group}/reference'/case['id']
+                ref=FIXTURES / 'afni/compatibility/reference'/case['m0_case'] if 'm0_case' in case else FIXTURES / f'afni/{group}/reference'/case['id']
                 yield case,ref
 
 def check_spikes(exe,afni,root):

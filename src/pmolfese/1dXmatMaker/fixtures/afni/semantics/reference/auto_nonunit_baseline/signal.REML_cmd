@@ -1,4 +1,0 @@
-# 3dDeconvolve -input1D signal -TR_1D 2 -polort A -num_stimts 0 -GOFORIT 999 -x1D X.xmat.1D -x1D_uncensored X.full.xmat.1D -x1D_stop
-
-3dREMLfit -matrix X.xmat.1D \
- -verb $*

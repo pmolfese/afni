@@ -18,7 +18,7 @@ import tempfile
 import shutil
 import os
 import subprocess
-from . import ROOT
+from . import ROOT, FIXTURES
 from pathlib import Path
 from .reference import digest, read_matrix, run_case, integers
 from .designs import invoke, compare_events as compare, afni_run
@@ -28,8 +28,8 @@ R = ROOT
 
 # Full-design comparisons (M4)
 # ------------------------------------------------------------------------
-CASES=R/'fixtures/afni/semantics/cases.json'
-REF=R/'fixtures/afni/semantics/reference'
+CASES=FIXTURES / 'afni/semantics/cases.json'
+REF=FIXTURES / 'afni/semantics/reference'
 
 def floats(text):
     """Decode AFNI's repeated-value notation for numeric contrast attributes."""
@@ -65,7 +65,7 @@ def semantics_main(argv=None):
     a=p.parse_args(argv);CASES=a.cases;REF=a.reference_dir;cases=json.loads(CASES.read_text())
     if a.capture_reference:
         exe=a.capture_reference.resolve(strict=True)
-        pinned=json.loads((R/'fixtures/afni/compatibility/reference/manifest.json').read_text())
+        pinned=json.loads((FIXTURES / 'afni/compatibility/reference/manifest.json').read_text())
         assert digest(exe)==pinned['executable_sha256']
         assert not REF.exists(),'Never overwrite reference captures'
         with tempfile.TemporaryDirectory() as d:
@@ -147,14 +147,14 @@ def check_contracts(exe,root):
     assert matrices[0]==matrices[1];count+=1
     # Reuse original independent M0 bytes, with no recapture or numerical edits.
     reused=[]
-    for c in json.loads((R/'fixtures/afni/compatibility/cases.json').read_text()):
+    for c in json.loads((FIXTURES / 'afni/compatibility/cases.json').read_text()):
         if not c['id'].startswith(('am','dm','fsl','fs1','local_two','global_two','millisecond','offset','censortr')) or c['id']=='fsl_substitution':continue
         args=c['args'].copy()
         if c['id']=='am2_raw':args.insert(0,'-rawAM2')
         d=root/c['id'];d.mkdir()
         for name,text in c['inputs'].items():(d/name).write_text(text)
         invoke(exe,args+['-x1D','X','-x1D_uncensored','F'],d)
-        for actual,expected in [('X','X.xmat.1D'),('F','X.full.xmat.1D')]:check(d/actual,R/'fixtures/afni/compatibility/reference'/c['id']/expected)
+        for actual,expected in [('X','X.xmat.1D'),('F','X.full.xmat.1D')]:check(d/actual,FIXTURES / 'afni/compatibility/reference'/c['id']/expected)
         reused.append(c['id'])
     return dict(boundary_and_environment_checks=count,m0_reused=reused)
 

@@ -1,4 +1,0 @@
-# 3dDeconvolve -input1D reference_signal.1D -TR_1D 0.8 -concat '1D: 0' -polort 0 -num_stimts 0 -ortvec ort.1D redundant -GOFORIT 20 -allzero_OK -x1D X.xmat.1D -x1D_uncensored X.full.xmat.1D -x1D_stop
-
-3dREMLfit -matrix X.xmat.1D \
- -verb $*

@@ -71,5 +71,6 @@ pub mod xmat;
 
 /// Version of the independent generator, distinct from AFNI's version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-/// Pinned scientific behavior reference; provenance is in fixtures/afni/compatibility/reference/manifest.json.
+/// Pinned scientific behavior reference; provenance is in
+/// afni/compatibility/reference/manifest.json inside fixtures.tgz.
 pub const REFERENCE_REVISION: &str = "2664fdd5de7425f658c6d901765fbb4c291693fa";

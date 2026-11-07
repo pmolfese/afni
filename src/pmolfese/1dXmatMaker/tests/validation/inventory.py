@@ -15,7 +15,7 @@ import argparse
 import hashlib
 import json
 import re
-from . import ROOT
+from . import ROOT, FIXTURES
 from pathlib import Path
 
 
@@ -67,7 +67,7 @@ def generate():
     each function retains an unresolved item until its own tests exist.
     """
     source = (REPO / "src/3dDeconvolve.c").read_text()
-    cases = json.loads((ROOT / "fixtures/afni/compatibility/cases.json").read_text())
+    cases = json.loads((FIXTURES / "afni/compatibility/cases.json").read_text())
     # Restrict basis discovery to the actual parser, not help examples.
     begin = source.index("basis_expansion * basis_parser( char *sym )\n{")
     end = source.index("/*--- NO MORE BASIS FUNCTION CHOICES ---*/", begin)

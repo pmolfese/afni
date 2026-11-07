@@ -328,9 +328,11 @@ a predictive analysis must account for those fitting/selection steps.
 
 `src/` contains extensively commented Rust code. `examples/` contains small user
 inputs. `tests/` contains the test runner, numerical probes and release packager.
-`fixtures/afni/` groups reference cases by behavior; `fixtures/glmsingle/` holds
-the independent HRF references. Keep these frozen scientific results for
-regression tests; they are not needed at runtime and are not installed.
+`fixtures.tgz` contains frozen AFNI and GLMsingle scientific references.
+`fixtures.manifest.json` describes the groups, update history, and each file's
+size and SHA-256. The scientific test runner verifies and extracts these under
+`target/fixtures/<archive-sha256>/`; cached files are verified before reuse.
+These references are not needed at runtime and are not installed.
 `data/glmsingle/` contains compile-time waveform data plus its license and provenance.
 `licenses/` and [THIRD_PARTY.md](THIRD_PARTY.md) retain redistribution notices.
 

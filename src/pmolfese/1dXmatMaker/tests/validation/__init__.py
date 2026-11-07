@@ -12,5 +12,9 @@ from a source release. Keeping it here avoids fragile cwd-dependent fixture path
 No test runs or expected-file captures happen merely by importing the package.
 """
 from pathlib import Path
+from fixture_archive import fixture_directory
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# Resolving the content-addressed path is read-only; the runner unpacks on demand.
+FIXTURES = fixture_directory(ROOT)

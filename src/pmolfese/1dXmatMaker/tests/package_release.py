@@ -45,8 +45,8 @@ def main():
     for path in [native,source,checksums]:
         if path.exists() or path.is_symlink():raise FileExistsError(path)
     source_files={}
-    roots=['src','tests','examples','fixtures','data','licenses']
-    paths=[ROOT/name for name in ['Cargo.toml','Cargo.lock','rust-toolchain.toml','Makefile','CMakeLists.txt','README.md','THIRD_PARTY.md']]
+    roots=['src','tests','examples','data','licenses']
+    paths=[ROOT/name for name in ['Cargo.toml','Cargo.lock','rust-toolchain.toml','Makefile','CMakeLists.txt','README.md','THIRD_PARTY.md','fixtures.tgz','fixtures.manifest.json']]
     for name in roots:
         paths.extend(p for p in (ROOT/name).rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc')
     for path in paths:

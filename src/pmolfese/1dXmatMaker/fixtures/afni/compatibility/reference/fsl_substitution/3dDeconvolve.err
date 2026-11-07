@@ -1,2 +1,0 @@
-*+ WARNING: '-stim_times_FSL 1' file 'times.1D' -- model 'GAM' is not of 'dm' type -- replacing with 'dmUBLOCK(1)'
-*+ WARNING: Input polort=0; Longest run=80.0 s; Recommended minimum polort=1

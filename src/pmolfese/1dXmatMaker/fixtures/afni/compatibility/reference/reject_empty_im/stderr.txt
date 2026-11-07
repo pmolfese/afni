@@ -1,4 +1,0 @@
-[7m*+ WARNING:[0m '-stim_times_IM 1' didn't read any good times from file 'times.1D'
-++ '-stim_times_IM 1 times.1D' will have 0 regressors
-[7m** FATAL ERROR:[0m IM currently requires more than zero events
-** Program compile date = Nov  6 2026

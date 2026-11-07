@@ -21,7 +21,7 @@ import tempfile
 import importlib.util
 import shutil
 import sys
-from . import ROOT
+from . import ROOT, FIXTURES
 from pathlib import Path
 from .designs import invoke, afni_run
 from .reference import read_matrix, integers, digest
@@ -42,11 +42,11 @@ def sampled_main(argv=None):
     import numpy as np
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--maker',type=Path,required=True);p.add_argument('--probe',type=Path,required=True);p.add_argument('--picard',type=Path);p.add_argument('--report',type=Path);a=p.parse_args(argv)
     exe=a.maker.resolve(strict=True);probe=a.probe.resolve(strict=True)
-    ref=json.loads((R/'fixtures/glmsingle/reference.json').read_text());records=[];curves=0;matrices=0;boundaries=0
+    ref=json.loads((FIXTURES / 'glmsingle/reference.json').read_text());records=[];curves=0;matrices=0;boundaries=0
     provenance=json.loads((R/'data/glmsingle/provenance.json').read_text())
     assert ref['provenance']==provenance
     for name,expected_hash in provenance['source_sha256'].items():
-        directory=R/'data/glmsingle' if name=='getcanonicalhrflibrary.tsv' else R/'fixtures/glmsingle/upstream'
+        directory=R/'data/glmsingle' if name=='getcanonicalhrflibrary.tsv' else FIXTURES / 'glmsingle/upstream'
         assert digest(directory/name)==expected_hash,name
     with tempfile.TemporaryDirectory(prefix='maker_m6_') as d:
         root=Path(d)
@@ -102,7 +102,7 @@ def sampled_main(argv=None):
         # An occupied late catalog prevents publication of earlier matrices.
         (work/'occupied.candidates.tsv').write_text('preserve');invoke(exe,args[:-1]+['occupied'],work,2)
         assert list(work.glob('occupied*'))==[work/'occupied.candidates.tsv'];boundaries+=1
-    report=dict(result='pass',maker_sha256=digest(exe),probe_sha256=digest(probe),reference_sha256=digest(R/'fixtures/glmsingle/reference.json'),waveform_curves=curves,full_designs=matrices,cases=records,custom_no_double_convolution='pass',boundary_checks=boundaries)
+    report=dict(result='pass',maker_sha256=digest(exe),probe_sha256=digest(probe),reference_sha256=digest(FIXTURES / 'glmsingle/reference.json'),waveform_curves=curves,full_designs=matrices,cases=records,custom_no_double_convolution='pass',boundary_checks=boundaries)
     if a.report:a.report.write_text(json.dumps(report,indent=2)+'\n')
     print(f'PASS {curves} upstream curves, {matrices} trial/ONOFF designs, custom convolution and {boundaries} failures')
 
@@ -112,12 +112,16 @@ def sampled_main(argv=None):
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def capture_main(argv=None):
     """Explicitly capture pinned upstream curves; --help never writes fixtures."""
-    argparse.ArgumentParser(description=capture_main.__doc__).parse_args(argv)
-    output=R/'fixtures/glmsingle/reference.json'
+    parser=argparse.ArgumentParser(description=capture_main.__doc__)
+    parser.add_argument('--output',type=Path,required=True,help='new reference JSON outside the immutable fixture cache')
+    args=parser.parse_args(argv)
+    output=args.output.resolve()
+    if output==FIXTURES or FIXTURES in output.parents:
+        parser.error('capture output must be outside the immutable fixture cache')
     if output.exists():raise RuntimeError('Reference already exists; use an explicit new version')
     import numpy as np
     provenance=json.loads((R/'data/glmsingle/provenance.json').read_text())
-    upstream=R/'fixtures/glmsingle/upstream'
+    upstream=FIXTURES / 'glmsingle/upstream'
     for name,digest in provenance['source_sha256'].items():
         path=R/'data/glmsingle'/name if name=='getcanonicalhrflibrary.tsv' else upstream/name
         assert sha(path)==digest,name

@@ -13,6 +13,5 @@ __pycache__/
 # This standalone build wrapper is source, unlike AFNI's local src/Makefile.
 !/Makefile
 
-# Frozen reference matrices and example waveforms are source inputs, not outputs.
-!/fixtures/**/*.1D
+# Example waveforms are source inputs, not outputs.
 !/examples/*.1D

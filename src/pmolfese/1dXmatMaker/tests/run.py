@@ -21,6 +21,7 @@ import subprocess
 import sys
 
 from validation import ROOT
+from fixture_archive import unpack
 
 # Keep descriptions and routing in one table. Modules are imported lazily so
 # --help, fixture audits, and archive checks do not require NumPy or SciPy.
@@ -127,6 +128,9 @@ def main():
         parser.print_help()
         return
     command = parser.parse_args(arguments[:1]).command
+    # Help stays read-only; all actual checks use a verified fixture cache.
+    if not any(arg in ('-h', '--help') for arg in arguments[1:]):
+        unpack(ROOT)
     if command == 'suite':
         suite(arguments[1:])
     else:

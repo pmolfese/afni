@@ -9,8 +9,9 @@
 //!
 //! The writer borrows the design; it cannot change values, labels, or row maps.
 //! Numeric rows are streamed from column-major storage without allocating a
-//! second censored matrix. See fixtures/afni/compatibility/reference for the independent AFNI
-//! writer examples and tests for actual AFNI reader interoperability.
+//! second censored matrix. See afni/compatibility/reference inside fixtures.tgz
+//! for the independent AFNI writer examples and tests for actual AFNI reader
+//! interoperability.
 //!
 //! Format compatibility is not a library call: no afni-io NIML writer or
 //! afni-core object is used here. `attribute` escapes text into the established
