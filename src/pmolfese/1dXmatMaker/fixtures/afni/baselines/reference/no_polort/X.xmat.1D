@@ -1,0 +1,28 @@
+# <matrix
+#  ni_type = "double"
+#  ni_dimen = "15"
+#  ColumnLabels = "motion#0"
+#  ColumnGroups = "0"
+#  RowTR = "0.8"
+#  GoodList = "0..14"
+#  NRowFull = "15"
+#  RunStart = "0"
+#  CommandLine = "3dDeconvolve -input1D reference_signal.1D -TR_1D 0.8 -concat &apos;1D: 0&apos; -polort -1 -num_stimts 1 -stim_file 1 v.1D -stim_base 1 -stim_label 1 motion -GOFORIT 20 -allzero_OK -x1D X.xmat.1D -x1D_uncensored X.full.xmat.1D -x1D_stop"
+# >
+ 2
+ 3
+ 4
+ 5
+ 2
+ 3
+ 4
+ 5
+ 2
+ 3
+ 4
+ 5
+ 2
+ 3
+ 4
+# </matrix>
+

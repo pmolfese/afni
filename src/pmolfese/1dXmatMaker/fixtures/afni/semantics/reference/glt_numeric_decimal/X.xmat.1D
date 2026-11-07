@@ -1,0 +1,30 @@
+# <matrix
+#  ni_type = "2*double"
+#  ni_dimen = "10"
+#  ColumnLabels = "Run#1Pol#0 ; s#0"
+#  ColumnGroups = "-1,1"
+#  RowTR = "1"
+#  GoodList = "0..9"
+#  NRowFull = "10"
+#  RunStart = "0"
+#  Nstim = "1"
+#  StimBots = "1"
+#  StimTops = "1"
+#  StimLabels = "s"
+#  Nglt = "1"
+#  GltLabels = "GLT#1_"
+#  GltMatrix_000000 = "1,2,0.123457,-0.314159"
+#  CommandLine = "3dDeconvolve -nodata 10 1 -polort 0 -num_stimts 1 -stim_file 1 &apos;1D: 10@1&apos; -stim_label 1 s -glt 1 contrast -GOFORIT 999 -allzero_OK -x1D X.xmat.1D -x1D_uncensored X.full.xmat.1D -x1D_stop"
+# >
+ 1 1
+ 1 1
+ 1 1
+ 1 1
+ 1 1
+ 1 1
+ 1 1
+ 1 1
+ 1 1
+ 1 1
+# </matrix>
+

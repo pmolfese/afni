@@ -18,11 +18,11 @@
  */
 #include "mrilib.h"
 #include "thd_xmat.h"
-#include "1dXmatTool_betas.h"
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#include <stdarg.h>
 
 /* Print the public CLI contract, including indexing and downstream examples. */
 static void usage(void)
@@ -733,6 +733,559 @@ static int xt_manifest(const THD_xmat *a,const THD_xmat *u,const XT_options *o,c
    free(path);free(seen);THD_free_datatable(events);return !ok;
 }
 
+/* ========================================================================
+ * FITTED-BETA TABLE EXPORT
+ *
+ * Keep this in the command rather than thd_xmat: subject annotations, output
+ * naming and MVPA/RSA table layouts are CLI policy, not matrix mathematics.
+ * A fitted Volume is NOT its source design column. Voxelwise HRF selection
+ * retains a candidate catalog and ID map instead of a fictitious single Xmat.
+ *
+ * All option strings borrow argv storage. The exporter owns its working
+ * storage and tables; normalized rows borrow table cells, so tables are freed
+ * after rows. The existing AFNI table reader/token writer supplies quoting.
+ * No fitting, image copying or trial averaging occurs during table export.
+ * ======================================================================== */
+typedef struct {
+   const char *manifest, *events, *subject, *prefix, *format, *input_base, *runs;
+   int run_base; /* Input manifest convention: Picard=0, LSS export=1. */
+} XT_beta_options;
+
+#define XB_MAX_RUN 1000000
+
+typedef struct {
+   int source, volume, run, source_run, trial, basis, keep;
+   const char *condition, *item, *input;
+} XB_row;
+
+typedef struct {
+   THD_datatable *table, *events;
+   XB_row *row;
+   int nrow, max_run, candidate;
+   char *base;
+} XB_table;
+
+/* Each output owns a temporary sibling file. link() publishes without replacing
+ * a destination; dev/ino checks prevent rollback from removing someone else's
+ * replacement. The main table is published last, after all of its companions.
+ */
+typedef struct {
+   char *path, *temporary;
+   FILE *stream;
+   int published;
+   dev_t device;
+   ino_t inode;
+} XB_output;
+
+static int xb_error(char *err, const char *format, ...)
+{
+   va_list ap;
+   va_start(ap, format); vsnprintf(err, 1024, format, ap); va_end(ap);
+   return 0;
+}
+
+/* Integers are exact identifiers, so atoi()'s acceptance of trailing text is
+ * inappropriate. Only optional identities admit the explicit -1 sentinel.
+ */
+static int xb_integer(const char *s, int missing, int *value)
+{
+   char *end; long v;
+   if(!s) { *value=-1; return missing; }
+   errno=0; v=strtol(s,&end,10);
+   if(errno || end==s || *end || v < (missing?-1:0) || v>INT_MAX) return 0;
+   *value=(int)v; return 1;
+}
+
+static const char *xb_cell(const THD_datatable *t, int row, const char *name)
+{
+   int c=t?THD_datatable_column((THD_datatable *)t,(char *)name):-1;
+   return c<0?NULL:DT_CELL(t,row,c);
+}
+
+/* Reject duplicate headers and control bytes before any output is created.
+ * Ordinary spaces and quotes are preserved by THD_1D_print_token below.
+ */
+static int xb_check_table(const THD_datatable *t, char *err)
+{
+   int c,j,r;
+   for(c=0;c<t->ncol;c++) {
+      for(j=0;j<c;j++) if(!strcmp(t->cname[c],t->cname[j]))
+         return xb_error(err,"duplicate column '%s'",t->cname[c]);
+      for(r=-1;r<t->nrow;r++) {
+         const unsigned char *s=(unsigned char *)(r<0?t->cname[c]:DT_CELL(t,r,c));
+         for(;*s;s++) if(*s<32 || *s==127)
+            return xb_error(err,"control character in table column '%s'",t->cname[c]);
+      }
+   }
+   return 1;
+}
+
+/* Dataset names may be AFNI prefixes without a real file at that exact path.
+ * Make them absolute without calling realpath on the dataset itself. Opening
+ * the header below validates the AFNI name and the actual sub-brick range.
+ * The base directory is explicit; never guess between two existing datasets.
+ */
+static char *xb_path(const char *base, const char *name)
+{
+   if(!name || !*name || !strcmp(name,"-") || !strcmp(name,"NA")) return NULL;
+   return name[0]=='/'?strdup(name):THD_zzprintf(NULL,"%s/%s",base,name);
+}
+
+/* Normalize path cells in place. XB_row borrows the resulting owned strings.
+ * We use raw cells rather than the reader's cached fname/val arrays afterward.
+ */
+static int xb_paths(XB_table *b, char *err)
+{
+   const char *names[]={"InputFile","Xmat","SourceXmat","CandidateManifest","DesignIDFile"};
+   int k,c,r;
+   for(k=0;k<5;k++) {
+      c=THD_datatable_column(b->table,(char *)names[k]);
+      if(c<0) continue;
+      for(r=0;r<b->nrow;r++) {
+         char *path=xb_path(b->base,DT_CELL(b->table,r,c));
+         if(!path) return xb_error(err,"missing %s on row %d",names[k],r+1);
+         free(DT_CELL(b->table,r,c)); DT_CELL(b->table,r,c)=path;
+         if(k==3 && access(path,R_OK))
+            return xb_error(err,"cannot read candidate catalog %s",path);
+      }
+   }
+   return 1;
+}
+
+/* An events table supplements missing semantic identities by ACTUAL beta Volume,
+ * never by label or matrix-column position. One bucket is required for this join:
+ * otherwise Volume=0 could refer to several different datasets. Run in events
+ * is always one-based, even when the source manifest uses Picard's zero base.
+ */
+static int xb_event_row(XB_table *b, int volume, int *seen, char *err)
+{
+   int r,found=-1,v;
+   for(r=0;b->events && r<b->events->nrow;r++) {
+      if(!xb_integer(xb_cell(b->events,r,"Volume"),0,&v)) {
+         xb_error(err,"events need a nonnegative Volume on every row"); return -2;
+      }
+      if(v==volume) {
+         if(found>=0) { xb_error(err,"duplicate events Volume %d",volume); return -2; }
+         found=r;
+      }
+   }
+   if(b->events && found<0) {
+      xb_error(err,"missing event for beta Volume %d",volume); return -2;
+   }
+   if(found>=0) seen[found]=1;
+   return found;
+}
+
+/* Merge explicit metadata, rejecting contradictions instead of silently letting
+ * an annotation table relabel a known trial. -1 is a missing identity, not run 0.
+ */
+static int xb_identity(XB_table *b, int r, int e, const char *name,
+                       int run_base, int *value, char *err)
+{
+   const char *s=xb_cell(b->table,r,name), *t=e<0?NULL:xb_cell(b->events,e,name);
+   int original,annotation;
+   if(!xb_integer(s,1,&original) || !xb_integer(t,1,&annotation))
+      return xb_error(err,"invalid %s on beta row %d",name,r+1);
+   if(!strcmp(name,"Run")) {
+      if(original>=0) {
+         if(original<run_base || original>XB_MAX_RUN+run_base-1)
+            return xb_error(err,"manifest Run is outside the declared run-base/range");
+         original=original-run_base+1;
+      }
+      if(t && annotation!=-1 && (annotation<1 || annotation>XB_MAX_RUN))
+         return xb_error(err,"events Run must be one-based");
+   }
+   if(original>=0 && annotation>=0 && original!=annotation)
+      return xb_error(err,"events %s contradicts beta row %d",name,r+1);
+   *value=original>=0?original:annotation;
+   return 1;
+}
+
+/* Header-only dataset reads catch stale or out-of-range mappings without loading
+ * voxel data. Cache the most recently used dataset: Picard usually has one bucket.
+ */
+static int xb_volume(const char *path, int volume, THD_3dim_dataset **cache,
+                     const char **last, char *err)
+{
+   if(strchr(path,'[') || strchr(path,']'))
+      return xb_error(err,"manifest paths must name whole datasets, not selectors");
+   if(!*last || strcmp(*last,path)) {
+      if(*cache) DSET_delete(*cache);
+      *cache=THD_open_dataset((char *)path); *last=path;
+      if(!*cache) return xb_error(err,"cannot open beta/DesignID dataset %s",path);
+   }
+   if(volume<0 || volume>=DSET_NVALS(*cache))
+      return xb_error(err,"Volume %d is out of range in %s",volume,path);
+   return 1;
+}
+
+/* Validate ALL source rows before filtering. An invalid excluded row must not
+ * hide a duplicate identity or a malformed mapping in the supplied manifest.
+ */
+static int xb_rows(XB_table *b, const XT_beta_options *o, char *err)
+{
+   THD_3dim_dataset *ds=NULL,*id_ds=NULL;
+   THD_xmat *xm=NULL;
+   const char *last=NULL,*id_last=NULL,*xlast=NULL;
+   int *seen=NULL,r,j,e,ok=1,c,has_xmat,has_column;
+   if(!xb_cell(b->table,0,"InputFile") || !xb_cell(b->table,0,"Volume"))
+      return xb_error(err,"beta manifest requires InputFile and Volume");
+   b->candidate=xb_cell(b->table,0,"CandidateManifest")!=NULL;
+   has_xmat=xb_cell(b->table,0,"Xmat")!=NULL;
+   has_column=xb_cell(b->table,0,"XColumn")!=NULL;
+   if((has_xmat && xb_cell(b->table,0,"SourceXmat")) ||
+      (has_column && xb_cell(b->table,0,"SourceColumn")))
+      return xb_error(err,"ambiguous simultaneous source and design-column metadata");
+   if(has_xmat!=has_column || (b->candidate && has_xmat))
+      return xb_error(err,"use paired Xmat/XColumn OR candidate provenance, not both");
+   if(b->candidate && (!xb_cell(b->table,0,"Column") ||
+      !xb_cell(b->table,0,"DesignIDFile") || !xb_cell(b->table,0,"DesignIDVolume")))
+      return xb_error(err,"candidate manifest needs Column, DesignIDFile and DesignIDVolume");
+   if(!b->candidate && (xb_cell(b->table,0,"DesignIDFile") || xb_cell(b->table,0,"DesignIDVolume")))
+      return xb_error(err,"DesignID metadata requires CandidateManifest");
+   if(b->events) {
+      seen=calloc((size_t)b->events->nrow,sizeof(int));
+      if(!seen) return xb_error(err,"out of memory");
+   }
+   for(r=0;ok && r<b->nrow;r++) {
+      XB_row *v=b->row+r;
+      const char *s,*annotation;
+      v->source=r; v->input=xb_cell(b->table,r,"InputFile");
+      if(b->events && strcmp(v->input,xb_cell(b->table,0,"InputFile"))) {
+         ok=xb_error(err,"-events Volume joins require a single beta bucket"); break;
+      }
+      if(!xb_integer(xb_cell(b->table,r,"Volume"),0,&v->volume) ||
+         !xb_volume(v->input,v->volume,&ds,&last,err)) {
+         if(!*err) xb_error(err,"invalid beta Volume on row %d",r+1);
+         ok=0; break;
+      }
+      for(j=0;j<r;j++) if(v->volume==b->row[j].volume && !strcmp(v->input,b->row[j].input))
+         ok=xb_error(err,"duplicate InputFile/Volume on beta row %d",r+1);
+      if(!ok) break;
+      e=xb_event_row(b,v->volume,seen,err);
+      if(e==-2) { ok=0; break; }
+      s=xb_cell(b->table,r,"Subj");
+      if(s && strcmp(s,o->subject)) { ok=xb_error(err,"manifest Subj disagrees with -subject"); break; }
+      s=xb_cell(b->table,r,"Condition");
+      annotation=e<0?NULL:xb_cell(b->events,e,"Condition");
+      if(s && (!*s || !strcmp(s,"-1") || !strcmp(s,"-"))) s=NULL;
+      if(s && annotation && strcmp(s,annotation)) {
+         ok=xb_error(err,"events Condition contradicts beta row %d",r+1); break;
+      }
+      v->condition=s?s:annotation;
+      if(!v->condition || !*v->condition || !strcmp(v->condition,"-1") || !strcmp(v->condition,"-")) {
+         ok=xb_error(err,"missing Condition; supply -events with Volume Condition [Run Trial Item]"); break;
+      }
+      if(!xb_identity(b,r,e,"Run",o->run_base,&v->run,err) ||
+         !xb_identity(b,r,e,"Trial",o->run_base,&v->trial,err) ||
+         !xb_identity(b,r,e,"Basis",o->run_base,&v->basis,err)) { ok=0; break; }
+      if(!xb_integer(xb_cell(b->table,r,"Run"),1,&v->source_run)) { ok=0; break; }
+      b->max_run=MAX(b->max_run,v->run);
+      s=xb_cell(b->table,r,"Item"); annotation=e<0?NULL:xb_cell(b->events,e,"Item");
+      if(s && strcmp(s,"-") && annotation && strcmp(s,annotation)) {
+         ok=xb_error(err,"events Item contradicts beta row %d",r+1); break;
+      }
+      v->item=(s && strcmp(s,"-"))?s:(annotation?annotation:"-");
+      for(j=0;j<r;j++) if(v->trial>=0 && v->trial==b->row[j].trial &&
+         (v->basis==b->row[j].basis || v->run!=b->row[j].run ||
+          strcmp(v->condition,b->row[j].condition) || strcmp(v->item,b->row[j].item)))
+         ok=xb_error(err,"duplicate or inconsistent Trial/Basis identity");
+      if(has_xmat && ok) {
+         s=xb_cell(b->table,r,"Xmat");
+         if(!xlast || strcmp(xlast,s)) {
+            THD_xmat_free(xm); xm=THD_xmat_read(s,err,1024); xlast=s;
+         }
+         if(!xm) ok=0;
+         else if(!xb_integer(xb_cell(b->table,r,"XColumn"),0,&c) || c>=xm->ncol)
+            ok=xb_error(err,"XColumn out of range on beta row %d",r+1);
+      }
+      if(b->candidate && ok) {
+         if(!xb_integer(xb_cell(b->table,r,"Column"),0,&c) ||
+            !xb_integer(xb_cell(b->table,r,"DesignIDVolume"),0,&c))
+            ok=xb_error(err,"invalid candidate Column/DesignIDVolume");
+         else ok=xb_volume(xb_cell(b->table,r,"DesignIDFile"),c,&id_ds,&id_last,err);
+      }
+   }
+   for(r=0;ok && b->events && r<b->events->nrow;r++)
+      if(!seen[r]) ok=xb_error(err,"events contain unmatched rows");
+   free(seen); THD_xmat_free(xm);
+   if(ds) DSET_delete(ds);
+   if(id_ds) DSET_delete(id_ds);
+   return ok;
+}
+
+/* Select existing one-based runs. Bound range traversal by the largest validated
+ * run rather than allowing an arbitrarily large command-line integer loop.
+ */
+static int xb_select(XB_table *b, const char *list, char *err)
+{
+   int r,n=0,*seen=NULL;
+   if(list) {
+      const char *p=list;
+      if(!*p || b->max_run<1) return xb_error(err,"-runs requires known run identities");
+      seen=calloc((size_t)b->max_run+1,sizeof(int));
+      if(!seen) return xb_error(err,"out of memory");
+      while(*p) {
+         char *end; long first,last,v; int step,found;
+         errno=0; first=strtol(p,&end,10);
+         if(errno || end==p || first<1 || first>b->max_run) break;
+         p=end; last=first;
+         if(p[0]=='.' && p[1]=='.') {
+            p+=2; errno=0; last=strtol(p,&end,10);
+            if(errno || end==p || last<1 || last>b->max_run) break;
+            p=end;
+         }
+         if(*p && *p!=',') break;
+         step=last>=first?1:-1;
+         for(v=first;;v+=step) {
+            found=0;
+            for(r=0;r<b->nrow;r++) if(b->row[r].run==v) found=1;
+            if(!found || seen[v]) { free(seen); return xb_error(err,"-runs has an absent or repeated run"); }
+            seen[v]=1;
+            if(v==last) break;
+         }
+         if(*p==',') { p++; if(!*p) { free(seen); return xb_error(err,"trailing comma in -runs"); } }
+      }
+      if(*p) { free(seen); return xb_error(err,"invalid one-based -runs list"); }
+   }
+   for(r=0;r<b->nrow;r++) {
+      b->row[r].keep=!list || (b->row[r].run>0 && seen[b->row[r].run]);
+      n+=b->row[r].keep;
+   }
+   free(seen);
+   return n>0?1:xb_error(err,"selection contains no betas");
+}
+
+/* Format-specific contracts are checked before creating any file. Classic RSA
+ * requires one subject/condition cell. Runwise RSA accepts repeats but requires
+ * explicit unique trial IDs and one coefficient per trial, on independent runs.
+ */
+static int xb_format(const XB_table *b, int rsa, int runwise, char *err)
+{
+   int r,j,nrun=0;
+   for(r=0;r<b->nrow;r++) if(b->row[r].keep) {
+      const XB_row *v=b->row+r;
+      if(runwise && (v->run<1 || v->trial<0))
+         return xb_error(err,"rsa_runwise requires explicit Run and Trial for every selected beta");
+      for(j=0;j<r;j++) if(b->row[j].keep) {
+         const XB_row *w=b->row+j;
+         if(rsa && !strcmp(v->condition,w->condition))
+            return xb_error(err,"rsa needs one beta per condition; select a run or use rsa_runwise");
+         if(runwise && v->trial==w->trial)
+            return xb_error(err,"rsa_runwise needs one coefficient per unique Trial; multibasis trials require selection first");
+         if(runwise && v->run==w->run && strcmp(v->input,w->input))
+            return xb_error(err,"rsa_runwise needs one beta bucket per run (selectors may share one whole-session bucket)");
+      }
+      for(j=0;j<r;j++) if(b->row[j].keep && b->row[j].run==v->run) break;
+      if(j==r) nrun++;
+   }
+   return runwise && nrun<2?xb_error(err,"rsa_runwise requires at least two selected runs"):1;
+}
+
+static int xb_core(const char *name)
+{
+   const char *core[]={"Sample","Subj","Run","Item","Condition","Trial","Basis","Volume","SourceRun","InputFile"};
+   int i; for(i=0;i<10;i++) if(!strcmp(core[i],name)) return 1;
+   return 0;
+}
+
+/* Use the established AFNI token writer rather than a second escaping scheme.
+ * Extra provenance columns survive unchanged, except resolved absolute paths.
+ * Selected tables rename Xmat fields to prevent downstream automatic expansion.
+ */
+static int xb_write_identities(FILE *f, const XB_table *b, const XT_beta_options *o, int selected, char *err)
+{
+   int c,r;
+   fputs("# SourceBetaManifest ",f); THD_1D_print_token(f,b->table->source); fputc('\n',f);
+   fputs("# Run is one-based; SourceRun retains the input manifest index (-1 if absent).\n",f);
+   fputs("# Columns: Sample Subj Run Item Condition Trial Basis Volume SourceRun",f);
+   for(c=0;c<b->table->ncol;c++) if(!xb_core(b->table->cname[c])) {
+      const char *name=b->table->cname[c];
+      if(selected && !strcmp(name,"Xmat")) name="SourceXmat";
+      if(selected && !strcmp(name,"XColumn")) name="SourceColumn";
+      fputc(' ',f); THD_1D_print_token(f,name);
+   }
+   fputs(" InputFile\n",f);
+   for(r=0;r<b->nrow;r++) if(b->row[r].keep) {
+      const XB_row *v=b->row+r;
+      const char *source_sample=xb_cell(b->table,r,"Sample");
+      char *sample=source_sample?strdup(source_sample):THD_zzprintf(NULL,"%s_b%06d",o->subject,r);
+      if(!sample) return xb_error(err,"out of memory writing sample identities");
+      THD_1D_print_token(f,sample); free(sample); fputc(' ',f);
+      THD_1D_print_token(f,o->subject); fprintf(f," %d ",v->run);
+      THD_1D_print_token(f,v->item); fputc(' ',f); THD_1D_print_token(f,v->condition);
+      fprintf(f," %d %d %d %d",v->trial,v->basis,v->volume,v->source_run);
+      for(c=0;c<b->table->ncol;c++) if(!xb_core(b->table->cname[c])) {
+         fputc(' ',f); THD_1D_print_token(f,DT_CELL(b->table,r,c));
+      }
+      fputc(' ',f);
+      if(selected) {
+         char *path=THD_zzprintf(NULL,"%s[%d]",v->input,v->volume);
+         if(!path) return xb_error(err,"out of memory writing a beta selector");
+         THD_1D_print_token(f,path); free(path);
+      } else THD_1D_print_token(f,v->input);
+      fputc('\n',f);
+   }
+   return 1;
+}
+
+/* Stage all files, then publish companions before the primary table. On any
+ * failure remove only the inodes created by this invocation. No output is
+ * touched until the entire input and all destination names have been checked.
+ */
+static int xb_open_outputs(XB_output *out, int n, char *err)
+{
+   int i,fd; struct stat st;
+   for(i=0;i<n;i++) {
+      if(!out[i].path) return xb_error(err,"out of memory");
+      if(!lstat(out[i].path,&st)) return xb_error(err,"output already exists: %s",out[i].path);
+      if(errno!=ENOENT) return xb_error(err,"cannot access output: %s",out[i].path);
+   }
+   for(i=0;i<n;i++) {
+      out[i].temporary=THD_zzprintf(NULL,"%s.tmpXXXXXX",out[i].path);
+      if(!out[i].temporary) return xb_error(err,"out of memory");
+      fd=mkstemp(out[i].temporary);
+      if(fd<0) return xb_error(err,"cannot stage output %s",out[i].path);
+      if(fstat(fd,&st)) { close(fd); return xb_error(err,"cannot stat staged output"); }
+      out[i].device=st.st_dev; out[i].inode=st.st_ino;
+      out[i].stream=fdopen(fd,"w");
+      if(!out[i].stream) { close(fd); return xb_error(err,"cannot open output stream"); }
+   }
+   return 1;
+}
+
+static int xb_commit(XB_output *out, int n, char *err)
+{
+   int i,bad;
+   for(i=0;i<n;i++) {
+      bad=ferror(out[i].stream);
+      if(fclose(out[i].stream)) bad=1;
+      out[i].stream=NULL;
+      if(bad) return xb_error(err,"failed writing %s",out[i].path);
+   }
+   for(i=n-1;i>=0;i--) {
+      if(link(out[i].temporary,out[i].path)) return xb_error(err,"cannot publish without replacement: %s",out[i].path);
+      out[i].published=1;
+   }
+   return 1;
+}
+
+static void xb_free_outputs(XB_output *out, int n, int success)
+{
+   int i; struct stat st;
+   for(i=0;out && i<n;i++) {
+      if(out[i].stream) fclose(out[i].stream);
+      if(!success && out[i].published && !lstat(out[i].path,&st) &&
+         st.st_dev==out[i].device && st.st_ino==out[i].inode) unlink(out[i].path);
+      if(out[i].temporary && !lstat(out[i].temporary,&st) &&
+         st.st_dev==out[i].device && st.st_ino==out[i].inode) unlink(out[i].temporary);
+      free(out[i].temporary); free(out[i].path);
+   }
+   free(out);
+}
+
+static int xb_write(XB_table *b, const XT_beta_options *o, char *err)
+{
+   int rsa=!strcmp(o->format,"rsa"),runwise=!strcmp(o->format,"rsa_runwise");
+   int selected=!strcmp(o->format,"selected"),n=1,r,j,k=0,ok=0;
+   int *runs=calloc((size_t)b->nrow,sizeof(int));
+   XB_output *out=NULL;
+   if(!runs) return xb_error(err,"out of memory");
+   if(!xb_format(b,rsa,runwise,err)) { free(runs); return 0; }
+   if(runwise) for(r=0;r<b->nrow;r++) if(b->row[r].keep) {
+      for(j=0;j<k;j++) if(runs[j]==b->row[r].run) break;
+      if(j==k) runs[k++]=b->row[r].run;
+   }
+   if(rsa || runwise) n=2+k;
+   out=calloc((size_t)n,sizeof(*out));
+   if(!out) { free(runs); return xb_error(err,"out of memory"); }
+   out[0].path=THD_zzprintf(NULL,"%s.%s.1D",o->prefix,rsa?"rsa":runwise?"runwise":"trials");
+   if(n>1) out[1].path=THD_zzprintf(NULL,"%s.identities.1D",o->prefix);
+   for(j=0;j<k;j++) out[j+2].path=THD_zzprintf(NULL,"%s.r%02d.trials.1D",o->prefix,runs[j]);
+   ok=xb_open_outputs(out,n,err);
+   if(ok && !rsa && !runwise) ok=xb_write_identities(out[0].stream,b,o,selected,err);
+   if(ok && (rsa || runwise)) ok=xb_write_identities(out[1].stream,b,o,0,err);
+   if(ok && rsa) {
+      FILE *f=out[0].stream;
+      fputs("# Columns: Subj Condition InputFile\n",f);
+      for(r=0;ok && r<b->nrow;r++) if(b->row[r].keep) {
+         char *path=THD_zzprintf(NULL,"%s[%d]",b->row[r].input,b->row[r].volume);
+         if(!path) { ok=xb_error(err,"out of memory writing a beta selector"); break; }
+         THD_1D_print_token(f,o->subject); fputc(' ',f);
+         THD_1D_print_token(f,b->row[r].condition); fputc(' ',f);
+         THD_1D_print_token(f,path); fputc('\n',f); free(path);
+      }
+   }
+   if(ok && runwise) {
+      FILE *f=out[0].stream;
+      fputs("# Columns: Subj Run TrialFile InputFile\n",f);
+      for(j=0;j<k && ok;j++) {
+         char *selector=NULL,*trial_path; int count=0;
+         FILE *trial=out[j+2].stream;
+         fputs("# Columns: Trial Condition\n",trial);
+         for(r=0;r<b->nrow;r++) if(b->row[r].keep && b->row[r].run==runs[j]) {
+            const XB_row *v=b->row+r;
+            if(!count) selector=THD_zzprintf(NULL,"%s[",v->input);
+            selector=THD_zzprintf(selector,"%s%d",count?",":"",v->volume); count++;
+            fprintf(trial,"%d ",v->trial); THD_1D_print_token(trial,v->condition); fputc('\n',trial);
+         }
+         selector=THD_zzprintf(selector,"]");
+         /* Staged companions do not exist at their final names yet. Resolve the
+          * existing parent directory, then append the intended basename. */
+         { char *parent=strdup(out[j+2].path),*slash=strrchr(parent,'/'),*absolute;
+           const char *leaf=slash?slash+1:out[j+2].path;
+           if(slash) *slash='\0';
+           absolute=realpath(slash?(*parent?parent:"/"):".",NULL);
+           trial_path=absolute?THD_zzprintf(NULL,"%s/%s",absolute,leaf):NULL;
+           free(absolute); free(parent); }
+         if(!selector || !trial_path) ok=xb_error(err,"cannot resolve runwise output paths");
+         else {
+            THD_1D_print_token(f,o->subject); fprintf(f," %d ",runs[j]);
+            THD_1D_print_token(f,trial_path); fputc(' ',f); THD_1D_print_token(f,selector); fputc('\n',f);
+         }
+         free(trial_path); free(selector);
+      }
+   }
+   if(ok) ok=xb_commit(out,n,err);
+   if(ok) fprintf(stderr,"++ Exported beta tables -> %s\n",out[0].path);
+   xb_free_outputs(out,n,ok); free(runs);
+   return ok;
+}
+
+static int xt_export_betas(const XT_beta_options *o)
+{
+   XB_table b={0}; char err[1024]="",*manifest=NULL; int ok=0;
+   const unsigned char *s=(const unsigned char *)o->subject;
+   if(!s || !*s) return fprintf(stderr,"** beta export requires a nonempty -subject\n"),1;
+   for(;*s;s++) if(*s<32 || *s==127) return fprintf(stderr,"** control character in -subject\n"),1;
+   for(s=(const unsigned char *)o->prefix;*s;s++)
+      if(*s<32 || *s==127) return fprintf(stderr,"** control character in -prefix\n"),1;
+   manifest=realpath(o->manifest,NULL);
+   if(!manifest) xb_error(err,"cannot resolve beta manifest %s",o->manifest);
+   else {
+      if(o->input_base) b.base=realpath(o->input_base,NULL);
+      else { b.base=strdup(manifest);
+             if(b.base) { char *slash=strrchr(b.base,'/');
+                if(slash==b.base) slash[1]='\0'; else *slash='\0'; } }
+      if(!b.base) xb_error(err,"cannot resolve -input_base");
+      else {
+         struct stat st;
+         if(stat(b.base,&st) || !S_ISDIR(st.st_mode)) xb_error(err,"input base must be a directory");
+         else {
+            b.table=THD_read_datatable_file(manifest);
+            if(o->events) b.events=THD_read_datatable_file((char *)o->events);
+            b.nrow=b.table->nrow; b.row=calloc((size_t)b.nrow,sizeof(*b.row));
+            if(!b.row) xb_error(err,"out of memory");
+            else ok=xb_check_table(b.table,err) && (!b.events || xb_check_table(b.events,err)) &&
+                    xb_paths(&b,err) && xb_rows(&b,o,err) && xb_select(&b,o->runs,err) && xb_write(&b,o,err);
+         }
+      }
+   }
+   if(!ok) fprintf(stderr,"** beta export: %s\n",*err?err:"invalid input");
+   free(b.row); THD_free_datatable(b.table); THD_free_datatable(b.events);
+   free(b.base); free(manifest); return !ok;
+}
+
 /* Validate operation combinations before acquiring input or output resources. */
 static const char *xt_options_error(const XT_options *ops,const char *in,
    const char *unc,const char *prefix,const char *runlist,int split)
@@ -942,7 +1495,7 @@ int main(int argc,char **argv)
    if(ops.beta_manifest) {
       XT_beta_options beta_options={ops.beta_manifest,ops.events,ops.subject,prefix,
          ops.manifest_format?ops.manifest_format:"manifest",ops.input_base,runlist,ops.manifest_run_base};
-      return XT_export_betas(&beta_options);
+      return xt_export_betas(&beta_options);
    }
    a=THD_xmat_read(in,err,sizeof(err));
    if(a && unc)u=THD_xmat_read(unc,err,sizeof(err));

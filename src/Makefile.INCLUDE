@@ -1885,14 +1885,11 @@ thd_srm.o: thd_srm.c thd_srm.h
 	$(RM) $@
 	$(CCOMP) -c thd_srm.c $(INFLAGS)
 
-XMATTOOL_OBJS = 1dXmatTool.o 1dXmatTool_betas.o thd_xmat.o thd_datatable.o
+XMATTOOL_OBJS = 1dXmatTool.o thd_xmat.o thd_datatable.o
 
-1dXmatTool.o: 1dXmatTool.c 1dXmatTool_betas.h thd_xmat.h thd_datatable.h
+1dXmatTool.o: 1dXmatTool.c thd_xmat.h thd_datatable.h
 	$(RM) $@
 	$(CCOMP) -c 1dXmatTool.c $(INFLAGS)
-
-1dXmatTool_betas.o: 1dXmatTool_betas.c 1dXmatTool_betas.h thd_xmat.h thd_datatable.h
-	$(CCOMP) -c 1dXmatTool_betas.c $(INFLAGS)
 
 1dXmatTool:$(XMATTOOL_OBJS) $(LIBMRI_OBJ)
 	$(RM) $@
