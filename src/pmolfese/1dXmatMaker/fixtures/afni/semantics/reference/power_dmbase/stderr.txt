@@ -1,0 +1,23 @@
+++ 3dDeconvolve: AFNI version=AFNI_26.3.07 (Nov  6 2026) [64-bit]
+++ Authored by: B. Douglas Ward, et al.
+[7m*+ WARNING:[0m you have polynomials of order 2 for the baseline
+          but disabled use of the Legendre polynomials!
+          Check the matrix condition and accuracy of results!
+++ using NT=60 time points for -nodata
+++ Input polort=2; Longest run=32.0 s; Recommended minimum polort=1 ++ OK ++
+++ Number of time points: 60 (no censoring)
+ + Number of parameters:  7 [6 baseline ; 1 signal]
+++ Wrote matrix values to file X.xmat.1D
+++ Wrote matrix values to file X.full.xmat.1D
+++ ----- Signal+Baseline matrix condition [X] (60x7):  2.77749  ++ VERY GOOD ++
+[7m*+ WARNING:[0m !! in Signal+Baseline matrix:
+ * Largest singular value=1.41421
+ * 1 singular value is less than cutoff=1.41421e-07
+ * Implies strong collinearity in the matrix columns! 
+++ Signal+Baseline matrix singular values:
+   1.49012e-08      0.183321      0.184022             1       1.40219
+       1.40228       1.41421
+++ ----- Signal-only matrix condition [X] (60x1):  1  ++ VERY GOOD ++
+++ ----- Baseline-only matrix condition [X] (60x6):  2.76574  ++ VERY GOOD ++
+++ ----- polort-only matrix condition [X] (60x6):  2.76574  ++ VERY GOOD ++
+++ 3dDeconvolve exits: -x1D_stop option was invoked

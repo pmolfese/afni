@@ -1,0 +1,37 @@
+++ '-stim_times_IM 1 times.1D' will have 4 regressors
+++ 3dDeconvolve: AFNI version=AFNI_26.3.07 (Nov  6 2026) [64-bit]
+++ Authored by: B. Douglas Ward, et al.
+++ using TR=1 seconds for -stim_times and -nodata
+++ using NT=44 time points for -nodata
+[7m*+ WARNING:[0m Input polort=0; Longest run=24.0 s; Recommended minimum polort=1
+++ -stim_times using TR=1 s for stimulus timing conversion
+++ -stim_times using TR=1 s for any -iresp output datasets
+++  [you can alter the -iresp TR via the -TR_times option]
+++ -stim_times_IM 1 using LOCAL times
+++ Number of time points: 44 (no censoring)
+ + Number of parameters:  6 [2 baseline ; 4 signal]
+++ Wrote matrix values to file X.xmat.1D
+++ Wrote matrix values to file X.full.xmat.1D
+[7m*+ WARNING:[0m -------------------------------------------------
+[7m*+ WARNING:[0m Problems with the X matrix columns, listed below:
+[7m*+ WARNING:[0m    * Column 3 [trial#1] is all zeros
+[7m*+ WARNING:[0m    * Column 5 [trial#3] is all zeros
+[7m*+ WARNING:[0m -------------------------------------------------
+++ ----- Signal+Baseline matrix condition [X] (44x6):  1.34899  ++ VERY GOOD ++
+[7m*+ WARNING:[0m !! in Signal+Baseline matrix:
+ * Largest singular value=1.23941
+ * 2 singular values are less than cutoff=1.23941e-07
+ * Implies strong collinearity in the matrix columns! 
+++ Signal+Baseline matrix singular values:
+             0             0      0.681076      0.714547       1.22042
+       1.23941
+++ ----- Signal-only matrix condition [X] (44x4):  1  ++ VERY GOOD ++
+[7m*+ WARNING:[0m !! in Signal-only matrix:
+ * Largest singular value=1
+ * 2 singular values are less than cutoff=1e-07
+ * Implies strong collinearity in the matrix columns! 
+++ Signal-only matrix singular values:
+             0             0             1             1
+++ ----- Baseline-only matrix condition [X] (44x2):  1  ++ VERY GOOD ++
+++ ----- polort-only matrix condition [X] (44x2):  1  ++ VERY GOOD ++
+++ 3dDeconvolve exits: -x1D_stop option was invoked

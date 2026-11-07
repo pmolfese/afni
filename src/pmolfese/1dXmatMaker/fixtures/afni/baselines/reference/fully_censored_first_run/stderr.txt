@@ -1,0 +1,46 @@
+++ 3dDeconvolve: AFNI version=AFNI_26.3.07 (Nov  6 2026) [64-bit]
+++ Authored by: B. Douglas Ward, et al.
+++ 1D TR is 0.800 seconds
+++ Input polort=1; Longest run=22.4 s; Recommended minimum polort=1 ++ OK ++
+++ Number of time points: 48 (before censor) ; 28 (after)
+ + Number of parameters:  4 [4 baseline ; 0 signal]
+++ Memory required for output bricks = 20 bytes (about 20)
+++ Wrote matrix values to file X.xmat.1D
+++ ========= Things you can do with the matrix file =========
+++ (a) Linear regression with ARMA(1,1) modeling of serial correlation:
+
+3dREMLfit -matrix X.xmat.1D \
+ -verb
+ 
+++ N.B.: 3dREMLfit command above written to file reference_signal.REML_cmd
+++ (b) Visualization/analysis of the matrix via ExamineXmat.R
+++ (c) Synthesis of sub-model datasets using 3dSynthesize
+++ ==========================================================
+++ Wrote matrix values to file X.full.xmat.1D
+[7m*+ WARNING:[0m -------------------------------------------------
+[7m*+ WARNING:[0m Problems with the X matrix columns, listed below:
+[7m*+ WARNING:[0m    * Column 0 [Run#1Pol#0] is all zeros
+[7m*+ WARNING:[0m    * Column 1 [Run#1Pol#1] is all zeros
+[7m*+ WARNING:[0m -------------------------------------------------
+++ ----- Signal+Baseline matrix condition [X] (28x4):  1  ++ VERY GOOD ++
+[7m*+ WARNING:[0m !! in Signal+Baseline matrix:
+ * Largest singular value=1
+ * 2 singular values are less than cutoff=1e-07
+ * Implies strong collinearity in the matrix columns! 
+++ Signal+Baseline matrix singular values:
+             0             0             1             1
+++ ----- Baseline-only matrix condition [X] (28x4):  1  ++ VERY GOOD ++
+[7m*+ WARNING:[0m !! in Baseline-only matrix:
+ * Largest singular value=1
+ * 2 singular values are less than cutoff=1e-07
+ * Implies strong collinearity in the matrix columns! 
+++ Baseline-only matrix singular values:
+             0             0             1             1
+++ ----- polort-only matrix condition [X] (28x4):  1  ++ VERY GOOD ++
+[7m*+ WARNING:[0m !! in polort-only matrix:
+ * Largest singular value=1
+ * 2 singular values are less than cutoff=1e-07
+ * Implies strong collinearity in the matrix columns! 
+++ polort-only matrix singular values:
+             0             0             1             1
+++ 3dDeconvolve exits: -x1D_stop option was invoked

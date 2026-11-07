@@ -1,0 +1,17 @@
+*+ WARNING: -------------------------------------------------
+*+ WARNING: Problems with the X matrix columns, listed below:
+*+ WARNING:    * Column 12 [motion[0]#0] is all zeros
+*+ WARNING:    * Column 13 [motion[1]#0] is all zeros
+*+ WARNING: -------------------------------------------------
+*+ WARNING: !! in Signal+Baseline matrix:
+ * Largest singular value=1.57768
+ * 2 singular values are less than cutoff=1.57768e-07
+ * Implies strong collinearity in the matrix columns! 
+*+ WARNING: !! in Baseline-only matrix:
+ * Largest singular value=1.50133
+ * 2 singular values are less than cutoff=1.50133e-07
+ * Implies strong collinearity in the matrix columns! 
+*+ WARNING: !! in stim_base-only matrix:
+ * Largest singular value=1.34515
+ * 2 singular values are less than cutoff=1.34515e-07
+ * Implies strong collinearity in the matrix columns! 

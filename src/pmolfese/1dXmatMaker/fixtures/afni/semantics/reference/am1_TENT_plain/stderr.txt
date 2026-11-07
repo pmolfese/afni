@@ -1,0 +1,21 @@
+++ '-stim_times_AM1 1 times' has 2 auxiliary values per time point
+++ 3dDeconvolve: AFNI version=AFNI_26.3.07 (Nov  6 2026) [64-bit]
+++ Authored by: B. Douglas Ward, et al.
+++ using TR=1 seconds for -stim_times and -nodata
+++ using NT=60 time points for -nodata
+++ Input polort=1; Longest run=32.0 s; Recommended minimum polort=1 ++ OK ++
+++ -stim_times using TR=1 s for stimulus timing conversion
+++ -stim_times using TR=1 s for any -iresp output datasets
+++  [you can alter the -iresp TR via the -TR_times option]
+++ -stim_times_AM1 1 using LOCAL times
+++ '-stim_times_AM1 1' average amplitude#1=3.6
+++ '-stim_times_AM1 1' average amplitude#2=2.4
+++ Number of time points: 60 (before censor) ; 54 (after)
+ + Number of parameters:  9 [4 baseline ; 5 signal]
+++ Wrote matrix values to file X.xmat.1D
+++ Wrote matrix values to file X.full.xmat.1D
+++ ----- Signal+Baseline matrix condition [X] (54x9):  1.63621  ++ VERY GOOD ++
+++ ----- Signal-only matrix condition [X] (54x5):  1.24412  ++ VERY GOOD ++
+++ ----- Baseline-only matrix condition [X] (54x4):  1.02021  ++ VERY GOOD ++
+++ ----- polort-only matrix condition [X] (54x4):  1.02021  ++ VERY GOOD ++
+++ 3dDeconvolve exits: -x1D_stop option was invoked

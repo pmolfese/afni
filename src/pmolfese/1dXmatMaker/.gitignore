@@ -1,0 +1,14 @@
+# Developed at the NIH
+#
+# Part of AFNI. See the repository LICENSE.txt for licensing terms and
+# disclaimers (bundled with 1dXmatMaker as licenses/AFNI.txt).
+# Third-party and adapted portions retain their existing attribution and license
+# terms; see THIRD_PARTY.md.
+
+/target/
+/cmake-build*/
+__pycache__/
+*.pyc
+
+# This standalone build wrapper is source, unlike AFNI's local src/Makefile.
+!/Makefile

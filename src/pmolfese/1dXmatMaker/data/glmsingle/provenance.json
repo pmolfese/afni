@@ -1,0 +1,19 @@
+{
+  "repository": "https://github.com/cvnlab/GLMsingle",
+  "commit": "082851f9db87ff30c49370f27365ac1112f18ff7",
+  "license": "BSD-3-Clause",
+  "copyright": "Copyright (c) 2021, Kendrick Kay",
+  "source_sha256": {
+    "gethrf.py": "0daf2d41c4e54d1203d8994a0992a9e410226b9fa7ed41990d6593219996566a",
+    "normalisemax.py": "7e325ca2d893d08f6344de7350e54075ccb27bce8393e0e2af4b7d36a5640500",
+    "alt_round.py": "96c245cbef74bad663dba2dcca66ae6adb55c71463d3fbc1f0c480ac30a02c3e",
+    "LICENSE": "c4074f88fc1d822acb17eb12d8278bc096d8b1884d310f573574436c54fc94b7",
+    "getcanonicalhrflibrary.tsv": "9e7b5c293819dc0d85b0006bc8712459db82d0d2a7695ce7219fde0efb5f0106"
+  },
+  "raw_sampling_seconds": 0.1,
+  "raw_stimulus_duration_seconds": 0.1,
+  "raw_shape": [
+    501,
+    20
+  ]
+}

@@ -1,0 +1,14 @@
+*+ WARNING: '-stim_times_AM2 1' didn't read any good times from file 'times'
+*+ WARNING: '-stim_times_AM2 1' (LOCAL) run#1 has 1 times outside range 0 .. 27 [PSFB syndrome]
+*+ WARNING: !! '-stim_times_AM2 1' file 'times' has no good stimulus time values
+*+ WARNING: -------------------------------------------------
+*+ WARNING: Problems with the X matrix columns, listed below:
+*+ WARNING:    * Column 4 [event#0] is all zeros
+*+ WARNING:    * Column 5 [event#1] is all zeros
+*+ WARNING:    * Column 6 [event#2] is all zeros
+*+ WARNING: -------------------------------------------------
+*+ WARNING: !! in Signal+Baseline matrix:
+ * Largest singular value=1
+ * 3 singular values are less than cutoff=1e-07
+ * Implies strong collinearity in the matrix columns! 
+** ERROR: ----- !! Signal-only matrix condition:  UNDEFINED ** VERY BAD **

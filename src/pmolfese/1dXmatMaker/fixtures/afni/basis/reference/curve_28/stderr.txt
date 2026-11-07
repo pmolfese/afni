@@ -1,0 +1,35 @@
+++ 3dDeconvolve: AFNI version=AFNI_26.3.07 (Nov  6 2026) [64-bit]
+++ Authored by: B. Douglas Ward, et al.
+++ using TR=0.125 seconds for -stim_times and -nodata
+++ using NT=1024 time points for -nodata
+++ -stim_times using TR=0.125 s for stimulus timing conversion
+++ -stim_times using TR=0.125 s for any -iresp output datasets
+++  [you can alter the -iresp TR via the -TR_times option]
+[7m*+ WARNING:[0m -stim_times 1 has all times equal to 0 or 1 ?!?!
+++ -stim_times 1 using LOCAL times
+++ Number of time points: 1024 (no censoring)
+ + Number of parameters:  8 [0 baseline ; 8 signal]
+++ Wrote matrix values to file X.xmat.1D
+++ Wrote matrix values to file X.full.xmat.1D
+[7m*+ WARNING:[0m -------------------------------------------------
+[7m*+ WARNING:[0m Problems with the X matrix columns, listed below:
+[7m*+ WARNING:[0m    * Column 2 [event#2] is all zeros
+[7m*+ WARNING:[0m    * Column 4 [event#4] is all zeros
+[7m*+ WARNING:[0m -------------------------------------------------
+++ ----- Signal+Baseline matrix condition [X] (1024x8):  13.3839  ++ VERY GOOD ++
+[7m*+ WARNING:[0m !! in Signal+Baseline matrix:
+ * Largest singular value=2.37195
+ * 2 singular values are less than cutoff=2.37195e-07
+ * Implies strong collinearity in the matrix columns! 
+++ Signal+Baseline matrix singular values:
+             0   1.41502e-09     0.0132415      0.107991      0.121679
+      0.198543      0.554807       2.37195
+++ ----- Signal-only matrix condition [X] (1024x8):  13.3839  ++ VERY GOOD ++
+[7m*+ WARNING:[0m !! in Signal-only matrix:
+ * Largest singular value=2.37195
+ * 2 singular values are less than cutoff=2.37195e-07
+ * Implies strong collinearity in the matrix columns! 
+++ Signal-only matrix singular values:
+             0   1.41502e-09     0.0132415      0.107991      0.121679
+      0.198543      0.554807       2.37195
+++ 3dDeconvolve exits: -x1D_stop option was invoked

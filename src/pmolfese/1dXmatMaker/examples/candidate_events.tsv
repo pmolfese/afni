@@ -1,0 +1,26 @@
+# Developed at the NIH
+#
+# Part of AFNI. See the repository LICENSE.txt for licensing terms and
+# disclaimers (bundled with 1dXmatMaker as licenses/AFNI.txt).
+# Third-party and adapted portions retain their existing attribution and license
+# terms; see THIRD_PARTY.md.
+
+trial	condition	run	onset	duration	item
+100	0	0	3	1	item0
+101	1	0	23	1	item1
+102	2	0	43	1	item2
+103	3	0	63	1	item3
+104	4	0	83	1	item4
+105	5	0	103	1	item5
+106	0	1	3	1	item0
+107	1	1	23	1	item1
+108	2	1	43	1	item2
+109	3	1	63	1	item3
+110	4	1	83	1	item4
+111	5	1	103	1	item5
+112	0	2	3	1	item0
+113	1	2	23	1	item1
+114	2	2	43	1	item2
+115	3	2	63	1	item3
+116	4	2	83	1	item4
+117	5	2	103	1	item5

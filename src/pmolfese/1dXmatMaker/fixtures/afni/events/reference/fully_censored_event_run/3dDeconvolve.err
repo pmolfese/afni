@@ -1,0 +1,23 @@
+*+ WARNING: -------------------------------------------------
+*+ WARNING: Problems with the X matrix columns, listed below:
+*+ WARNING:    * Column 0 [Run#1Pol#0] is all zeros
+*+ WARNING:    * Column 1 [Run#1Pol#1] is all zeros
+*+ WARNING:    * Column 4 [trial#0] is all zeros
+*+ WARNING:    * Column 5 [trial#1] is all zeros
+*+ WARNING: -------------------------------------------------
+*+ WARNING: !! in Signal+Baseline matrix:
+ * Largest singular value=1.28178
+ * 4 singular values are less than cutoff=1.28178e-07
+ * Implies strong collinearity in the matrix columns! 
+*+ WARNING: !! in Signal-only matrix:
+ * Largest singular value=1
+ * 2 singular values are less than cutoff=1e-07
+ * Implies strong collinearity in the matrix columns! 
+*+ WARNING: !! in Baseline-only matrix:
+ * Largest singular value=1
+ * 2 singular values are less than cutoff=1e-07
+ * Implies strong collinearity in the matrix columns! 
+*+ WARNING: !! in polort-only matrix:
+ * Largest singular value=1
+ * 2 singular values are less than cutoff=1e-07
+ * Implies strong collinearity in the matrix columns! 

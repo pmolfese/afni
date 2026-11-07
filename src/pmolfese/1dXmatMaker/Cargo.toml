@@ -1,0 +1,38 @@
+# Developed at the NIH
+#
+# Part of AFNI. See the repository LICENSE.txt for licensing terms and
+# disclaimers (bundled with 1dXmatMaker as licenses/AFNI.txt).
+# Third-party and adapted portions retain their existing attribution and license
+# terms; see THIRD_PARTY.md.
+
+[package]
+name = "afni_xmat_maker"
+version = "0.8.0"
+edition = "2024"
+rust-version = "1.99"
+description = "Independent AFNI design-matrix and sampled HRF candidate generator"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "1dXmatMaker"
+path = "src/main.rs"
+
+# These executable adapters expose the public API to independent Python oracles.
+# Keep their source with the tests; Cargo's example targets preserve the familiar
+# `cargo build --release --examples` command and target/release/examples paths.
+[[example]]
+name = "basis_probe"
+path = "tests/probes/basis_probe.rs"
+
+[[example]]
+name = "hrf_probe"
+path = "tests/probes/hrf_probe.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+# Deliberately no dependencies: Builds offline with just Rust and its linker.

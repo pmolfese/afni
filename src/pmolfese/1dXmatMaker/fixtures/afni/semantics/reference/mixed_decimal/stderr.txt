@@ -1,0 +1,53 @@
+++ '-stim_times_AM2 2 a' has 1 auxiliary values per time point
+++ '-stim_times_AM2 2 a' will have 4 regressors
+++ '-stim_times_AM2 3 b' has 1 auxiliary values per time point
+++ '-stim_times_AM2 3 b' will have 2 regressors
+++ 3dDeconvolve extending num_stimts from 3 to 5 due to -ortvec
+++ 3dDeconvolve: AFNI version=AFNI_26.3.07 (Nov  6 2026) [64-bit]
+++ Authored by: B. Douglas Ward, et al.
+++ using TR=1 seconds for -stim_times and -nodata
+++ using NT=60 time points for -nodata
+++ Input polort=1; Longest run=32.0 s; Recommended minimum polort=1 ++ OK ++
+++ -stim_times using TR=1 s for stimulus timing conversion
+++ -stim_times using TR=1 s for any -iresp output datasets
+++  [you can alter the -iresp TR via the -TR_times option]
+++ -stim_times_AM2 2 using LOCAL times
+++ '-stim_times_AM2 2' average amplitude#1=4.5
+++ -stim_times_AM2 3 using LOCAL times
+++ '-stim_times_AM2 3' average amplitude#1=12
+++ Number of time points: 60 (no censoring)
+ + Number of parameters:  14 [8 baseline ; 6 signal]
+++ Wrote matrix values to file X.xmat.1D
+++ Wrote matrix values to file X.full.xmat.1D
+[7m*+ WARNING:[0m -------------------------------------------------
+[7m*+ WARNING:[0m Problems with the X matrix columns, listed below:
+[7m*+ WARNING:[0m    * Column 12 [motion[0]#0] is all zeros
+[7m*+ WARNING:[0m    * Column 13 [motion[1]#0] is all zeros
+[7m*+ WARNING:[0m -------------------------------------------------
+++ ----- Signal+Baseline matrix condition [X] (60x14):  2.49736  ++ VERY GOOD ++
+[7m*+ WARNING:[0m !! in Signal+Baseline matrix:
+ * Largest singular value=1.57768
+ * 2 singular values are less than cutoff=1.57768e-07
+ * Implies strong collinearity in the matrix columns! 
+++ Signal+Baseline matrix singular values:
+             0             0      0.252963       0.38974      0.435286
+      0.528718      0.616401      0.909042      0.951288       1.03139
+       1.17473       1.35283       1.56233       1.57768
+++ ----- Signal-only matrix condition [X] (60x6):  2.13261  ++ VERY GOOD ++
+++ ----- Baseline-only matrix condition [X] (60x8):  1.87795  ++ VERY GOOD ++
+[7m*+ WARNING:[0m !! in Baseline-only matrix:
+ * Largest singular value=1.50133
+ * 2 singular values are less than cutoff=1.50133e-07
+ * Implies strong collinearity in the matrix columns! 
+++ Baseline-only matrix singular values:
+             0             0      0.425704      0.751489             1
+             1       1.00002       1.50133
+++ ----- stim_base-only matrix condition [X] (60x4):  1.75538  ++ VERY GOOD ++
+[7m*+ WARNING:[0m !! in stim_base-only matrix:
+ * Largest singular value=1.34515
+ * 2 singular values are less than cutoff=1.34515e-07
+ * Implies strong collinearity in the matrix columns! 
+++ stim_base-only matrix singular values:
+             0             0      0.436546       1.34515
+++ ----- polort-only matrix condition [X] (60x4):  1  ++ VERY GOOD ++
+++ 3dDeconvolve exits: -x1D_stop option was invoked

@@ -1,0 +1,2424 @@
+[
+  {
+    "id": "gam",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin GAM with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "gam_parameters",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "GAM(8.6,0.547)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin GAM(8.6,0.547) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "gampw",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "GAMpw(4.7,3.7)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin GAMpw(4.7,3.7) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "gam_duration",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "GAM(8.6,0.547,2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin GAM(8.6,0.547,2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "gampw_duration",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "GAMpw(4.7,3.7,2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin GAMpw(4.7,3.7,2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "gam_zero_duration",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "GAM(8.6,0.547,0)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin GAM(8.6,0.547,0) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "twogam",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "TWOGAM(6,1,0.2,12,1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin TWOGAM(6,1,0.2,12,1) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "twogam_duration",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "TWOGAM(6,1,0.2,12,1,2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin TWOGAM(6,1,0.2,12,1,2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "twogampw",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "TWOGAMpw(5,4,0.2,12,6)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin TWOGAMpw(5,4,0.2,12,6) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "twogampw_duration",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "TWOGAMpw(5,4,0.2,12,6,2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin TWOGAMpw(5,4,0.2,12,6,2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "tent",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "TENT(0,12,7)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin TENT(0,12,7) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "tentzero",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "TENTzero(0,12,7)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin TENTzero(0,12,7) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "csplin",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "CSPLIN(0,12,7)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin CSPLIN(0,12,7) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "csplinzero",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "CSPLINzero(0,12,7)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin CSPLINzero(0,12,7) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "poly",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "POLY(0,12,4)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin POLY(0,12,4) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "sin",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "SIN(0,12,3)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin SIN(0,12,3) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "trig",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "TRIG(0,12,5)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin TRIG(0,12,5) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "wav",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "WAV",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin WAV with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "wav_duration",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "WAV(2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin WAV(2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "wav_parameters",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "WAV(2,1,3,5,0.1,2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin WAV(2,1,3,5,0.1,2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "expr",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "EXPR(0,12) sin(PI*x)^2",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin EXPR(0,12) sin(PI*x)^2 with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "expr_domain",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "EXPR(0,12) sqrt(-t)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin EXPR(0,12) sqrt(-t) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "mion",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "MION",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin MION with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "mionn",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "MIONN",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin MIONN with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "mion_duration",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "MION(2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin MION(2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "mionn_duration",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "MIONN(2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin MIONN(2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "block",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "BLOCK(2,1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin BLOCK(2,1) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "block4",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "BLOCK4(2,1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin BLOCK4(2,1) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "block5",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "BLOCK5(2,1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin BLOCK5(2,1) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "block_natural",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "BLOCK(2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin BLOCK(2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "ublock",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "UBLOCK(2,1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin UBLOCK(2,1) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "ublock4",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "UBLOCK4(2,1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin UBLOCK4(2,1) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "ublock5",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "UBLOCK5(2,1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin UBLOCK5(2,1) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "ublock_natural",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "UBLOCK(2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin UBLOCK(2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "igfun",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "IGFUN(2,1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin IGFUN(2,1) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "igfun4",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "IGFUN4(2,1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin IGFUN4(2,1) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "igfun5",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "IGFUN5(2,1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin IGFUN5(2,1) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "igfun_natural",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "IGFUN(2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin IGFUN(2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "dmblock",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM1",
+      "1",
+      "times.1D",
+      "dmBLOCK",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5:1 24:3 49.25:8\n"
+    },
+    "purpose": "Pin dmBLOCK with -stim_times_AM1; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "dmblock4",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM1",
+      "1",
+      "times.1D",
+      "dmBLOCK4",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5:1 24:3 49.25:8\n"
+    },
+    "purpose": "Pin dmBLOCK4 with -stim_times_AM1; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "dmblock5",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM1",
+      "1",
+      "times.1D",
+      "dmBLOCK5",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5:1 24:3 49.25:8\n"
+    },
+    "purpose": "Pin dmBLOCK5 with -stim_times_AM1; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "dmblock_unit",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM1",
+      "1",
+      "times.1D",
+      "dmBLOCK(1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5:1 24:3 49.25:8\n"
+    },
+    "purpose": "Pin dmBLOCK(1) with -stim_times_AM1; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "dmblock_negative",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM1",
+      "1",
+      "times.1D",
+      "dmBLOCK(-2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5:1 24:3 49.25:8\n"
+    },
+    "purpose": "Pin dmBLOCK(-2) with -stim_times_AM1; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "dmublock",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM1",
+      "1",
+      "times.1D",
+      "dmUBLOCK",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5:1 24:3 49.25:8\n"
+    },
+    "purpose": "Pin dmUBLOCK with -stim_times_AM1; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "dmublock4",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM1",
+      "1",
+      "times.1D",
+      "dmUBLOCK4",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5:1 24:3 49.25:8\n"
+    },
+    "purpose": "Pin dmUBLOCK4 with -stim_times_AM1; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "dmublock5",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM1",
+      "1",
+      "times.1D",
+      "dmUBLOCK5",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5:1 24:3 49.25:8\n"
+    },
+    "purpose": "Pin dmUBLOCK5 with -stim_times_AM1; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "dmublock_unit",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM1",
+      "1",
+      "times.1D",
+      "dmUBLOCK(1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5:1 24:3 49.25:8\n"
+    },
+    "purpose": "Pin dmUBLOCK(1) with -stim_times_AM1; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "dmublock_negative",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM1",
+      "1",
+      "times.1D",
+      "dmUBLOCK(-2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5:1 24:3 49.25:8\n"
+    },
+    "purpose": "Pin dmUBLOCK(-2) with -stim_times_AM1; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "spmg",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "SPMG",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin SPMG with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "spmg_duration",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "SPMG(2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin SPMG(2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "spmg1",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "SPMG1",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin SPMG1 with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "spmg1_duration",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "SPMG1(2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin SPMG1(2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "spmg2",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "SPMG2",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin SPMG2 with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "spmg2_duration",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "SPMG2(2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin SPMG2(2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "spmg3",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "SPMG3",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin SPMG3 with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "spmg3_duration",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "SPMG3(2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin SPMG3(2) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "spmg_unknown_fallback",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "SPMG9",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin SPMG9 with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "analytic_tent",
+    "args": [
+      "-nodata",
+      "16",
+      "1",
+      "-polort",
+      "-1",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "TENT(0,4,3)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2\n"
+    },
+    "purpose": "Pin TENT(0,4,3) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "expr_coordinates",
+    "args": [
+      "-nodata",
+      "16",
+      "1",
+      "-polort",
+      "-1",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "EXPR(0,4) t x z",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2\n"
+    },
+    "purpose": "Pin EXPR(0,4) t x z with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "expr_precedence",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "-1",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "EXPR(0,12) -t^2 2^3^x t**2",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin EXPR(0,12) -t^2 2^3^x t**2 with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "im",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_IM",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin GAM with -stim_times_IM; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "im_multibasis",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_IM",
+      "1",
+      "times.1D",
+      "TENTzero(0,12,7)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin TENTzero(0,12,7) with -stim_times_IM; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "im_duration",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_IM",
+      "1",
+      "times.1D",
+      "dmUBLOCK(1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5:1 24:3 49.25:8\n"
+    },
+    "purpose": "Pin dmUBLOCK(1) with -stim_times_IM; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "am1",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM1",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5*1 24*3 49.25*5\n"
+    },
+    "purpose": "Pin GAM with -stim_times_AM1; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "am2",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM2",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5*1 24*3 49.25*5\n"
+    },
+    "purpose": "Pin GAM with -stim_times_AM2; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "amx",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AMx",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5*1 24*3 49.25*5\n"
+    },
+    "purpose": "Pin GAM with -stim_times_AMx; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "am2_raw",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM2",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5*1 24*3 49.25*5\n"
+    },
+    "purpose": "Pin GAM with -stim_times_AM2; fractional onset and sampled support.",
+    "outcome": "success",
+    "environment": {
+      "AFNI_3dDeconvolve_rawAM2": "YES"
+    }
+  },
+  {
+    "id": "am2_fixed",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM2",
+      "1",
+      "times.1D",
+      "GAM",
+      ":2",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5*1 24*3 49.25*5\n"
+    },
+    "purpose": "Pin GAM with -stim_times_AM2; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "am2_multiple",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM2",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5*1,2 24*3,1 49.25*5,4\n"
+    },
+    "purpose": "Pin GAM with -stim_times_AM2; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "am2_duration",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_AM2",
+      "1",
+      "times.1D",
+      "dmUBLOCK(-2)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5*1:1 24*3:3 49.25*5:8\n"
+    },
+    "purpose": "Pin dmUBLOCK(-2) with -stim_times_AM2; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "basis_norm",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-basis_normall",
+      "2",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin GAM with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "fsl",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_FSL",
+      "1",
+      "times.1D",
+      "dmUBLOCK(1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 1 2\n24 3 4\n49.25 8 6\n"
+    },
+    "purpose": "Pin dmUBLOCK(1) with -stim_times_FSL; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "fs1",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_FS1",
+      "1",
+      "times.1D",
+      "dmUBLOCK(1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 1 2\n24 3 4\n49.25 8 6\n"
+    },
+    "purpose": "Pin dmUBLOCK(1) with -stim_times_FS1; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "fsl_substitution",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_FSL",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 1 2\n24 3 4\n49.25 8 6\n"
+    },
+    "purpose": "Pin GAM with -stim_times_FSL; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "baseline_unequal",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "0"
+    ],
+    "inputs": {},
+    "purpose": "Independent run-local constant and linear trend values for lengths 20/28.",
+    "outcome": "success"
+  },
+  {
+    "id": "baseline_censored",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "0",
+      "-censor",
+      "censor.1D"
+    ],
+    "inputs": {
+      "censor.1D": "0\n1\n1\n0\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n0\n0\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n0\n"
+    },
+    "purpose": "Censoring selects original baseline rows, never rescales run coordinates.",
+    "outcome": "success"
+  },
+  {
+    "id": "baseline_quadratic",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "0",
+      "-polort",
+      "2"
+    ],
+    "inputs": {},
+    "purpose": "Discrete baseline demeaning of nonconstant Legendre terms.",
+    "outcome": "success"
+  },
+  {
+    "id": "baseline_power",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "0",
+      "-polort",
+      "2",
+      "-nolegendre"
+    ],
+    "inputs": {},
+    "purpose": "Power baseline and its demeaning differ from Legendre.",
+    "outcome": "success"
+  },
+  {
+    "id": "baseline_auto",
+    "args": [
+      "-nodata",
+      "180",
+      "2",
+      "-polort",
+      "A",
+      "-num_stimts",
+      "0"
+    ],
+    "inputs": {},
+    "purpose": "Automatic order from longest run duration.",
+    "outcome": "success"
+  },
+  {
+    "id": "local_two_runs",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 12\n3 16\n"
+    },
+    "purpose": "Run-local assembly, timeline coordinates, and empty-run/boundary support.",
+    "outcome": "success"
+  },
+  {
+    "id": "global_two_runs",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "1",
+      "-global_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 12 23 36\n"
+    },
+    "purpose": "Run-local assembly, timeline coordinates, and empty-run/boundary support.",
+    "outcome": "success"
+  },
+  {
+    "id": "millisecond_two_runs",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_millisec",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2500 12000\n3000 16000\n"
+    },
+    "purpose": "Run-local assembly, timeline coordinates, and empty-run/boundary support.",
+    "outcome": "success"
+  },
+  {
+    "id": "offset_two_runs",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_subtract",
+      "1",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "3.5 13\n4 17\n"
+    },
+    "purpose": "Run-local assembly, timeline coordinates, and empty-run/boundary support.",
+    "outcome": "success"
+  },
+  {
+    "id": "edge_empty_run",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "18.5\n*\n"
+    },
+    "purpose": "Run-local assembly, timeline coordinates, and empty-run/boundary support.",
+    "outcome": "success"
+  },
+  {
+    "id": "im_two_runs",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_IM",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 12\n3 16\n"
+    },
+    "purpose": "Run-local assembly, timeline coordinates, and empty-run/boundary support.",
+    "outcome": "success"
+  },
+  {
+    "id": "event_censored",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_IM",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event",
+      "-censor",
+      "censor.1D"
+    ],
+    "inputs": {
+      "times.1D": "2.5 12\n3 16\n",
+      "censor.1D": "1\n1\n0\n0\n1\n1\n1\n0\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n0\n0\n1\n1\n1\n1\n0\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n0\n"
+    },
+    "purpose": "IM columns retain meaning after row censoring.",
+    "outcome": "success"
+  },
+  {
+    "id": "censortr",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "0",
+      "-CENSORTR",
+      "1:0,3 2:0,5"
+    ],
+    "inputs": {},
+    "purpose": "CENSORTR uses 1-based run numbers and 0-based local rows.",
+    "outcome": "success"
+  },
+  {
+    "id": "first_last",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "0",
+      "-nfirst",
+      "2",
+      "-nlast",
+      "17"
+    ],
+    "inputs": {},
+    "purpose": "Per-run row limits become GoodList, not shortened timelines.",
+    "outcome": "success"
+  },
+  {
+    "id": "nuisance",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "1",
+      "-stim_file",
+      "1",
+      "nuisance.1D",
+      "-stim_base",
+      "1",
+      "-stim_label",
+      "1",
+      "motion"
+    ],
+    "inputs": {
+      "nuisance.1D": "2\n3\n4\n5\n6\n7\n8\n2\n3\n4\n5\n6\n7\n8\n2\n3\n4\n5\n6\n7\n8\n2\n3\n4\n5\n6\n7\n8\n2\n3\n4\n5\n6\n7\n8\n2\n3\n4\n5\n6\n7\n8\n2\n3\n4\n5\n6\n7\n"
+    },
+    "purpose": "Supplied nuisance roles and global full-timeline demeaning.",
+    "outcome": "success"
+  },
+  {
+    "id": "nuisance_no_demean",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "1",
+      "-stim_file",
+      "1",
+      "nuisance.1D",
+      "-stim_base",
+      "1",
+      "-stim_label",
+      "1",
+      "motion",
+      "-nodmbase"
+    ],
+    "inputs": {
+      "nuisance.1D": "2\n3\n4\n5\n6\n7\n8\n2\n3\n4\n5\n6\n7\n8\n2\n3\n4\n5\n6\n7\n8\n2\n3\n4\n5\n6\n7\n8\n2\n3\n4\n5\n6\n7\n8\n2\n3\n4\n5\n6\n7\n8\n2\n3\n4\n5\n6\n7\n"
+    },
+    "purpose": "Supplied nuisance roles and global full-timeline demeaning.",
+    "outcome": "success"
+  },
+  {
+    "id": "ortvec",
+    "args": [
+      "-nodata",
+      "48",
+      "1",
+      "-concat",
+      "1D: 0 20",
+      "-polort",
+      "1",
+      "-num_stimts",
+      "0",
+      "-ortvec",
+      "ort.1D",
+      "motion"
+    ],
+    "inputs": {
+      "ort.1D": "0 0\n1 1\n2 2\n3 0\n4 1\n5 2\n6 0\n0 1\n1 2\n2 0\n3 1\n4 2\n5 0\n6 1\n0 2\n1 0\n2 1\n3 2\n4 0\n5 1\n6 2\n0 0\n1 1\n2 2\n3 0\n4 1\n5 2\n6 0\n0 1\n1 2\n2 0\n3 1\n4 2\n5 0\n6 1\n0 2\n1 0\n2 1\n3 2\n4 0\n5 1\n6 2\n0 0\n1 1\n2 2\n3 0\n4 1\n5 2\n"
+    },
+    "purpose": "Multiple nuisance columns and labels.",
+    "outcome": "success"
+  },
+  {
+    "id": "symbolic_glt",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-num_glt",
+      "1",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "TENTzero(0,12,7)",
+      "-stim_label",
+      "1",
+      "event",
+      "-gltsym",
+      "SYM: +event[0] -event[1]",
+      "-glt_label",
+      "1",
+      "difference"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin TENTzero(0,12,7) with -stim_times; fractional onset and sampled support.",
+    "outcome": "success"
+  },
+  {
+    "id": "reject_unknown",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "NOT_A_BASIS",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin NOT_A_BASIS with -stim_times; fractional onset and sampled support.",
+    "outcome": "failure",
+    "error_contains": "unknown response function type"
+  },
+  {
+    "id": "reject_tent",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "TENT(0,12,1)",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin TENT(0,12,1) with -stim_times; fractional onset and sampled support.",
+    "outcome": "failure",
+    "error_contains": "illegal"
+  },
+  {
+    "id": "reject_expr_constant",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times",
+      "1",
+      "times.1D",
+      "EXPR(0,12) 2",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2.5 24 49.25\n"
+    },
+    "purpose": "Pin EXPR(0,12) 2 with -stim_times; fractional onset and sampled support.",
+    "outcome": "failure",
+    "error_contains": "lacks symbol"
+  },
+  {
+    "id": "reject_empty_im",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_IM",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "*\n"
+    },
+    "purpose": "Pin GAM with -stim_times_IM; fractional onset and sampled support.",
+    "outcome": "failure",
+    "error_contains": "requires more than zero events"
+  },
+  {
+    "id": "reject_im_amplitude",
+    "args": [
+      "-nodata",
+      "80",
+      "1",
+      "-polort",
+      "0",
+      "-num_stimts",
+      "1",
+      "-local_times",
+      "-stim_times_IM",
+      "1",
+      "times.1D",
+      "GAM",
+      "-stim_label",
+      "1",
+      "event"
+    ],
+    "inputs": {
+      "times.1D": "2*1 24*3\n"
+    },
+    "purpose": "Pin GAM with -stim_times_IM; fractional onset and sampled support.",
+    "outcome": "failure",
+    "error_contains": "amplitude modulation parameters - not legal"
+  }
+]

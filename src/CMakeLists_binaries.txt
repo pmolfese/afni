@@ -295,7 +295,7 @@ target_compile_definitions(
 )
 
 # Design-matrix operations share the reader, run extraction and writer API.
-add_afni_executable(1dXmatTool 1dXmatTool.c thd_xmat.c thd_datatable.c)
+add_afni_executable(1dXmatTool 1dXmatTool.c 1dXmatTool_betas.c thd_xmat.c thd_datatable.c)
 target_link_libraries(1dXmatTool PRIVATE AFNI::mri NIFTI::nifti2 NIFTI::nifticdf m)
 
 # Multivariate prediction. Input adapters and AFNI spatial extraction remain

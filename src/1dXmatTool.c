@@ -18,6 +18,7 @@
  */
 #include "mrilib.h"
 #include "thd_xmat.h"
+#include "1dXmatTool_betas.h"
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -90,6 +91,45 @@ static void usage(void)
 "                    Volume for 3dMVPA -trial_manifest. selected: InputFile[n]\n"
 "                    for direct 3dMVPA/3dRSA/3dSRM tables. Files need not yet exist.\n"
 "                    Conditions are supplied by you, never guessed from IM labels.\n"
+"\n"
+"Beta-sidecar input (Picard or an existing LSS trial manifest):\n"
+"  -beta_manifest FILE  Alternative to -infile; use with -export_manifest.\n"
+"  -subject ID -prefix PREFIX  Required. Uses actual beta Volume, not XColumn.\n"
+"  -manifest_run_base 0|1  Input Run convention; default 0 for Picard.\n"
+"                         Use 1 for a previous 1dXmatTool LSS manifest.\n"
+"  -input_base DIR     Base for relative paths; default: manifest directory.\n"
+"                     For Picard prefixes with directories, pass its original cwd.\n"
+"  -events FILE        Optional annotations: Volume Condition [Run Trial Item Basis].\n"
+"                     Volume is the actual whole-bucket beta index; Run is ONE-based.\n"
+"                     Complete unique Volume keys required; single bucket only.\n"
+"                     Annotations fill missing identities; contradictions fail.\n"
+"  -runs LIST          Select ONE-based runs, e.g. 1 or 1,3..5. No renumbering.\n"
+"  -manifest_format manifest|selected|rsa|rsa_runwise\n"
+"      manifest: PREFIX.trials.1D, whole InputFile + Volume for 3dMVPA.\n"
+"      selected: PREFIX.trials.1D, InputFile[Volume] for direct tables.\n"
+"      rsa: PREFIX.rsa.1D, Subj Condition InputFile; one beta per condition.\n"
+"      rsa_runwise: PREFIX.runwise.1D and PREFIX.rNN.trials.1D Trial/Condition\n"
+"                   files for 3dRSA -runwiseTable. Requires >=2 runs, explicit\n"
+"                   unique Trial IDs, one coefficient/trial and one bucket/run.\n"
+"                   Repeated conditions are averaged within runs by RSA, not here.\n"
+"      Both RSA formats also write PREFIX.identities.1D with full provenance.\n"
+"  Exported Run is ONE-based; SourceRun retains the input value (-1 if absent).\n"
+"  Missing Run/Trial/Basis remain -1; conditions are never inferred from labels.\n"
+"  CandidateManifest and DesignIDFile/Volume are retained, without a fictitious\n"
+"  single Xmat. Dataset headers/volume bounds and fixed XColumn bounds are checked.\n"
+"  Runs must be <=1000000. Paths are made absolute; outputs never overwrite files.\n"
+"  No beta images, residuals, fits, HRF choices or averages are computed here.\n"
+"  Runwise export does not establish independent runs or prevent selection leakage.\n"
+"  It exports unwhitened crossnobis inputs; ResidFile/whitening is not inferred.\n"
+"\n"
+"Example after 3dPicard -write_manifest (from Picard's working directory):\n"
+"  1dXmatTool -beta_manifest fitted.betas.tsv -export_manifest \\\n"
+"    -subject s01 -input_base . -manifest_format manifest -prefix mvpa\n"
+"  3dMVPA -mode classify -trial_manifest mvpa.trials.1D \\\n"
+"    -target_column Condition -cv_column Run -mask mask.nii -prefix decoded\n"
+"  1dXmatTool -beta_manifest fitted.betas.tsv -export_manifest \\\n"
+"    -subject s01 -input_base . -manifest_format rsa_runwise -prefix rsa\n"
+"  Add -events annotations.1D when a fixed-design sidecar lacks identities.\n"
 "Inputs/splitting:\n"
 "  -infile FILE       NIML-comment matrix from 3dDeconvolve.\n"
 "  -split_runs        Extract runs, preserving values and column order.\n"
@@ -129,7 +169,8 @@ static void usage(void)
 "  loss of an IM column's support after censoring, is an error. Fully censored\n"
 "  runs also fail. Without -uncensored, support is known only in retained rows.\n"
 "* Rebuilds stimulus ranges; preserves column labels and per-stimulus Basis\n"
-"  attributes. Drops GLTs and ColumnMasks (and records their removal).\n"
+"  attributes. Input stimulus IDs may be sparse; output IDs are compact.\n"
+"  Drops GLTs and ColumnMasks (and records their removal).\n"
 "* Extraction does not establish full rank or satisfy every downstream tool.\n"
 "  3dLSS still requires exactly one IM stimulus and sufficient observations.\n"
 "\n"
@@ -215,6 +256,8 @@ typedef struct {
    const char *tr_window;
    const char *compare,*json,*for_tool,*columns,*labels,*stimuli,*groups;
    const char *events,*subject,*beta,*beta_pattern,*manifest_format;
+   const char *beta_manifest,*input_base;
+   int manifest_run_base,manifest_run_base_set;
    double rank_tol,atol,rtol;
 } XT_options;
 
@@ -254,41 +297,10 @@ static void xt_json_text(FILE *f,const char *s)
       else if(*p<32)fprintf(f,"\\u%04x",*p);else fputc(*p,f);
    }fputc('"',f);
 }
-/* Cross-check redundant stimulus metadata after the shared reader parses it.
- * Range membership, positive ColumnGroups and BasisColumns must agree before
- * downstream operations assign scientific meaning to a column. This checks
- * consistency of attributes that exist, not completeness of all headers.
- * Return 0 with a diagnostic in err on inconsistency.
- */
+/* Keep CLI inspection and library operations on the same metadata rules. */
 static int xt_metadata(const THD_xmat *a,char *err,int nerr)
 {
-   const char *v=THD_xmat_attr(a,"Nstim");int s;
-   if(v && atoi(v)!=a->nstim){snprintf(err,nerr,"Nstim does not match stimulus ranges");return 0;}
-   for(s=0;s<a->nattr;s++){
-      const char *k=a->attr_name[s],*p=strchr(k,'_');
-      if(!strncasecmp(k,"Basis",5) && p && (atoi(p+1)<1 || atoi(p+1)>a->nstim)){
-         snprintf(err,nerr,"Basis attribute refers to an unknown stimulus");return 0;
-      }
-   }
-   v=THD_xmat_attr(a,"ColumnGroups");
-   if(v){
-      NI_int_array *g=NI_decode_int_list((char *)v,",");int valid=g && g->num==a->ncol;
-      if(valid)for(s=0;s<a->ncol;s++){
-         int st=xt_stim(a,s);
-         /* Positive groups encode one-based stimulus IDs; nonpositive groups
-          * describe baseline/nuisance roles and are not stimulus IDs. */
-         if(g->ar[s]>0 && g->ar[s]!=st+1)valid=0;
-      }
-      if(g)NI_delete_int_array(g);
-      if(!valid){snprintf(err,nerr,"ColumnGroups disagrees with columns/stimulus ranges");return 0;}
-   }
-   for(s=0;s<a->nstim;s++){
-      int b,t,n=0;char k[64];snprintf(k,sizeof(k),"BasisColumns_%06d",s+1);v=THD_xmat_attr(a,k);
-      /* %n lets us reject trailing characters after the two range endpoints. */
-      if(v && (sscanf(v,"%d:%d%n",&b,&t,&n)!=2 || v[n] || b!=a->stim[s].bot || t!=a->stim[s].top)){
-         snprintf(err,nerr,"%s does not match stimulus range",k);return 0;
-      }
-   }return 1;
+   return THD_xmat_validate_metadata(a,err,nerr);
 }
 /* Check the rank of every reduced LSS design for one extracted run.
  * Each trial model retains all non-IM columns and replaces the IM family with
@@ -729,6 +741,23 @@ static const char *xt_options_error(const XT_options *ops,const char *in,
       ((ops->columns!=NULL)+(ops->labels!=NULL)+(ops->stimuli!=NULL)!=1)))
       return "-show_trs requires one threshold and one column/stimulus selection; no -prefix or -select_groups";
    if(!ops->show_trs && (ops->tr_threshold_set || ops->tr_window))return "TR threshold/window options require -show_trs";
+   /* Beta sidecars are a separate input route; do not demand an unrelated
+    * design matrix for a voxelwise mixture of candidate designs. */
+   if(ops->beta_manifest) {
+      if(!ops->manifest || !ops->subject || !prefix || !*prefix)
+         return "-beta_manifest requires -export_manifest -subject -prefix";
+      if(in || unc || split || ops->show_trs || ops->describe || ops->validate ||
+         ops->select || ops->compare || ops->beta || ops->beta_pattern ||
+         ops->drop_glts || ops->json || ops->for_tool)
+         return "-beta_manifest cannot accompany matrix operations or -beta/-beta_pattern";
+      if(ops->manifest_format && strcmp(ops->manifest_format,"manifest") &&
+         strcmp(ops->manifest_format,"selected") && strcmp(ops->manifest_format,"rsa") &&
+         strcmp(ops->manifest_format,"rsa_runwise"))
+         return "beta manifest format must be manifest, selected, rsa or rsa_runwise";
+      return NULL;
+   }
+   if(ops->input_base || ops->manifest_run_base_set)
+      return "-input_base/-manifest_run_base require -beta_manifest";
    if(!in) return "requires -infile (see -help)";
    if(ops->show_trs+split+ops->select+ops->manifest+(ops->compare!=NULL)+((ops->describe||ops->validate)!=0)!=1)
       return "choose one operation: split, describe/validate, select, compare, export_manifest, or show_trs";
@@ -882,6 +911,13 @@ int main(int argc,char **argv)
       else if(!strcmp(argv[i],"-select_labels")) ops.labels=argv[++i];
       else if(!strcmp(argv[i],"-select_stimuli")) ops.stimuli=argv[++i];
       else if(!strcmp(argv[i],"-select_groups")) ops.groups=argv[++i];
+      else if(!strcmp(argv[i],"-beta_manifest")) ops.beta_manifest=argv[++i];
+      else if(!strcmp(argv[i],"-input_base")) ops.input_base=argv[++i];
+      else if(!strcmp(argv[i],"-manifest_run_base")) {
+         const char *v=argv[++i];
+         if(strcmp(v,"0") && strcmp(v,"1")) { fprintf(stderr,"** -manifest_run_base must be 0 or 1\n"); return 1; }
+         ops.manifest_run_base=atoi(v); ops.manifest_run_base_set=1;
+      }
       else if(!strcmp(argv[i],"-events")) ops.events=argv[++i];
       else if(!strcmp(argv[i],"-subject")) ops.subject=argv[++i];
       else if(!strcmp(argv[i],"-beta")) ops.beta=argv[++i];
@@ -903,6 +939,11 @@ int main(int argc,char **argv)
    ops.select=!ops.show_trs && (ops.columns || ops.labels || ops.stimuli || ops.groups);
    problem=xt_options_error(&ops,in,unc,prefix,runlist,split);
    if(problem){fprintf(stderr,"** 1dXmatTool: %s\n",problem);return 1;}
+   if(ops.beta_manifest) {
+      XT_beta_options beta_options={ops.beta_manifest,ops.events,ops.subject,prefix,
+         ops.manifest_format?ops.manifest_format:"manifest",ops.input_base,runlist,ops.manifest_run_base};
+      return XT_export_betas(&beta_options);
+   }
    a=THD_xmat_read(in,err,sizeof(err));
    if(a && unc)u=THD_xmat_read(unc,err,sizeof(err));
    if(!a || (unc && !u))fprintf(stderr,"** 1dXmatTool: %s\n",err);

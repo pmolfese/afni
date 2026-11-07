@@ -1,0 +1,7 @@
+*+ WARNING: you have polynomials of order 2 for the baseline
+          but disabled use of the Legendre polynomials!
+          Check the matrix condition and accuracy of results!
+*+ WARNING: !! in Signal+Baseline matrix:
+ * Largest singular value=1.41421
+ * 1 singular value is less than cutoff=1.41421e-07
+ * Implies strong collinearity in the matrix columns! 

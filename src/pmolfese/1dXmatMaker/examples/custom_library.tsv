@@ -1,0 +1,10 @@
+# Developed at the NIH
+#
+# Part of AFNI. See the repository LICENSE.txt for licensing terms and
+# disclaimers (bundled with 1dXmatMaker as licenses/AFNI.txt).
+# Third-party and adapted portions retain their existing attribution and license
+# terms; see THIRD_PARTY.md.
+
+id	waveform	dt	kind	duration	source	version
+7	triangle.1D	1	impulse	0	custom-example	v1
+3	box_triangle.1D	1	convolved	1	custom-example	v1

@@ -1,0 +1,11 @@
+# Developed at the NIH
+#
+# Part of AFNI. See the repository LICENSE.txt for licensing terms and
+# disclaimers (bundled with 1dXmatMaker as licenses/AFNI.txt).
+# Third-party and adapted portions retain their existing attribution and license
+# terms; see THIRD_PARTY.md.
+
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

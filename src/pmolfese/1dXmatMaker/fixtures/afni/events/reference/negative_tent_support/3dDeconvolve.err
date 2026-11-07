@@ -1,0 +1,14 @@
+*+ WARNING: Input polort=0; Longest run=28.0 s; Recommended minimum polort=1
+*+ WARNING: -------------------------------------------------
+*+ WARNING: Problems with the X matrix columns, listed below:
+*+ WARNING:    * Column 2 [trial#0] is all zeros
+*+ WARNING:    * Column 10 [trial#8] is all zeros
+*+ WARNING: -------------------------------------------------
+*+ WARNING: !! in Signal+Baseline matrix:
+ * Largest singular value=1.39382
+ * 2 singular values are less than cutoff=1.39382e-07
+ * Implies strong collinearity in the matrix columns! 
+*+ WARNING: !! in Signal-only matrix:
+ * Largest singular value=1.13315
+ * 2 singular values are less than cutoff=1.13315e-07
+ * Implies strong collinearity in the matrix columns! 

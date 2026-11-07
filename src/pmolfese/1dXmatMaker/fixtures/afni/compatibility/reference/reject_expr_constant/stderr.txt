@@ -1,0 +1,3 @@
+[7m** ERROR:[0m illegal EXPRession '2' lacks symbol t, x, or z
+[7m** FATAL ERROR:[0m '-stim_times 1': don't understand basis function model 'EXPR(0,12) 2' [nopt=12]
+** Program compile date = Nov  6 2026

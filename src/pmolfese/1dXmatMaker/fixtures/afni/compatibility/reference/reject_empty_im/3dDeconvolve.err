@@ -1,0 +1,2 @@
+*+ WARNING: '-stim_times_IM 1' didn't read any good times from file 'times.1D'
+** FATAL ERROR: IM currently requires more than zero events

@@ -1,0 +1,2 @@
+** ERROR: 'NOT_A_BASIS' is unknown response function type
+** FATAL ERROR: '-stim_times 1': don't understand basis function model 'NOT_A_BASIS' [nopt=12]

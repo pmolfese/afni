@@ -1,0 +1,21 @@
+++ '-stim_times_AM1 1 times.1D' has 1 auxiliary values per time point
+++ '-stim_times_AM1 1': basis function model 'dmBLOCK5' uses 1 parameters,
+    out of the 1 found in timing file 'times.1D'
+++ 3dDeconvolve: AFNI version=AFNI_26.3.07 (Nov  6 2026) [64-bit]
+++ Authored by: B. Douglas Ward, et al.
+++ using TR=1 seconds for -stim_times and -nodata
+++ using NT=80 time points for -nodata
+[7m*+ WARNING:[0m Input polort=0; Longest run=80.0 s; Recommended minimum polort=1
+++ -stim_times using TR=1 s for stimulus timing conversion
+++ -stim_times using TR=1 s for any -iresp output datasets
+++  [you can alter the -iresp TR via the -TR_times option]
+++ -stim_times_AM1 1 using LOCAL times
+++ Number of time points: 80 (no censoring)
+ + Number of parameters:  2 [1 baseline ; 1 signal]
+++ Wrote matrix values to file X.xmat.1D
+++ Wrote matrix values to file X.full.xmat.1D
+++ ----- Signal+Baseline matrix condition [X] (80x2):  1.34004  ++ VERY GOOD ++
+++ ----- Signal-only matrix condition [X] (80x1):  1  ++ VERY GOOD ++
+++ ----- Baseline-only matrix condition [X] (80x1):  1  ++ VERY GOOD ++
+++ ----- polort-only matrix condition [X] (80x1):  1  ++ VERY GOOD ++
+++ 3dDeconvolve exits: -x1D_stop option was invoked

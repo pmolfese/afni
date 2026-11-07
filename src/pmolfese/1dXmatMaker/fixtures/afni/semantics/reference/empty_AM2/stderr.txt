@@ -1,0 +1,40 @@
+[7m*+ WARNING:[0m '-stim_times_AM2 1' didn't read any good times from file 'times'
+++ '-stim_times_AM2 1 times' has 2 auxiliary values per time point
+++ '-stim_times_AM2 1 times' will have 3 regressors
+++ 3dDeconvolve: AFNI version=AFNI_26.3.07 (Nov  6 2026) [64-bit]
+++ Authored by: B. Douglas Ward, et al.
+++ using TR=1 seconds for -stim_times and -nodata
+++ using NT=60 time points for -nodata
+++ Input polort=1; Longest run=32.0 s; Recommended minimum polort=1 ++ OK ++
+++ -stim_times using TR=1 s for stimulus timing conversion
+++ -stim_times using TR=1 s for any -iresp output datasets
+++  [you can alter the -iresp TR via the -TR_times option]
+++ -stim_times_AM2 1 using LOCAL times
+[7m*+ WARNING:[0m '-stim_times_AM2 1' (LOCAL) run#1 has 1 times outside range 0 .. 27 [PSFB syndrome]
+ + dataset TR being used is 1 s -- unusable times follow
+ -1
+[7m*+ WARNING:[0m !! '-stim_times_AM2 1' file 'times' has no good stimulus time values
+++ Number of time points: 60 (no censoring)
+ + Number of parameters:  7 [4 baseline ; 3 signal]
+++ Wrote matrix values to file X.xmat.1D
+++ Wrote matrix values to file X.full.xmat.1D
+[7m*+ WARNING:[0m -------------------------------------------------
+[7m*+ WARNING:[0m Problems with the X matrix columns, listed below:
+[7m*+ WARNING:[0m    * Column 4 [event#0] is all zeros
+[7m*+ WARNING:[0m    * Column 5 [event#1] is all zeros
+[7m*+ WARNING:[0m    * Column 6 [event#2] is all zeros
+[7m*+ WARNING:[0m -------------------------------------------------
+++ ----- Signal+Baseline matrix condition [X] (60x7):  1  ++ VERY GOOD ++
+[7m*+ WARNING:[0m !! in Signal+Baseline matrix:
+ * Largest singular value=1
+ * 3 singular values are less than cutoff=1e-07
+ * Implies strong collinearity in the matrix columns! 
+++ Signal+Baseline matrix singular values:
+             0             0             0             1             1
+             1             1
+[7m** ERROR:[0m ----- !! Signal-only matrix condition:  UNDEFINED ** VERY BAD **
+++ Signal-only matrix singular values:
+             0             0             0
+++ ----- Baseline-only matrix condition [X] (60x4):  1  ++ VERY GOOD ++
+++ ----- polort-only matrix condition [X] (60x4):  1  ++ VERY GOOD ++
+++ 3dDeconvolve exits: -x1D_stop option was invoked

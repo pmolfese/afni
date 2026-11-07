@@ -1,0 +1,16 @@
+++ 3dDeconvolve: AFNI version=AFNI_26.3.07 (Nov  6 2026) [64-bit]
+++ Authored by: B. Douglas Ward, et al.
+++ using TR=0.25 seconds for -stim_times and -nodata
+++ using NT=65 time points for -nodata
+++ -stim_times using TR=0.25 s for stimulus timing conversion
+++ -stim_times using TR=0.25 s for any -iresp output datasets
+++  [you can alter the -iresp TR via the -TR_times option]
+[7m*+ WARNING:[0m -stim_times 1 has all times equal to 0 or 1 ?!?!
+++ -stim_times 1 using LOCAL times
+++ Number of time points: 65 (no censoring)
+ + Number of parameters:  2 [0 baseline ; 2 signal]
+++ Wrote matrix values to file X.xmat.1D
+++ Wrote matrix values to file X.full.xmat.1D
+++ ----- Signal+Baseline matrix condition [X] (65x2):  3.67936  ++ VERY GOOD ++
+++ ----- Signal-only matrix condition [X] (65x2):  3.67936  ++ VERY GOOD ++
+++ 3dDeconvolve exits: -x1D_stop option was invoked

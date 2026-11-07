@@ -1,0 +1,1711 @@
+{
+  "schema": 1,
+  "source_sha256": "998e54f7ca1d297d011803295d069fe2b4bd2a122a1558a30b12abdbdf32808f",
+  "basis_dispatch": [
+    {
+      "name": "GAM",
+      "match": "strcmp",
+      "line": 11513,
+      "implementation": "planned",
+      "fixtures": [
+        "gam",
+        "gam_parameters",
+        "gam_duration",
+        "gam_zero_duration",
+        "im",
+        "am1",
+        "am2",
+        "amx",
+        "am2_raw",
+        "am2_fixed",
+        "am2_multiple",
+        "basis_norm",
+        "fsl_substitution",
+        "local_two_runs",
+        "global_two_runs",
+        "millisecond_two_runs",
+        "offset_two_runs",
+        "edge_empty_run",
+        "im_two_runs",
+        "event_censored",
+        "reject_empty_im",
+        "reject_im_amplitude"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "GAMpw",
+      "match": "strcmp",
+      "line": 11513,
+      "implementation": "planned",
+      "fixtures": [
+        "gampw",
+        "gampw_duration"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "TWOGAM",
+      "match": "strcmp",
+      "line": 11569,
+      "implementation": "planned",
+      "fixtures": [
+        "twogam",
+        "twogam_duration"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "TWOGAMpw",
+      "match": "strcmp",
+      "line": 11569,
+      "implementation": "planned",
+      "fixtures": [
+        "twogampw",
+        "twogampw_duration"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "TENT",
+      "match": "strcmp",
+      "line": 11629,
+      "implementation": "planned",
+      "fixtures": [
+        "tent",
+        "analytic_tent",
+        "reject_tent"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "TENTzero",
+      "match": "strcmp",
+      "line": 11630,
+      "implementation": "planned",
+      "fixtures": [
+        "tentzero",
+        "im_multibasis",
+        "symbolic_glt"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "CSPLIN",
+      "match": "strcmp",
+      "line": 11676,
+      "implementation": "planned",
+      "fixtures": [
+        "csplin"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "CSPLINzero",
+      "match": "strcmp",
+      "line": 11677,
+      "implementation": "planned",
+      "fixtures": [
+        "csplinzero"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "TRIG",
+      "match": "strcmp",
+      "line": 11718,
+      "implementation": "planned",
+      "fixtures": [
+        "trig"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "SIN",
+      "match": "strcmp",
+      "line": 11755,
+      "implementation": "planned",
+      "fixtures": [
+        "sin"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "POLY",
+      "match": "strcmp",
+      "line": 11783,
+      "implementation": "planned",
+      "fixtures": [
+        "poly"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "SPMG",
+      "match": "strncmp",
+      "line": 11816,
+      "implementation": "planned",
+      "fixtures": [
+        "spmg",
+        "spmg_duration",
+        "spmg1",
+        "spmg1_duration",
+        "spmg2",
+        "spmg2_duration",
+        "spmg3",
+        "spmg3_duration",
+        "spmg_unknown_fallback"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "dmBLOCK",
+      "match": "strncmp",
+      "line": 11900,
+      "implementation": "planned",
+      "fixtures": [
+        "dmblock",
+        "dmblock4",
+        "dmblock5",
+        "dmblock_unit",
+        "dmblock_negative"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "dmUBLOCK",
+      "match": "strncmp",
+      "line": 11925,
+      "implementation": "planned",
+      "fixtures": [
+        "dmublock",
+        "dmublock4",
+        "dmublock5",
+        "dmublock_unit",
+        "dmublock_negative",
+        "im_duration",
+        "am2_duration",
+        "fsl",
+        "fs1"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "BLOCK",
+      "match": "strncmp",
+      "line": 11950,
+      "implementation": "planned",
+      "fixtures": [
+        "block",
+        "block4",
+        "block5",
+        "block_natural"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "IGFUN",
+      "match": "strncmp",
+      "line": 11950,
+      "implementation": "planned",
+      "fixtures": [
+        "igfun",
+        "igfun4",
+        "igfun5",
+        "igfun_natural"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "UBLOCK",
+      "match": "strncmp",
+      "line": 12021,
+      "implementation": "planned",
+      "fixtures": [
+        "ublock",
+        "ublock4",
+        "ublock5",
+        "ublock_natural"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "WAV",
+      "match": "strcmp",
+      "line": 12109,
+      "implementation": "planned",
+      "fixtures": [
+        "wav",
+        "wav_duration",
+        "wav_parameters"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "EXPR",
+      "match": "strcmp",
+      "line": 12136,
+      "implementation": "planned",
+      "fixtures": [
+        "expr",
+        "expr_domain",
+        "expr_coordinates",
+        "expr_precedence",
+        "reject_expr_constant"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "MION",
+      "match": "strcmp",
+      "line": 12192,
+      "implementation": "planned",
+      "fixtures": [
+        "mion",
+        "mion_duration"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    },
+    {
+      "name": "MIONN",
+      "match": "strcmp",
+      "line": 12221,
+      "implementation": "planned",
+      "fixtures": [
+        "mionn",
+        "mionn_duration"
+      ],
+      "remaining": "U-PARAMETERS; M3/M4 interactions"
+    }
+  ],
+  "options": [
+    {
+      "option": "-CENSOR",
+      "source_line": 2676,
+      "status": "reference-captured",
+      "evidence": "censortr"
+    },
+    {
+      "option": "-CENSORTR",
+      "source_line": null,
+      "status": "reference-captured",
+      "evidence": "censortr"
+    },
+    {
+      "option": "-D",
+      "source_line": 3798,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-FDRmask",
+      "source_line": 2581,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-GOFORIT",
+      "source_line": null,
+      "status": "unresolved",
+      "evidence": "U-RANK"
+    },
+    {
+      "option": "-OK",
+      "source_line": 2416,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-STATmask",
+      "source_line": 2580,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-TR_1D",
+      "source_line": 2645,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-TR_irc",
+      "source_line": 2956,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-TR_times",
+      "source_line": 2946,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-allzero_OK",
+      "source_line": 2445,
+      "status": "unresolved",
+      "evidence": "U-ZERO"
+    },
+    {
+      "option": "-automask",
+      "source_line": 2608,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-basis_normall",
+      "source_line": 2967,
+      "status": "reference-captured",
+      "evidence": "basis_norm"
+    },
+    {
+      "option": "-bout",
+      "source_line": 3688,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-bucket",
+      "source_line": 3714,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-cbucket",
+      "source_line": 3732,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-censor",
+      "source_line": 2660,
+      "status": "reference-captured",
+      "evidence": "event_censored"
+    },
+    {
+      "option": "-censorTR",
+      "source_line": 2677,
+      "status": "reference-captured",
+      "evidence": "censortr"
+    },
+    {
+      "option": "-concat",
+      "source_line": 2736,
+      "status": "reference-captured",
+      "evidence": "baseline_unequal"
+    },
+    {
+      "option": "-cprefix",
+      "source_line": 3732,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-datum",
+      "source_line": 2879,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-dmb",
+      "source_line": 2838,
+      "status": "reference-captured",
+      "evidence": "nuisance"
+    },
+    {
+      "option": "-dmbase",
+      "source_line": null,
+      "status": "reference-captured",
+      "evidence": "nuisance"
+    },
+    {
+      "option": "-dofsub",
+      "source_line": 2794,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-errts",
+      "source_line": 3757,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-fdisp",
+      "source_line": 2917,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-fitts",
+      "source_line": 3743,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-float",
+      "source_line": 2872,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-force_TR",
+      "source_line": 2630,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-fout",
+      "source_line": 3639,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-full_first",
+      "source_line": 3701,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-global_times",
+      "source_line": 2981,
+      "status": "reference-captured",
+      "evidence": "global_two_runs"
+    },
+    {
+      "option": "-glt",
+      "source_line": 3507,
+      "status": "unresolved",
+      "evidence": "U-GLT-NUMERIC"
+    },
+    {
+      "option": "-glt_label",
+      "source_line": 3568,
+      "status": "reference-captured",
+      "evidence": "symbolic_glt"
+    },
+    {
+      "option": "-gltsym",
+      "source_line": 3538,
+      "status": "reference-captured",
+      "evidence": "symbolic_glt"
+    },
+    {
+      "option": "-goforit",
+      "source_line": 2436,
+      "status": "unresolved",
+      "evidence": "U-RANK"
+    },
+    {
+      "option": "-guess_times",
+      "source_line": 2984,
+      "status": "unresolved",
+      "evidence": "U-GUESS"
+    },
+    {
+      "option": "-h",
+      "source_line": 2411,
+      "status": "interface-only",
+      "evidence": "M1 help and error presentation"
+    },
+    {
+      "option": "-help",
+      "source_line": 2411,
+      "status": "interface-only",
+      "evidence": "M1 help and error presentation"
+    },
+    {
+      "option": "-inati",
+      "source_line": 3386,
+      "status": "unresolved",
+      "evidence": "U-ORT-ALIAS"
+    },
+    {
+      "option": "-input",
+      "source_line": 2521,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-input1D",
+      "source_line": 2617,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-iresp",
+      "source_line": 3586,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-jobs",
+      "source_line": 3770,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-leg",
+      "source_line": 2824,
+      "status": "reference-captured",
+      "evidence": "baseline_quadratic"
+    },
+    {
+      "option": "-legendre",
+      "source_line": null,
+      "status": "reference-captured",
+      "evidence": "baseline_quadratic"
+    },
+    {
+      "option": "-local_times",
+      "source_line": 2978,
+      "status": "reference-captured",
+      "evidence": "local_two_runs"
+    },
+    {
+      "option": "-mask",
+      "source_line": 2595,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-nfirst",
+      "source_line": 2766,
+      "status": "reference-captured",
+      "evidence": "first_last"
+    },
+    {
+      "option": "-nlast",
+      "source_line": 2780,
+      "status": "reference-captured",
+      "evidence": "first_last"
+    },
+    {
+      "option": "-noFDR",
+      "source_line": 2655,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-noblock",
+      "source_line": 2516,
+      "status": "unresolved",
+      "evidence": "U-NOBLOCK"
+    },
+    {
+      "option": "-nobout",
+      "source_line": 3684,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-nobucket",
+      "source_line": 3727,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-nocond",
+      "source_line": 2427,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-nocout",
+      "source_line": 3694,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-nodata",
+      "source_line": 2750,
+      "status": "reference-captured",
+      "evidence": "baseline_unequal"
+    },
+    {
+      "option": "-nodmbase",
+      "source_line": null,
+      "status": "reference-captured",
+      "evidence": "nuisance_no_demean"
+    },
+    {
+      "option": "-nofull_first",
+      "source_line": 3705,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-nofullf_atall",
+      "source_line": 3708,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-nolegendre",
+      "source_line": null,
+      "status": "reference-captured",
+      "evidence": "baseline_power"
+    },
+    {
+      "option": "-nosat",
+      "source_line": 2418,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-nosvd",
+      "source_line": null,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-notrans",
+      "source_line": 2418,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-nox1D",
+      "source_line": 2481,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-noxsave",
+      "source_line": null,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-num_glt",
+      "source_line": 3486,
+      "status": "reference-captured",
+      "evidence": "symbolic_glt"
+    },
+    {
+      "option": "-num_stimts",
+      "source_line": 2929,
+      "status": "reference-captured",
+      "evidence": "gam"
+    },
+    {
+      "option": "-ortvec",
+      "source_line": 3385,
+      "status": "reference-captured",
+      "evidence": "ortvec"
+    },
+    {
+      "option": "-polort",
+      "source_line": 2803,
+      "status": "reference-captured",
+      "evidence": "baseline_auto"
+    },
+    {
+      "option": "-prefix",
+      "source_line": 3714,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-progress",
+      "source_line": 2889,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-quiet",
+      "source_line": 2861,
+      "status": "interface-only",
+      "evidence": "M1 help and error presentation"
+    },
+    {
+      "option": "-rmsmin",
+      "source_line": 2903,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-rout",
+      "source_line": 3648,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-sat",
+      "source_line": 2421,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-short",
+      "source_line": 2875,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-sing",
+      "source_line": 2449,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-singvals",
+      "source_line": null,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-slice_base",
+      "source_line": 3315,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-sresp",
+      "source_line": 3617,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-stim_base",
+      "source_line": 3403,
+      "status": "reference-captured",
+      "evidence": "nuisance"
+    },
+    {
+      "option": "-stim_file",
+      "source_line": 3341,
+      "status": "reference-captured",
+      "evidence": "nuisance"
+    },
+    {
+      "option": "-stim_label",
+      "source_line": 3364,
+      "status": "reference-captured",
+      "evidence": "im"
+    },
+    {
+      "option": "-stim_maxlag",
+      "source_line": 3442,
+      "status": "unresolved",
+      "evidence": "U-LAG"
+    },
+    {
+      "option": "-stim_minlag",
+      "source_line": 3420,
+      "status": "unresolved",
+      "evidence": "U-LAG"
+    },
+    {
+      "option": "-stim_nptr",
+      "source_line": 3464,
+      "status": "unresolved",
+      "evidence": "U-LAG"
+    },
+    {
+      "option": "-stim_times",
+      "source_line": 3005,
+      "status": "reference-captured",
+      "evidence": "gam"
+    },
+    {
+      "option": "-stim_times_AM1",
+      "source_line": null,
+      "status": "reference-captured",
+      "evidence": "am1"
+    },
+    {
+      "option": "-stim_times_AM2",
+      "source_line": null,
+      "status": "reference-captured",
+      "evidence": "am2"
+    },
+    {
+      "option": "-stim_times_AMx",
+      "source_line": null,
+      "status": "reference-captured",
+      "evidence": "amx"
+    },
+    {
+      "option": "-stim_times_FS1",
+      "source_line": null,
+      "status": "reference-captured",
+      "evidence": "fs1"
+    },
+    {
+      "option": "-stim_times_FSL",
+      "source_line": null,
+      "status": "reference-captured",
+      "evidence": "fsl"
+    },
+    {
+      "option": "-stim_times_IM",
+      "source_line": null,
+      "status": "reference-captured",
+      "evidence": "im_multibasis"
+    },
+    {
+      "option": "-stim_times_millisec",
+      "source_line": 2999,
+      "status": "reference-captured",
+      "evidence": "millisecond_two_runs"
+    },
+    {
+      "option": "-stim_times_subtract",
+      "source_line": 2988,
+      "status": "reference-captured",
+      "evidence": "offset_two_runs"
+    },
+    {
+      "option": "-svd",
+      "source_line": 2831,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-tout",
+      "source_line": 3657,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-trans",
+      "source_line": 2421,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-tshift",
+      "source_line": 3608,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-verb",
+      "source_line": 2867,
+      "status": "interface-only",
+      "evidence": "M1 help and error presentation"
+    },
+    {
+      "option": "-virtvec",
+      "source_line": 3790,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-vout",
+      "source_line": 3666,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-x1D",
+      "source_line": 2469,
+      "status": "reference-captured",
+      "evidence": "gam"
+    },
+    {
+      "option": "-x1D_regcen",
+      "source_line": 2503,
+      "status": "unresolved",
+      "evidence": "U-REGCEN"
+    },
+    {
+      "option": "-x1D_stop",
+      "source_line": 2485,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-x1D_unc",
+      "source_line": 2490,
+      "status": "reference-captured",
+      "evidence": "event_censored"
+    },
+    {
+      "option": "-x1D_uncensored",
+      "source_line": null,
+      "status": "reference-captured",
+      "evidence": "event_censored"
+    },
+    {
+      "option": "-xjpeg",
+      "source_line": 2455,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-xout",
+      "source_line": 3675,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-xrestore",
+      "source_line": 2851,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    },
+    {
+      "option": "-xsave",
+      "source_line": 2845,
+      "status": "outside-core",
+      "evidence": "See COMPATIBILITY.md scope/exclusions"
+    }
+  ],
+  "expression_functions": [
+    {
+      "name": "SIN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-SIN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "COS",
+      "status": "unresolved",
+      "evidence": "U-EXPR-COS",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "TAN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-TAN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ASIN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ASIN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ACOS",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ACOS",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ATAN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ATAN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ATAN2",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ATAN2",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "SINH",
+      "status": "unresolved",
+      "evidence": "U-EXPR-SINH",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "COSH",
+      "status": "unresolved",
+      "evidence": "U-EXPR-COSH",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "TANH",
+      "status": "unresolved",
+      "evidence": "U-EXPR-TANH",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ASINH",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ASINH",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ACOSH",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ACOSH",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ATANH",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ATANH",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "EXP",
+      "status": "unresolved",
+      "evidence": "U-EXPR-EXP",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "LOG",
+      "status": "unresolved",
+      "evidence": "U-EXPR-LOG",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "LOG10",
+      "status": "unresolved",
+      "evidence": "U-EXPR-LOG10",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ABS",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ABS",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "INT",
+      "status": "unresolved",
+      "evidence": "U-EXPR-INT",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "SQRT",
+      "status": "unresolved",
+      "evidence": "U-EXPR-SQRT",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "MAX",
+      "status": "unresolved",
+      "evidence": "U-EXPR-MAX",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "MIN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-MIN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "AI",
+      "status": "unresolved",
+      "evidence": "U-EXPR-AI",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "DAI",
+      "status": "unresolved",
+      "evidence": "U-EXPR-DAI",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "I0",
+      "status": "unresolved",
+      "evidence": "U-EXPR-I0",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "I1",
+      "status": "unresolved",
+      "evidence": "U-EXPR-I1",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "J0",
+      "status": "unresolved",
+      "evidence": "U-EXPR-J0",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "J1",
+      "status": "unresolved",
+      "evidence": "U-EXPR-J1",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "K0",
+      "status": "unresolved",
+      "evidence": "U-EXPR-K0",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "K1",
+      "status": "unresolved",
+      "evidence": "U-EXPR-K1",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "Y0",
+      "status": "unresolved",
+      "evidence": "U-EXPR-Y0",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "Y1",
+      "status": "unresolved",
+      "evidence": "U-EXPR-Y1",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "BI",
+      "status": "unresolved",
+      "evidence": "U-EXPR-BI",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "DBI",
+      "status": "unresolved",
+      "evidence": "U-EXPR-DBI",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ERF",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ERF",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ERFC",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ERFC",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "GAMMA",
+      "status": "unresolved",
+      "evidence": "U-EXPR-GAMMA",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "QG",
+      "status": "unresolved",
+      "evidence": "U-EXPR-QG",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "QGINV",
+      "status": "unresolved",
+      "evidence": "U-EXPR-QGINV",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "BELL2",
+      "status": "unresolved",
+      "evidence": "U-EXPR-BELL2",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "RECT",
+      "status": "unresolved",
+      "evidence": "U-EXPR-RECT",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "STEP",
+      "status": "unresolved",
+      "evidence": "U-EXPR-STEP",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "BOOL",
+      "status": "unresolved",
+      "evidence": "U-EXPR-BOOL",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "AND",
+      "status": "unresolved",
+      "evidence": "U-EXPR-AND",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "OR",
+      "status": "unresolved",
+      "evidence": "U-EXPR-OR",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "MOFN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-MOFN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ASTEP",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ASTEP",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "SIND",
+      "status": "unresolved",
+      "evidence": "U-EXPR-SIND",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "COSD",
+      "status": "unresolved",
+      "evidence": "U-EXPR-COSD",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "TAND",
+      "status": "unresolved",
+      "evidence": "U-EXPR-TAND",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "MEDIAN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-MEDIAN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FICO_T2P",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FICO_T2P",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FICO_P2T",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FICO_P2T",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FICO_T2Z",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FICO_T2Z",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FITT_T2P",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FITT_T2P",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FITT_P2T",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FITT_P2T",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FITT_T2Z",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FITT_T2Z",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIFT_T2P",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIFT_T2P",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIFT_P2T",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIFT_P2T",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIFT_T2Z",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIFT_T2Z",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIZT_T2P",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIZT_T2P",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIZT_P2T",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIZT_P2T",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIZT_T2Z",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIZT_T2Z",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FICT_T2P",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FICT_T2P",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FICT_P2T",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FICT_P2T",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FICT_T2Z",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FICT_T2Z",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIBT_T2P",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIBT_T2P",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIBT_P2T",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIBT_P2T",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIBT_T2Z",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIBT_T2Z",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIBN_T2P",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIBN_T2P",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIBN_P2T",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIBN_P2T",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIBN_T2Z",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIBN_T2Z",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIGT_T2P",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIGT_T2P",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIGT_P2T",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIGT_P2T",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIGT_T2Z",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIGT_T2Z",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIPT_T2P",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIPT_T2P",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIPT_P2T",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIPT_P2T",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "FIPT_T2Z",
+      "status": "unresolved",
+      "evidence": "U-EXPR-FIPT_T2Z",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ZTONE",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ZTONE",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "LMODE",
+      "status": "unresolved",
+      "evidence": "U-EXPR-LMODE",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "HMODE",
+      "status": "unresolved",
+      "evidence": "U-EXPR-HMODE",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "GRAN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-GRAN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "URAN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-URAN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "IRAN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-IRAN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ERAN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ERAN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "LRAN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-LRAN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ORSTAT",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ORSTAT",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "TENT",
+      "status": "unresolved",
+      "evidence": "U-EXPR-TENT",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "MAD",
+      "status": "unresolved",
+      "evidence": "U-EXPR-MAD",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ARGMAX",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ARGMAX",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ARGNUM",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ARGNUM",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "NOTZERO",
+      "status": "unresolved",
+      "evidence": "U-EXPR-NOTZERO",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ISZERO",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ISZERO",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "EQUALS",
+      "status": "unresolved",
+      "evidence": "U-EXPR-EQUALS",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ISPOSITIVE",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ISPOSITIVE",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ISNEGATIVE",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ISNEGATIVE",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "MEAN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-MEAN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "STDEV",
+      "status": "unresolved",
+      "evidence": "U-EXPR-STDEV",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "SEM",
+      "status": "unresolved",
+      "evidence": "U-EXPR-SEM",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "PLEG",
+      "status": "unresolved",
+      "evidence": "U-EXPR-PLEG",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "CDF2STAT",
+      "status": "unresolved",
+      "evidence": "U-EXPR-CDF2STAT",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "STAT2CDF",
+      "status": "unresolved",
+      "evidence": "U-EXPR-STAT2CDF",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "PAIRMAX",
+      "status": "unresolved",
+      "evidence": "U-EXPR-PAIRMAX",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "PAIRMIN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-PAIRMIN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "AMONGST",
+      "status": "unresolved",
+      "evidence": "U-EXPR-AMONGST",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "CBRT",
+      "status": "unresolved",
+      "evidence": "U-EXPR-CBRT",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "RHDDC2",
+      "status": "unresolved",
+      "evidence": "U-EXPR-RHDDC2",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "HRFBK4",
+      "status": "unresolved",
+      "evidence": "U-EXPR-HRFBK4",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "HRFBK5",
+      "status": "unresolved",
+      "evidence": "U-EXPR-HRFBK5",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "POSVAL",
+      "status": "unresolved",
+      "evidence": "U-EXPR-POSVAL",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "NOT",
+      "status": "unresolved",
+      "evidence": "U-EXPR-NOT",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "MOD",
+      "status": "unresolved",
+      "evidence": "U-EXPR-MOD",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "WITHIN",
+      "status": "unresolved",
+      "evidence": "U-EXPR-WITHIN",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "MINABOVE",
+      "status": "unresolved",
+      "evidence": "U-EXPR-MINABOVE",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "MAXBELOW",
+      "status": "unresolved",
+      "evidence": "U-EXPR-MAXBELOW",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "EXTREME",
+      "status": "unresolved",
+      "evidence": "U-EXPR-EXTREME",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ABSEXTREME",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ABSEXTREME",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "CHOOSE",
+      "status": "unresolved",
+      "evidence": "U-EXPR-CHOOSE",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "IFELSE",
+      "status": "unresolved",
+      "evidence": "U-EXPR-IFELSE",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "LOGCOSH",
+      "status": "unresolved",
+      "evidence": "U-EXPR-LOGCOSH",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ACFWXM",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ACFWXM",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "GAMP",
+      "status": "unresolved",
+      "evidence": "U-EXPR-GAMP",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "GAMQ",
+      "status": "unresolved",
+      "evidence": "U-EXPR-GAMQ",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    },
+    {
+      "name": "ISPRIME",
+      "status": "unresolved",
+      "evidence": "U-EXPR-ISPRIME",
+      "gate": "M3: arity, domain recovery, accuracy; RNG policy for random functions"
+    }
+  ],
+  "source_environment_variables": [
+    "AFNI_3dDeconvolve_GOFORIT",
+    "AFNI_3dDeconvolve_NIML",
+    "AFNI_3dDeconvolve_extend",
+    "AFNI_3dDeconvolve_nodata_extras",
+    "AFNI_3dDeconvolve_nodup",
+    "AFNI_3dDeconvolve_oneline",
+    "AFNI_3dDeconvolve_rawAM2",
+    "AFNI_AUTOMATIC_FDR",
+    "AFNI_FLOATIZE",
+    "AFNI_GLTSYM_PRINT",
+    "AFNI_SHORTIZE",
+    "AFNI_SKIP_SATCHECK",
+    "AFNI_XSAVE_TEXT"
+  ],
+  "limitations": "Direct comparisons only; shared AFNI preprocessing/options and syntax interactions are tracked in U-INPUT and U-LENIENT."
+}
