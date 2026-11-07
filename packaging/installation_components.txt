@@ -158,6 +158,7 @@ track_tools, suma
 3dOverlap, corebinaries
 3dPVmap, corebinaries
 3dPeriodogram, corebinaries
+3dPicard, corebinaries
 3dPolyfit, corebinaries
 3dProbTrackID, suma
 3dPval, corebinaries
