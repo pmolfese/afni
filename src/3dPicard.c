@@ -93,6 +93,10 @@ typedef struct {
    char *group_file, *band_file;
    double *band_values;
    double ar1;
+   int legacy_ar1_set, covariance_set, covariance_parameters, covariance_gap;
+   THD_picard_covariance covariance;
+   char *covariance_map, *covariance_source;
+   char *covariance_estimate, *covariance_rows;
    double lambda;
    THD_elastic_config solver;
    double *grid;
@@ -794,6 +798,38 @@ static void help(void)
       "\n"
       "WHITENING AND SUPPORT REFITS -- CHECK THE INERTIAL DAMPERS\n"
       "-------------------------------------------------------\n"
+      "  -covariance white|ar1|arma11  Fixed unit-marginal covariance.\n"
+      "  -covariance_ar A      AR parameter, default 0, strictly (-1,1).\n"
+      "  -covariance_ma B      MA parameter (arma11 only), default 0.\n"
+      "  -covariance_gaps preserve|reset  Default preserve: actual TR lags.\n"
+      "  -covariance_estimate XMAT  Estimate native pilot REML per voxel.\n"
+      "  -covariance_rows FILE  Estimation rows: original IDs, one per line.\n"
+      "Default estimation uses all retained rows. Pilot must share the full\n"
+      "timeline/censor/run map. AR/MA grid is [-.9,.9] by .1; AR1 fixes B=0.\n"
+      "Parameters are shared across runs per voxel; no spatial pooling.\n"
+      "Native mode requires fixed penalty, not internal CV or staged fits.\n"
+      "For tuning, estimate separately on each training fold using rows,\n"
+      "freeze parameters, then fit validation data with the resulting maps.\n"
+      "Saturated pilots or zero residual variance fail explicitly. Outputs\n"
+      "include marginal Sigma2, REML score, pilot rank, status and AR/MA.\n"
+      "Status: 0 interior, 1 boundary, 3 flat, 4 tied; outside mask -1.\n"
+      "  -covariance_map DSET  AR1: one a brick; ARMA: a,b first two bricks.\n"
+      "                       Accepts REMLfit -Rvar; other bricks ignored.\n"
+      "  -covariance_source TEXT  Optional external estimation provenance.\n"
+      "Without covariance_estimate, supply parameters. MA uses +B*u[t-1].\n"
+      "Runs are independent; censored samples stay excluded, never filled.\n"
+      "Exact dense Cholesky factors are memory-budgeted and shared by equal\n"
+      "parameter groups. No parameter rounding. Map mode excludes staged\n"
+      "single_trial and global tuning (future integration); scalar mode\n"
+      "supports existing workflows. Map estimates remain externally supplied\n"
+      "in every fold: scores are conditional, not independent noise tuning.\n"
+      "Invalid loaded parameters/geometry fail; no white fallback. AFNI\n"
+      "loaders may repair NaN/Inf; repaired values cannot be detected.\n"
+      "New covariance options cannot be combined with prewhite_ar1.\n"
+      "New AR1 penalty units differ from the legacy filter: identical fits\n"
+      "with matching gaps require lambda_new=lambda_old/(1-A*A).\n"
+      "Covariance map validation needs input/mask data even in validate_only.\n"
+      "\n"
       "  -prewhite_ar1 R       Externally fixed AR(1) coefficient in (-1,1).\n"
       "                       Default 0: identity. No noise estimation.\n"
       "Whiten X, nuisance Z and Y BEFORE nuisance projection. Within a\n"
@@ -1579,7 +1615,34 @@ static int parse_options(int argc, char **argv, Options *o, char *err, int nerr)
          o->group_file = v;
       else if (!strcmp(arg, "-band_penalties"))
          o->band_file = v;
+      else if (!strcmp(arg, "-covariance")) {
+         if (!strcmp(v, "white")) o->covariance.model = 0;
+         else if (!strcmp(v, "ar1")) o->covariance.model = 1;
+         else if (!strcmp(v, "arma11")) o->covariance.model = 2;
+         else return failure(err, nerr, "covariance: white|ar1|arma11");
+         o->covariance_set = 1;
+      } else if (!strcmp(arg, "-covariance_ar") ||
+                 !strcmp(arg, "-covariance_ma")) {
+         double *value = !strcmp(arg, "-covariance_ar") ?
+                            &o->covariance.a : &o->covariance.b;
+         if (!parse_finite_double(v, value) || fabs(*value) >= 1)
+            return failure(err, nerr, "covariance parameter outside (-1,1)");
+         o->covariance_parameters = 1;
+      } else if (!strcmp(arg, "-covariance_gaps")) {
+         if (strcmp(v, "preserve") && strcmp(v, "reset"))
+            return failure(err, nerr, "covariance_gaps: preserve|reset");
+         o->covariance.reset_gaps = !strcmp(v, "reset");
+         o->covariance_gap = 1;
+      } else if (!strcmp(arg, "-covariance_estimate"))
+         o->covariance_estimate = v;
+      else if (!strcmp(arg, "-covariance_rows"))
+         o->covariance_rows = v;
+      else if (!strcmp(arg, "-covariance_map"))
+         o->covariance_map = v;
+      else if (!strcmp(arg, "-covariance_source"))
+         o->covariance_source = v;
       else if (!strcmp(arg, "-prewhite_ar1")) {
+         o->legacy_ar1_set = 1;
          if (!parse_finite_double(v, &o->ar1) || fabs(o->ar1) >= 1)
             return failure(err, nerr, "prewhite_ar1 must be in (-1,1)");
       } else if (!strcmp(arg, "-lambda")) {
@@ -1677,6 +1740,23 @@ static int parse_options(int argc, char **argv, Options *o, char *err, int nerr)
          return failure(err, nerr, "lasso requires l1_ratio=1");
       o->solver.rho = 1;
    }
+   if ((!o->covariance_set && (o->covariance_parameters ||
+        o->covariance_gap || o->covariance_map || o->covariance_source ||
+        o->covariance_estimate || o->covariance_rows)) ||
+       (o->covariance_set && o->legacy_ar1_set))
+      return failure(err, nerr,
+          "covariance options require -covariance; not with prewhite_ar1");
+   if (o->covariance_set &&
+       ((o->covariance.model == 0 && o->covariance.a != 0) ||
+        (o->covariance.model < 2 && o->covariance.b != 0)))
+      return failure(err, nerr, "parameters incompatible with covariance");
+   if (o->covariance_map && (o->covariance_parameters ||
+       o->covariance.model == 0 || o->single || o->global))
+      return failure(err, nerr,
+          "covariance_map: no scalar parameters, white, single_trial or "
+          "global tuning; staged voxel covariance is deferred to NG2");
+   if (o->covariance_source && !o->covariance_map)
+      return failure(err, nerr, "covariance_source requires covariance_map");
    if (o->support_refit && (!o->elastic || o->solver.rho <= 0))
       return failure(err, nerr,
                      "support_refit requires lasso/enet with l1_ratio>0");
@@ -1809,6 +1889,15 @@ static int parse_options(int argc, char **argv, Options *o, char *err, int nerr)
               o->pc_mask || o->pc_list || o->fixed_pcs >= 0 ||
               isfinite(o->noise_r2) || o->save_stages || o->pc_stop_set)
       return failure(err, nerr, "noise/PC/stage options require single_trial");
+   if (o->covariance_rows && !o->covariance_estimate)
+      return failure(err, nerr, "covariance_rows requires covariance_estimate");
+   if (o->covariance_estimate &&
+       (o->covariance_map || o->covariance_parameters || o->single ||
+        o->candidate_manifest || o->ngrid || o->global || !o->input))
+      return failure(err, nerr,
+          "native covariance requires input and fixed penalty; no maps, "
+          "scalar parameters, candidates, staged mode or internal CV. "
+          "For fold-local tuning use covariance_rows and explicit folds.");
    if (o->mask && !o->input)
       return failure(err, nerr, "mask requires input");
    if ((o->input && strchr(o->input, '[')) || (o->mask && strchr(o->mask, '[')))
@@ -2109,6 +2198,16 @@ static int check_memory_budget(App *a, char *err, int nerr)
           160 * h * (nr + 1) * n * (d + added) +
           64 * h * (nr + 1) * a->opt.jobs * a->opt.batch * (n + d + added) +
           64 * n * maxpc + 4 * v * added * a->opt.save_nuis;
+   }
+   if (a->opt.covariance_set) {
+      long double folds = a->opt.ngrid ?
+          (a->folds ? a->folds->nfold : a->xm->nrun) : 0;
+      long double candidates = a->manifest ? a->manifest->count + 1 : 1;
+      /* Full/training factors plus staged augmentation and temporary plans. */
+      bytes += 16*n*n*(folds+2)*candidates*(a->opt.single ? 4 : 1);
+      if (a->opt.covariance_map || a->opt.covariance_estimate)
+         /* One active group plus reference plans and map-loading reserve. */
+         bytes = 2*bytes + 128*v + a->opt.memory*1048576.0L/4;
    }
    if (bytes > a->opt.memory * 1048576.0L) {
       snprintf(err, (size_t)nerr,
@@ -2447,7 +2546,9 @@ static int prepare_design(App *a, const App *reference, char *err, int nerr)
                               a->opt.band_values};
       THD_picard_config cfg = {a->opt.elastic ? &a->opt.solver : NULL,
                                a->opt.banded ? &bc : NULL, a->opt.ar1,
-                               a->opt.support_refit};
+                               a->opt.support_refit,
+                               a->opt.covariance_set ?
+                                   &a->opt.covariance : NULL};
       a->plan = THD_picard_plan_create_config(
           a->matrix, a->xm->nrow, a->xm->ncol, a->roles, a->xm->good, a->runs,
           a->xm->nfull, a->opt.tol, &cfg, err, nerr);
@@ -2889,7 +2990,8 @@ static int attach_provenance(App *a, THD_3dim_dataset *out, char *err, int nerr)
    }
    text = THD_zzprintf(
        text,
-       " FixedAR1=%.17g: whiten before nuisance projection; restart at run "
+       " LegacyFixedAR1=%.17g (inactive with PICARD_COVARIANCE): "
+       "whiten before nuisance projection; restart at run "
        "changes and nonconsecutive original rows, separately inside folds. "
        "Segment starts multiply by sqrt(1-rho^2); other rows use y-rho*y_prev. "
        "No noise estimation. Fitts/errts and selection losses remain in "
@@ -2900,6 +3002,29 @@ static int attach_provenance(App *a, THD_3dim_dataset *out, char *err, int nerr)
        "SupportSize/SupportRank describe the refit. No post-selection "
        "inference.",
        a->opt.ar1, a->opt.support_refit);
+   if (a->opt.covariance_set) {
+      char *cov = THD_zzprintf(NULL,
+          "model=%s scalar_a=%.17g scalar_b=%.17g gaps=%s "
+          "normalization=unit_marginal "
+          "MA_sign=plus factor=exact_dense_cholesky "
+          "map=%s source=%s selection=conditional_on_covariance_parameters "
+          "voxel_parameters_override_scalars=1 "
+          "parameter_bricks=CovarianceAR,CovarianceMA",
+          a->opt.covariance.model == 0 ? "white" :
+          a->opt.covariance.model == 1 ? "ar1" : "arma11",
+          a->opt.covariance.a, a->opt.covariance.b,
+          a->opt.covariance.reset_gaps ? "reset" : "preserve",
+          a->opt.covariance_map ? a->opt.covariance_map : "none",
+          a->opt.covariance_source ? a->opt.covariance_source :
+          a->opt.covariance_map ? "unknown_external" :
+          a->opt.covariance_estimate ? "native_pilot_REML" : "fixed_scalar");
+      if (!cov) {
+         free(text);
+         return failure(err, nerr, "cannot allocate covariance metadata");
+      }
+      THD_set_string_atr(out->dblk, "PICARD_COVARIANCE", cov);
+      free(cov);
+   }
    for (j = 0; j < d->ncol; j++)
       labels = THD_zzprintf(labels, "%s%s", j ? " ; " : "", a->xm->collab[j]);
    if (!text || !labels) {
@@ -3013,7 +3138,9 @@ static int prepare_outputs(App *a, int argc, char **argv, char *err, int nerr)
 {
    const THD_picard_design_info *d = THD_picard_plan_info(a->plan);
    int nk = saved_nuisance_count(a);
-   int counts[] = {d->p + nk + diagnostic_count(a), a->opt.save_fit ? d->n : 0,
+   int counts[] = {d->p + nk + diagnostic_count(a) +
+                      (a->opt.covariance_estimate ? 6 : 2*a->opt.covariance_set),
+                   a->opt.save_fit ? d->n : 0,
                    a->opt.save_res ? d->n : 0};
    int t, b, j;
    if (a->opt.save_nuis && !nk)
@@ -3095,7 +3222,15 @@ static int prepare_outputs(App *a, int argc, char **argv, char *err, int nerr)
             } else if (t == OUT_MAIN) {
                int diagnostic = b - d->p - nk;
                int extra = a->predict ? NPRED_DIAG : NTUNE_DIAG;
-               if (a->single && diagnostic >= single_start(a)) {
+               if (diagnostic >= diagnostic_count(a)) {
+                  static const char *native[] = {"Picard_CovarianceSigma2",
+                      "Picard_CovarianceREML", "Picard_CovarianceRank",
+                      "Picard_CovarianceStatus", "Picard_CovarianceAR",
+                      "Picard_CovarianceMA"};
+                  label = native[diagnostic-diagnostic_count(a) +
+                                 (a->opt.covariance_estimate ? 0 : 4)];
+               }
+               else if (a->single && diagnostic >= single_start(a)) {
                   static const char *names[] = {
                       "Picard_PCCount", "Picard_NoisePool",
                       "Picard_PCSelection", "Picard_NoiseModelR2"};
@@ -3176,6 +3311,10 @@ static int prepare_outputs(App *a, int argc, char **argv, char *err, int nerr)
       never fitted, so a masked-out voxel cannot look like a successful fit
       whose coefficients happen to be zero. fit_block replaces these marks. */
    for (b = 0; b < a->nvox; b++) {
+      if (a->opt.covariance_set)
+         for (j = 0; j < (a->opt.covariance_estimate ? 6 : 2); j++)
+            ((float *)DSET_ARRAY(a->out[OUT_MAIN],
+                 d->p + nk + diagnostic_count(a) + j))[b] = -1;
       ((float *)DSET_ARRAY(a->out[OUT_MAIN],
                            d->p + nk + base_diagnostic_count(a) - 1))[b] = -1;
       if (a->opt.ngrid || a->manifest || a->single)
@@ -3858,6 +3997,14 @@ static void fit_block(App *a, Worker *w, int start)
          numerical API. Translate those documented cases to -1 for AFNI
          maps; store_value still rejects accidental nonfinite fit outputs. */
       double diagnostics[NELASTIC_DIAG + 2] = {0};
+      if (a->opt.covariance_set) {
+         int end = DSET_NVALS(a->out[OUT_MAIN]);
+         if (!store_value(a->out[OUT_MAIN], end-2, v,
+                          a->opt.covariance.a, w) ||
+             !store_value(a->out[OUT_MAIN], end-1, v,
+                          a->opt.covariance.b, w))
+            return;
+      }
       if (r->banded_diagnostic) {
          const THD_banded_diagnostic *dg = r->banded_diagnostic + o;
          diagnostics[0] = dg->candidate;
@@ -4345,6 +4492,263 @@ static void free_app(App *a)
    free(a->matrix);
 }
 
+/* Exact parameter grouping bounds resident factors to one covariance group
+   (plus the metadata reference plans). Stable voxel IDs break ties, making
+   batching/thread choices immaterial. Imported parameters are not rounded. */
+typedef struct {
+   double ar, ma;
+   int voxel;
+   THD_picard_reml_result estimate;
+} CovarianceVoxel;
+static int covariance_voxel_compare(const void *left, const void *right)
+{
+   const CovarianceVoxel *a = left, *b = right;
+   if (a->ar != b->ar) return a->ar < b->ar ? -1 : 1;
+   if (a->ma != b->ma) return a->ma < b->ma ? -1 : 1;
+   return (a->voxel > b->voxel) - (a->voxel < b->voxel);
+}
+
+/* Estimate on explicitly selected original rows, never on an implicitly
+   whitened/full-response series. Pilot columns are a fixed mean-model span;
+   compact and full-trial models are both supplied as ordinary xmat files.
+   Responses are batched; no candidate-by-voxel factor cache is retained. */
+static int estimate_covariance(App *a, CovarianceVoxel **values,
+                               int validate, char *err, int nerr)
+{
+   THD_xmat *pilot = THD_xmat_read(a->opt.covariance_estimate, err, nerr);
+   int *rows = NULL, *runs = NULL;
+   double *table = NULL, *matrix = NULL, *y = NULL;
+   THD_picard_reml_result *result = NULL;
+   int n = 0, nr = 0, nc = 0, i, j, at, q, ok = pilot != NULL;
+   if (ok && (pilot->nrow != a->xm->nrow ||
+       pilot->nfull != a->xm->nfull || pilot->nrun != a->xm->nrun ||
+       memcmp(pilot->good, a->xm->good, sizeof(int)*(size_t)pilot->nrow)))
+      ok = failure(err, nerr, "covariance pilot timeline mismatch");
+   if (ok) {
+      const char *pt = THD_xmat_attr(pilot, "RowTR");
+      const char *ft = THD_xmat_attr(a->xm, "RowTR");
+      double pv, fv;
+      if ((pt == NULL) != (ft == NULL) ||
+          (pt && (!parse_finite_double(pt, &pv) ||
+                  !parse_finite_double(ft, &fv) || pv <= 0 || pv != fv)))
+         ok = failure(err, nerr, "covariance pilot TR mismatch");
+   }
+   for (i = 0; ok && i < pilot->nrow; i++)
+      if (THD_xmat_run_of(pilot, pilot->good[i]) != a->runs[i])
+         ok = failure(err, nerr, "covariance pilot runs differ");
+   if (ok && a->opt.covariance_rows)
+      ok = read_numeric_table(a->opt.covariance_rows, &table, &nr, &nc,
+                              a->opt.memory, err, nerr);
+   if (ok && table && nc != 1)
+      ok = failure(err, nerr,
+                   "covariance_rows needs one original row per line");
+   if (ok) {
+      n = table ? nr : pilot->nrow;
+      if (n < 2 || 32.0L*n*((long double)n+pilot->ncol+a->opt.batch) >
+          a->opt.memory*1048576.0L/2)
+         ok = failure(err, nerr, "native covariance rows/memory invalid");
+   }
+   if (ok) {
+      rows = calloc((size_t)n, sizeof(int));
+      runs = calloc((size_t)n, sizeof(int));
+      matrix = calloc((size_t)n*pilot->ncol, sizeof(double));
+      y = calloc((size_t)n*a->opt.batch, sizeof(double));
+      result = calloc((size_t)a->opt.batch, sizeof(*result));
+      *values = calloc((size_t)a->nselected, sizeof(**values));
+      ok = rows && runs && matrix && y && result && *values;
+      if (!ok) failure(err, nerr, "cannot allocate native covariance buffers");
+   }
+   for (i = at = 0; ok && i < n; i++) {
+      double row = table ? table[i] : pilot->good[i];
+      if (!isfinite(row) || row < 0 || row >= pilot->nfull ||
+          row != floor(row) || (i && row <= rows[i-1])) {
+         ok = failure(err, nerr, "invalid covariance estimation rows");
+         break;
+      }
+      while (at < pilot->nrow && pilot->good[at] < row) at++;
+      if (at == pilot->nrow || pilot->good[at] != row) {
+         ok = failure(err, nerr, "covariance row is not retained");
+         break;
+      }
+      rows[i] = (int)row;
+      runs[i] = a->runs[at];
+      for (j = 0; j < pilot->ncol; j++)
+         matrix[(size_t)i*pilot->ncol+j] =
+             pilot->mat[(size_t)j*pilot->nrow+at];
+   }
+   for (at = 0; ok && at < a->nselected; at += q) {
+      q = a->nselected-at;
+      if (q > a->opt.batch) q = a->opt.batch;
+      for (i = 0; i < n; i++)
+         for (j = 0; j < q; j++)
+            y[(size_t)i*q+j] = read_voxel(a->input, rows[i], a->vox[at+j]);
+      ok = THD_picard_reml(matrix, n, pilot->ncol, rows, runs, y, q,
+                           a->opt.covariance.model,
+                           a->opt.covariance.reset_gaps, a->opt.tol,
+                           result, err, nerr);
+      for (j = 0; ok && j < q; j++) {
+         CovarianceVoxel *v = *values+at+j;
+         v->ar = result[j].a; v->ma = result[j].b;
+         v->voxel = a->vox[at+j]; v->estimate = result[j];
+         if (!validate) {
+            Worker check = {0};
+            int base = DSET_NVALS(a->out[OUT_MAIN])-6;
+            ok = store_value(a->out[OUT_MAIN], base, v->voxel,
+                              result[j].sigma2, &check) &&
+                 store_value(a->out[OUT_MAIN], base+1, v->voxel,
+                              result[j].score, &check) &&
+                 store_value(a->out[OUT_MAIN], base+2, v->voxel,
+                              result[j].rank, &check) &&
+                 store_value(a->out[OUT_MAIN], base+3, v->voxel,
+                              result[j].status, &check);
+            if (!ok) failure(err, nerr, check.err);
+         }
+      }
+   }
+   if (ok && !validate) {
+      char *description = THD_zzprintf(NULL,
+          "native_grid_REML pilot=%s grid=-0.9:0.1:0.9 "
+          "pooling=per_voxel shared_across_runs=1 shared_variance=1 df=%d "
+          "zero_variance=error status=0:interior,1:boundary,3:flat,4:tied "
+          "score=logdetR+logdetBtRiB+df*logRSS_over_df rows=",
+          a->opt.covariance_estimate, n-(*values)[0].estimate.rank);
+      for (i = 0; i < n; i++)
+         description = THD_zzprintf(description, "%s%d", i ? "," : "", rows[i]);
+      if (!description)
+         ok = failure(err, nerr, "cannot record REML provenance");
+      for (j = 0; ok && j < DATASET_COUNT; j++)
+         if (a->out[j]) THD_set_string_atr(a->out[j]->dblk,
+                                          "PICARD_COVARIANCE_ESTIMATION",
+                                          description);
+      free(description);
+   }
+   free(rows);
+   free(runs);
+   free(table);
+   free(matrix);
+   free(y);
+   free(result);
+   THD_xmat_free(pilot);
+   return ok;
+}
+
+/* Validate all selected map values before fitting any group. Dataset loading
+   follows AFNI_FLOATSCAN; original values repaired by AFNI cannot be detected
+   afterward. Extra Rvar bricks (lag-one correlation, sigma, likelihood) are
+   not used as covariance parameters. No files are written on failure. */
+static int fit_covariance_groups(App *a, int validate, char *err, int nerr)
+{
+   THD_3dim_dataset *map = NULL;
+   CovarianceVoxel *values = NULL;
+   int i, j, start, stop, groups = 0, ok = 1;
+   int nb = a->opt.covariance.model == 1 ? 1 : 2;
+   if (a->opt.covariance_estimate)
+      ok = estimate_covariance(a, &values, validate, err, nerr);
+   else {
+      if (!a->input || strchr(a->opt.covariance_map, '['))
+         return failure(err, nerr,
+                        "covariance_map needs input and an unselected dataset");
+      map = THD_open_dataset(a->opt.covariance_map);
+      if (!map || DSET_IS_1D(map) || DSET_IS_GIFTI(map) ||
+          DSET_IS_NI_SURF_DSET(map) || DSET_NVALS(map) < nb ||
+          !EQUIV_GRIDS(a->input, map) || THD_dataset_mismatch(a->input, map))
+         ok = failure(err, nerr, "covariance map grid/brick count mismatch");
+      if (ok) {
+         /* Validate every loaded brick type and account for the entire dataset
+            payload before DSET_load, including ignored Rvar diagnostic bricks. */
+         long double size = 0;
+         for (i = 0; i < DSET_NVALS(map); i++) {
+            if (!is_real_datum(DSET_BRICK_TYPE(map, i)))
+               ok = failure(err, nerr, "covariance map must be real numeric");
+            size += (long double)DSET_NVOX(map)*
+                    mri_datum_size(DSET_BRICK_TYPE(map, i));
+         }
+         if (size > a->opt.memory*1048576.0L/4)
+            ok = failure(err, nerr, "covariance map exceeds reserved memory");
+      }
+      if (ok) {
+         DSET_load(map);
+         if (!DSET_LOADED(map))
+            ok = failure(err, nerr, "cannot load covariance map");
+      }
+      if (ok) {
+         values = calloc((size_t)a->nselected, sizeof(*values));
+         if (!values) ok = failure(err, nerr, "cannot allocate covariance groups");
+      }
+      for (i = 0; ok && i < a->nselected; i++) {
+         values[i].voxel = a->vox[i];
+         values[i].ar = read_voxel(map, 0, a->vox[i]);
+         values[i].ma = nb == 2 ? read_voxel(map, 1, a->vox[i]) : 0;
+         if (!isfinite(values[i].ar) || !isfinite(values[i].ma) ||
+             fabs(values[i].ar) >= 1 || fabs(values[i].ma) >= 1)
+            ok = failure(err, nerr, "invalid selected covariance map parameter");
+      }
+      if (ok && !validate) {
+         ATR_string *history = THD_find_string_atr(map->dblk, "HISTORY_NOTE");
+         for (j = 0; j < DATASET_COUNT; j++)
+            if (a->out[j]) {
+               THD_set_string_atr(a->out[j]->dblk, "PICARD_COVARIANCE_SOURCE_ID",
+                                  map->idcode.str);
+               if (history && history->ch)
+                  THD_set_string_atr(a->out[j]->dblk,
+                                     "PICARD_COVARIANCE_SOURCE_HISTORY",
+                                     history->ch);
+            }
+      }
+      if (map) DSET_delete(map);
+   }
+   if (ok) qsort(values, (size_t)a->nselected, sizeof(*values),
+                 covariance_voxel_compare);
+   for (start = 0; ok && start < a->nselected; start = stop) {
+      App g = {0};
+      stop = start+1;
+      while (stop < a->nselected && values[stop].ar == values[start].ar &&
+             values[stop].ma == values[start].ma) stop++;
+      groups++;
+      g.opt = a->opt;
+      g.opt.covariance_map = NULL;
+      g.opt.covariance_estimate = g.opt.covariance_rows = NULL;
+      g.opt.covariance_source = NULL;
+      g.opt.covariance.a = values[start].ar;
+      g.opt.covariance.b = values[start].ma;
+      ok = prepare_candidate_manifest(&g, err, nerr) &&
+           prepare_design(&g, NULL, err, nerr) &&
+           prepare_candidate_designs(&g, err, nerr);
+      if (ok && !validate) {
+         if (g.input) DSET_delete(g.input);
+         g.input = a->input; /* Borrow loaded data and output buckets. */
+         for (j = 0; j < DATASET_COUNT; j++) g.out[j] = a->out[j];
+         g.nselected = stop-start;
+         g.vox = calloc((size_t)g.nselected, sizeof(int));
+         if (!g.vox) ok = failure(err, nerr, "cannot allocate group voxels");
+         for (i = 0; ok && i < g.nselected; i++)
+            g.vox[i] = values[start+i].voxel;
+         if (ok) ok = fit_voxels(&g, err, nerr);
+         g.input = NULL;
+         for (j = 0; j < DATASET_COUNT; j++) g.out[j] = NULL;
+      }
+      /* Options borrow the parent's heap arrays. All other group resources
+         are owned by g, including reopened header-only input/mask handles. */
+      g.opt.grid = NULL;
+      g.opt.band_values = NULL;
+      g.opt.pc_counts = NULL;
+      free_app(&g);
+   }
+   if (ok) {
+      char summary[128];
+      snprintf(summary, sizeof(summary),
+               "groups=%d exact_parameters=1 resident_groups=1", groups);
+      INFO_message("Covariance: %s", summary);
+      if (!validate)
+         for (j = 0; j < DATASET_COUNT; j++)
+            if (a->out[j]) THD_set_string_atr(a->out[j]->dblk,
+                                            "PICARD_COVARIANCE_GROUPS",
+                                            summary);
+   }
+   free(values);
+   return ok;
+}
+
 /* Adapter pipeline: parse -> manifest/designs -> allocate -> load -> fit ->
    write. Validation stops after plan creation. All paths converge on ordinary
    cleanup and return; no jump-based error handling is needed. */
@@ -4372,6 +4776,10 @@ int main(int argc, char **argv)
         prepare_candidate_manifest(&a, err, sizeof(err)) &&
         prepare_design(&a, NULL, err, sizeof(err)) &&
         prepare_candidate_designs(&a, err, sizeof(err));
+   if (ok && a.opt.validate &&
+       (a.opt.covariance_map || a.opt.covariance_estimate))
+      ok = load_inputs(&a, err, sizeof(err)) &&
+           fit_covariance_groups(&a, 1, err, sizeof(err));
    if (ok && a.opt.validate) {
       const THD_picard_design_info *d = THD_picard_plan_info(a.plan);
       int j;
@@ -4396,6 +4804,11 @@ int main(int argc, char **argv)
                 a.opt.solver.rho, a.opt.solver.standardize,
                 a.opt.solver.tolerance, a.opt.solver.max_iterations);
       printf(" AR1=%.9g SupportRefit=%d", a.opt.ar1, a.opt.support_refit);
+      if (a.opt.covariance_set)
+         printf(" Covariance=%d a=%.9g b=%.9g ResetGaps=%d Map=%s",
+                a.opt.covariance.model, a.opt.covariance.a,
+                a.opt.covariance.b, a.opt.covariance.reset_gaps,
+                a.opt.covariance_map ? a.opt.covariance_map : "none");
       if (a.opt.banded)
          printf(" BandGroups=%d PenaltyVectors=%d", a.opt.ngroup, a.opt.nband);
       printf("\n");
@@ -4424,7 +4837,9 @@ int main(int argc, char **argv)
            prepare_outputs(&a, argc, argv, err, sizeof(err)) &&
            (a.opt.single ? single_output(&a, err, sizeof(err))
                          : load_inputs(&a, err, sizeof(err))) &&
-           fit_voxels(&a, err, sizeof(err)) &&
+           ((a.opt.covariance_map || a.opt.covariance_estimate) ?
+                fit_covariance_groups(&a, 0, err, sizeof(err)) :
+                fit_voxels(&a, err, sizeof(err))) &&
            write_outputs(&a, err, sizeof(err));
       if (ok)
          INFO_message(PROGRAM ": fit %d voxels; wrote %s", a.nselected,

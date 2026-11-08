@@ -160,6 +160,13 @@ with tempfile.TemporaryDirectory(prefix='picard-single-') as folder:
     expected=phase6_fit(cx,y[good,:6],np.array(roles+[0]*nr),good,cruns,.4,'ridge',.7,None)
     assert_allclose(read('censored','betas')[:,:6],expected[0],atol=3e-5)
     assert_allclose(read('censored','fitted')[:,:6],expected[2],atol=3e-5)
+    # Unit-marginal AR1 with the same reset policy differs by an overall
+    # whitening scale: fractional ridge must preserve betas after PC addition.
+    run([BINARY,*censored,'-fraction','.7','-covariance','ar1',
+         '-covariance_ar','.4','-covariance_gaps','reset',
+         '-save_fitted','-prefix','covariance_staged'])
+    assert_allclose(read('covariance_staged','betas')[:,:6],expected[0],atol=3e-5)
+    assert_allclose(read('covariance_staged','fitted')[:,:6],expected[2],atol=3e-5)
     # Banded ridge keeps its group identities when PCs are appended to Z.
     np.savetxt('groups.1D',[[*(np.arange(p)%2),*([-1]*nr)]],fmt='%d')
     np.savetxt('bands.1D',[[.1,.8]])

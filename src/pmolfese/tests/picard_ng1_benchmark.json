@@ -1,0 +1,121 @@
+{
+  "schema_version": 4,
+  "status": "frozen_protocol_not_executed",
+  "seed": 20261108,
+  "generator": "numpy.default_rng.PCG64; independent SeedSequence children for design, beta, noise and censoring",
+  "runs": 6,
+  "tr_seconds": 1.5,
+  "observations_per_run": 240,
+  "conditions": 24,
+  "repetitions_per_condition_per_run": 2,
+  "onsets": "48 events per run; first at 12s; successive intervals Uniform(4,8)s; independently permuted balanced condition labels",
+  "hrf": "sampled unit-peak GAM shape t^5 exp(-t)/Gamma(6), duration 32s, 0.1s grid; linear interpolation to acquisition times; identical generating and fitting HRF",
+  "nuisance": "run-specific Legendre orders 0..3 on full run; true nuisance coefficients zero in core",
+  "beta": "24 fixed condition means Normal(1,0.5^2); independent trial deviations Normal(0,0.5^2); preserve truth within paired method comparisons",
+  "noise_marginal_sd": 1.0,
+  "noise_generation": "exact stationary Gaussian run covariance Cholesky; no samplewise variance renormalization",
+  "noise_cases": [
+    {
+      "model": "white"
+    },
+    {
+      "model": "ar1",
+      "ar": 0.3
+    },
+    {
+      "model": "ar1",
+      "ar": 0.6
+    },
+    {
+      "model": "arma11",
+      "ar": 0.6,
+      "ma": 0.2
+    },
+    {
+      "model": "arma11",
+      "ar": 0.8,
+      "ma": -0.5
+    },
+    {
+      "model": "arma11",
+      "ar": 0.6,
+      "ma": -0.59
+    }
+  ],
+  "fitted_models": [
+    "white",
+    "ar1",
+    "arma11"
+  ],
+  "gap_policies": [
+    "preserve",
+    "reset"
+  ],
+  "censoring_core": [
+    "none",
+    "10 percent uniform without replacement per run",
+    "two uniformly located nonoverlapping 12-TR gaps per run"
+  ],
+  "tuning_runs": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "outer_evaluation_runs": [
+    4,
+    5
+  ],
+  "ridge_fraction_grid": [
+    1.0,
+    0.9,
+    0.8,
+    0.7,
+    0.6,
+    0.5,
+    0.4,
+    0.3,
+    0.2,
+    0.1
+  ],
+  "tuning": "existing fold-local repeated-condition beta MSE on tuning runs only; minimum loss, largest fraction (weakest shrinkage) on exact ties; fraction frozen for evaluation runs",
+  "covariance_estimation": "inner folds estimate on training runs only; final estimates pool all four tuning runs with independent run blocks; full-trial and compact condition-plus-drift pilot designs; one pair shared across runs; freeze for evaluation",
+  "native_parameter_grid": {
+    "minimum": -0.9,
+    "maximum": 0.9,
+    "step": 0.1
+  },
+  "external_reference": "pin AFNI revision; record actual REML grid, sign restrictions and CORcut; do not claim it matches native grid unless verified",
+  "oracle": "true covariance only for representable truth; oracle penalty selection separately labeled, never primary",
+  "replicates_initial": 200,
+  "replicates_max": 2000,
+  "replicate_batch": 200,
+  "precision_target": "paired beta-MSE difference MCSE <= 0.01 in squared-beta units for all prespecified primary method contrasts; otherwise report unmet target at cap",
+  "primary_contrasts": [
+    "ridge minus unpenalized within fitted family",
+    "ARMA minus AR1 within estimator",
+    "preserve minus reset within estimator and family"
+  ],
+  "metrics": [
+    "evaluation trial beta MSE",
+    "bias squared and variance conditional on fixed design and beta truth across noise replicates",
+    "amplitude slope and intercept",
+    "selected fraction",
+    "covariance Frobenius error",
+    "boundary and failed fits",
+    "wall seconds",
+    "peak RSS"
+  ],
+  "failure_policy": "explicit error/status, no silent white fallback; paired summaries disclose missing pairs; publish failures by cell",
+  "later_extensions": [
+    "multivoxel geometry and decoding",
+    "HRF mismatch",
+    "noise PCs",
+    "artifact-driven censoring",
+    "run-specific covariance",
+    "structured trial effects",
+    "real test-retest data"
+  ],
+  "replicate_policy": "draw design, beta truth and censor mask once per scenario; vary only noise seed across conditional Monte Carlo replicates; additional truth/design seeds reported separately; draw innovations replicate-major then transpose so increasing replicate count preserves the prefix",
+  "revision_note": "2026-11-08, before full study: v2 corrected ties to largest fraction; v3 fixes replicate-major noise draws so cumulative precision batches preserve earlier realizations. v4 explicitly selects the lower Cholesky triangle for noise multiplication after generator variance checks exposed unused-triangle contamination in the local SciPy stack; earlier pilot noise scenarios are superseded."
+}

@@ -40,6 +40,35 @@ int THD_linproj_solve(THD_linproj_workspace *w, const double *y, int q,
    2. FIXED FITS AND REPEATED-CONDITION TUNING
    ======================================================================== */
 
+/* Fixed unit-marginal covariance. model: 0=white, 1=AR(1), 2=ARMA(1,1).
+   epsilon[t]=a*epsilon[t-1]+u[t]+b*u[t-1], finite |a|,|b|<1.
+   reset_gaps=0 preserves correlation at original TR lags; 1 restarts at gaps.
+   Runs are independent. No estimation or interpolation is performed. */
+typedef struct {
+   int model, reset_gaps;
+   double a, b;
+} THD_picard_covariance;
+
+/* Native grid REML for a supplied pilot mean model, independent responses.
+   Shared parameters across independent run blocks, one pair per response.
+   matrix[n][d], y[n][q] are row-major; row/run IDs describe estimation rows
+   only. Redundant pilot columns are reduced to an orthonormal fixed span.
+   Grid is [-0.9,0.9] by 0.1 (white: one point; AR1: b=0). No fallback.
+   status: 0=interior, 1=grid boundary, 3=flat grid, 4=tied optimum.
+   Zero variance fails. Ties within 1e-10*(1+|score|) favor smaller |a|+|b|.
+   Return 0 on invalid/saturated design or numerical failure. Results are
+   caller-owned q-element arrays; all estimates are conditional on the pilot.
+   score omits candidate-independent likelihood constants; sigma2 is marginal.
+   Memory O(n*n+n*(d+q)); factors are discarded after each grid cell. */
+typedef struct {
+   double a, b, sigma2, score, separation;
+   int rank, status;
+} THD_picard_reml_result;
+int THD_picard_reml(const double *matrix, int n, int d,
+                    const int *rows, const int *runs, const double *y, int q,
+                    int model, int reset_gaps, double rank_tol,
+                    THD_picard_reml_result *result, char *err, int nerr);
+
 #define THD_PICARD_NUISANCE 0
 #define THD_PICARD_PENALIZED 1
 /* Fixed-design workflow. matrix[n][ncol] and roles[ncol] are copied.
@@ -57,6 +86,8 @@ typedef struct {
    double rank_tol;
    int banded, ngroup, ncandidate, support_refit;
    double ar1;
+   int covariance_enabled;
+   THD_picard_covariance covariance;
    int elastic; /* 1: elastic net. Both flags zero: fractional ridge. */
 } THD_picard_design_info;
 typedef struct {
@@ -78,6 +109,9 @@ typedef struct {
    const THD_banded_config *banded;
    double ar1;
    int support_refit;
+   /* Optional copied covariance; mutually exclusive with nonzero legacy ar1.
+      NULL preserves legacy behavior. Plans own dense Cholesky factors. */
+   const THD_picard_covariance *covariance;
 } THD_picard_config;
 THD_picard_plan *THD_picard_plan_create_config(
     const double *matrix, int n, int ncol, const int *roles, const int *row_ids,
@@ -418,6 +452,7 @@ struct THD_picard_plan {
    THD_picard_design_info info;
    int *pen, *nuis, *rows, *runs;
    double *x, *z, *effective, *weighted_z;
+   double *covariance_lower;
    THD_banded_design *banded;
    THD_banded_config band_config;
    int *groups;

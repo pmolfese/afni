@@ -589,6 +589,35 @@ if(ENABLE_TESTS)
 endif()
 
 if(TARGET 3dPicard)
+  add_test(NAME 3dPicard:ng2 COMMAND ${Python_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_picard_ng2.py
+    $<TARGET_FILE:3dPicard> $<TARGET_FILE:3dDeconvolve>)
+  set_tests_properties(3dPicard:ng2 PROPERTIES
+    LABELS "3dPicard;numeric;integration"
+    ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1")
+  add_test(NAME 3dPicard:benchmark_generator COMMAND ${Python_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_picard_benchmark.py)
+  set_tests_properties(3dPicard:benchmark_generator PROPERTIES
+    LABELS "3dPicard;numeric;unit"
+    ENVIRONMENT "OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1")
+  add_test(NAME 3dPicard:reml COMMAND ${Python_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_picard_reml.py
+    $<TARGET_FILE:3dPicard>)
+  set_tests_properties(3dPicard:reml PROPERTIES
+    LABELS "3dPicard;numeric;integration"
+    ENVIRONMENT "OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1")
+  add_test(NAME 3dPicard:covariance_reference COMMAND ${Python_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_picard_covariance_reference.py)
+  set_tests_properties(3dPicard:covariance_reference PROPERTIES
+    LABELS "3dPicard;numeric;unit")
+  if(TARGET 3dREMLfit AND TARGET 3dcopy)
+    add_test(NAME 3dPicard:covariance COMMAND ${Python_EXECUTABLE}
+      ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_picard_covariance.py
+      $<TARGET_FILE:3dPicard> $<TARGET_FILE:3dREMLfit>)
+    set_tests_properties(3dPicard:covariance PROPERTIES
+      LABELS "3dPicard;numeric;integration"
+      ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1")
+  endif()
   # Keep focused behavioral tests even though the implementations now share
   # one source file. Prediction uses the existing generic fold traversal.
   foreach(component linproj picard picard_predict picard_candidates picard_single)

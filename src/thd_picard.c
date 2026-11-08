@@ -327,6 +327,7 @@ void THD_picard_plan_free(THD_picard_plan *p)
    free(p->z);
    free(p->effective);
    free(p->weighted_z);
+   free(p->covariance_lower);
    free(p->groups);
    free(p->penalties);
    THD_banded_design_free(p->banded);
@@ -335,6 +336,41 @@ void THD_picard_plan_free(THD_picard_plan *p)
    THD_elastic_design_free(p->elastic);
    free(p);
 }
+/* Build the retained-observation correlation, then its lower Cholesky
+   factor. Unit marginal variance fixes penalty units. No missing responses
+   enter this operation. Dense storage is deliberate for the initial exact
+   implementation; adapter budgets include every full/fold/candidate factor. */
+static int picard_covariance_prepare(THD_picard_plan *p, char *err, int nerr)
+{
+   int i, j, k, start = 0, n = p->info.n;
+   const THD_picard_covariance *c = &p->info.covariance;
+   double first = (c->a+c->b)*(1+c->a*c->b) /
+                  (1+2*c->a*c->b+c->b*c->b);
+   if (!p->info.covariance_enabled || c->model == 0)
+      return 1;
+   p->covariance_lower = picard_array(n, n);
+   if (!p->covariance_lower)
+      return picard_error(err, nerr, "cannot allocate covariance factor");
+   for (i = 0; i < n; i++) {
+      if (i && (p->runs[i] != p->runs[i-1] ||
+                (c->reset_gaps && p->rows[i] != p->rows[i-1]+1)))
+         start = i;
+      for (j = start; j <= i; j++) {
+         double value = i == j ? 1 :
+             first * pow(c->a, p->rows[i]-p->rows[j]-1);
+         for (k = start; k < j; k++)
+            value -= p->covariance_lower[(size_t)i*n+k] *
+                     p->covariance_lower[(size_t)j*n+k];
+         if (!isfinite(value) || (i == j && value <= 0))
+            return picard_error(err, nerr,
+                               "covariance is not positive definite");
+         p->covariance_lower[(size_t)i*n+j] = i == j ? sqrt(value) :
+             value / p->covariance_lower[(size_t)j*n+j];
+      }
+   }
+   return 1;
+}
+
 /* Apply an externally fixed stationary AR(1) transform. A fresh segment
    starts at each run/censor/fold gap; its first value gets sqrt(1-rho^2).
    Contiguous values use y[t]-rho*y[t-1]. Reverse traversal permits in-place
@@ -345,6 +381,19 @@ static void picard_whiten(const THD_picard_plan *p, const double *input, int q,
 {
    int i, o;
    double rho = p->info.ar1, first = sqrt(1 - rho * rho);
+   if (p->covariance_lower) {
+      int j, n = p->info.n;
+      for (i = 0; i < n; i++)
+         for (o = 0; o < q; o++) {
+            double value = input[(size_t)i*q+o];
+            for (j = 0; j < i; j++)
+               value -= p->covariance_lower[(size_t)i*n+j] *
+                        output[(size_t)j*q+o];
+            output[(size_t)i*q+o] =
+                value / p->covariance_lower[(size_t)i*n+i];
+         }
+      return;
+   }
    for (i = p->info.n - 1; i >= 0; i--) {
       int adjacent =
           i && p->runs[i] == p->runs[i - 1] && p->rows[i] == p->rows[i - 1] + 1;
@@ -354,6 +403,143 @@ static void picard_whiten(const THD_picard_plan *p, const double *input, int q,
                             rho * input[(size_t)(i - 1) * q + o]
                       : first * input[(size_t)i * q + o];
    }
+}
+
+/* Profile Gaussian restricted likelihood on a FIXED mean-model span.
+   With orthonormal pilot basis B, -2 log L (up to common constants) is
+   log|R| + log|B'R^-1 B| + (n-r)*log(RSS/(n-r)). Using B rather than raw
+   redundant columns makes rank handling and candidate comparisons coherent.
+   This is ordinary pilot REML, not joint estimation of ridge shrinkage. */
+int THD_picard_reml(const double *matrix, int n, int d,
+                    const int *rows, const int *runs, const double *y, int q,
+                    int model, int reset_gaps, double tol,
+                    THD_picard_reml_result *result, char *err, int nerr)
+{
+   THD_numeric_svd *pilot = NULL;
+   double *basis = NULL, *weighted = NULL, *wy = NULL, *residual = NULL;
+   double *second = NULL, *worst = NULL;
+   int rank = 0, i, j, c, o, ai, bi, ok = 1;
+   int bound = model == 0 ? 0 : 9;
+   if (!matrix || !rows || !runs || !y || !result || n < 2 || d < 1 ||
+       q < 1 || model < 0 || model > 2 ||
+       (reset_gaps != 0 && reset_gaps != 1))
+      return picard_error(err, nerr, "invalid REML inputs");
+   for (i = 0; i < n; i++) {
+      if (rows[i] < 0 || runs[i] < 0 ||
+          (i && (rows[i] <= rows[i-1] || runs[i] < runs[i-1])))
+         return picard_error(err, nerr, "invalid REML row/run identities");
+      for (o = 0; o < q; o++)
+         if (!isfinite(y[(size_t)i*q+o]))
+            return picard_error(err, nerr, "nonfinite REML response");
+   }
+   pilot = THD_numeric_svd_prepare(matrix, n, d, tol, err, nerr);
+   if (!pilot) return 0;
+   rank = pilot->rank;
+   if (rank >= n) {
+      THD_numeric_svd_free(pilot);
+      return picard_error(err, nerr, "saturated REML pilot: no residual df");
+   }
+   basis = picard_array(n, rank);
+   weighted = picard_array(n, rank);
+   wy = picard_array(n, q);
+   residual = picard_array(n, q);
+   second = picard_array(q, 1);
+   worst = picard_array(q, 1);
+   ok = basis && weighted && wy && residual && second && worst;
+   if (!ok) picard_error(err, nerr, "cannot allocate REML scratch");
+   for (j = c = 0; ok && j < pilot->r; j++)
+      if (pilot->s[j] > pilot->cutoff) {
+         for (i = 0; i < n; i++)
+            basis[(size_t)i*rank+c] = pilot->u[(size_t)i*pilot->r+j];
+         c++;
+      }
+   THD_numeric_svd_free(pilot);
+   for (o = 0; ok && o < q; o++) {
+      result[o] = (THD_picard_reml_result){0};
+      result[o].score = second[o] = INFINITY;
+      worst[o] = -INFINITY;
+      result[o].rank = rank;
+   }
+   for (ai = -bound; ok && ai <= bound; ai++)
+      for (bi = model == 2 ? -9 : 0;
+           ok && bi <= (model == 2 ? 9 : 0); bi++) {
+         THD_picard_plan transform = {0};
+         THD_linproj *projection = NULL;
+         THD_linproj_workspace *work = NULL;
+         double determinant = 0;
+         transform.info.n = n;
+         transform.info.covariance_enabled = 1;
+         transform.info.covariance = (THD_picard_covariance){
+             model, reset_gaps, ai/10.0, bi/10.0};
+         transform.rows = (int *)rows;
+         transform.runs = (int *)runs;
+         ok = picard_covariance_prepare(&transform, err, nerr);
+         if (ok) {
+            picard_whiten(&transform, basis, rank, weighted);
+            picard_whiten(&transform, y, q, wy);
+            projection = THD_linproj_prepare(weighted, n, rank, tol,
+                                             err, nerr);
+            work = THD_linproj_workspace_alloc(projection, q, err, nerr);
+            ok = work && THD_linproj_rank(projection) == rank &&
+                 THD_linproj_project(work, wy, q, residual, err, nerr);
+            if (!ok) picard_error(err, nerr,
+                                 "REML weighted pilot lost rank");
+         }
+         if (ok) {
+            if (transform.covariance_lower)
+               for (i = 0; i < n; i++)
+                  determinant += 2*log(transform.covariance_lower[
+                                           (size_t)i*n+i]);
+            if (rank)
+               for (j = 0; j < projection->svd->r; j++)
+                  determinant += 2*log(projection->svd->s[j]);
+            for (o = 0; o < q; o++) {
+               double rss = 0, score, variance;
+               for (i = 0; i < n; i++)
+                  rss += residual[(size_t)i*q+o]*residual[(size_t)i*q+o];
+               variance = rss/(n-rank);
+               if (!(variance > 0) || !isfinite(variance)) {
+                  ok = picard_error(err, nerr,
+                                    "REML response has zero/invalid "
+                                    "residual variance");
+                  break;
+               }
+               score = determinant+(n-rank)*log(variance);
+               if (score < result[o].score -
+                       1e-10*(1+fabs(score)) ||
+                   (fabs(score-result[o].score) <= 1e-10*(1+fabs(score)) &&
+                    (abs(ai)+abs(bi))/10.0 <
+                        fabs(result[o].a)+fabs(result[o].b))) {
+                  second[o] = result[o].score;
+                  result[o].score = score;
+                  result[o].sigma2 = variance;
+                  result[o].a = ai/10.0;
+                  result[o].b = bi/10.0;
+                  result[o].status = (bound && abs(ai) == 9) ||
+                                      (model == 2 && abs(bi) == 9);
+               } else if (score < second[o]) second[o] = score;
+               if (score > worst[o]) worst[o] = score;
+            }
+         }
+         THD_linproj_workspace_free(work);
+         THD_linproj_free(projection);
+         free(transform.covariance_lower);
+      }
+   for (o = 0; ok && o < q; o++) {
+      result[o].separation = isfinite(second[o]) ?
+          fmax(0, second[o]-result[o].score) : 0;
+      if (bound && result[o].separation <=
+          1e-10*(1+fabs(result[o].score))) result[o].status = 4;
+      if (bound && worst[o]-result[o].score <=
+          1e-10*(1+fabs(result[o].score))) result[o].status = 3;
+   }
+   free(basis);
+   free(weighted);
+   free(wy);
+   free(residual);
+   free(second);
+   free(worst);
+   return ok;
 }
 
 /* Whiten X and Z together, then remove the whitened nuisance span from X.
@@ -398,7 +584,9 @@ static int picard_prepare(THD_picard_plan *p, char *err, int nerr)
 static THD_picard_plan *picard_create_base(const double *matrix, int n, int d,
                                            const int *roles, const int *rows,
                                            const int *runs, int nfull,
-                                           double tol, double ar1, char *err,
+                                           double tol, double ar1,
+                                           const THD_picard_covariance *cov,
+                                           char *err,
                                            int nerr)
 {
    THD_picard_plan *p;
@@ -449,6 +637,9 @@ static THD_picard_plan *picard_create_base(const double *matrix, int n, int d,
    p->info.nfull = nfull;
    p->info.rank_tol = tol;
    p->info.ar1 = ar1;
+   p->info.covariance_enabled = cov != NULL;
+   if (cov)
+      p->info.covariance = *cov;
    p->pen = calloc((size_t)np, sizeof(int));
    p->nuis = calloc((size_t)(nk ? nk : 1), sizeof(int));
    p->rows = calloc((size_t)n, sizeof(int));
@@ -484,7 +675,8 @@ static THD_picard_plan *picard_create_base(const double *matrix, int n, int d,
    p->info.nuisance_columns = p->nuis;
    p->info.row_ids = p->rows;
    p->info.run_ids = p->runs;
-   if (!picard_prepare(p, err, nerr)) {
+   if (!picard_covariance_prepare(p, err, nerr) ||
+       !picard_prepare(p, err, nerr)) {
       THD_picard_plan_free(p);
       return NULL;
    }
@@ -512,8 +704,19 @@ THD_picard_plan *THD_picard_plan_create_config(const double *matrix, int n,
                    "invalid whitening/support/penalty configuration");
       return NULL;
    }
-   p = picard_create_base(matrix, n, d, roles, rows, runs, nfull, tol, cfg->ar1,
-                          err, nerr);
+   if (cfg->covariance) {
+      const THD_picard_covariance *c = cfg->covariance;
+      if (cfg->ar1 != 0 || c->model < 0 || c->model > 2 ||
+          (c->reset_gaps != 0 && c->reset_gaps != 1) ||
+          !isfinite(c->a) || !isfinite(c->b) ||
+          fabs(c->a) >= 1 || fabs(c->b) >= 1 ||
+          (c->model == 0 && c->a != 0) || (c->model < 2 && c->b != 0)) {
+         picard_error(err, nerr, "invalid stationary covariance");
+         return NULL;
+      }
+   }
+   p = picard_create_base(matrix, n, d, roles, rows, runs, nfull, tol,
+                          cfg->ar1, cfg->covariance, err, nerr);
    if (!p)
       return NULL;
    p->info.support_refit = cfg->support_refit;
@@ -566,7 +769,7 @@ THD_picard_plan *THD_picard_plan_create_elastic(
     const int *runs, int nfull, double tol, const THD_elastic_config *config,
     char *err, int nerr)
 {
-   THD_picard_config cfg = {config, NULL, 0, 0};
+   THD_picard_config cfg = {config, NULL, 0, 0, NULL};
    if (!config) {
       picard_error(err, nerr, "missing elastic-net configuration");
       return NULL;
@@ -584,7 +787,9 @@ THD_picard_plan *THD_picard_plan_like(const THD_picard_plan *full,
                                       int nerr)
 {
    THD_picard_config cfg = {full->elastic ? &full->config : NULL, NULL,
-                            full->info.ar1, full->info.support_refit};
+                            full->info.ar1, full->info.support_refit,
+                            full->info.covariance_enabled ?
+                                &full->info.covariance : NULL};
    THD_banded_config bc = full->band_config;
    THD_picard_plan *result;
    int *groups = NULL, j, np = 0;
@@ -2073,6 +2278,11 @@ static int candidate_compatible(const THD_picard_plan *a,
           x->nfull == y->nfull && x->rank_tol == y->rank_tol &&
           x->elastic == y->elastic && x->banded == y->banded &&
           x->ar1 == y->ar1 && x->support_refit == y->support_refit &&
+          x->covariance_enabled == y->covariance_enabled &&
+          x->covariance.model == y->covariance.model &&
+          x->covariance.reset_gaps == y->covariance.reset_gaps &&
+          x->covariance.a == y->covariance.a &&
+          x->covariance.b == y->covariance.b &&
           (!x->banded ||
            (x->ngroup == y->ngroup && x->ncandidate == y->ncandidate &&
             !memcmp(a->groups, b->groups, sizeof(int) * (size_t)x->p) &&
@@ -2849,7 +3059,9 @@ THD_picard_plan *THD_picard_noise_plan(const THD_picard_noise *s,
    }
    cfg = (THD_picard_config){!ols && p->elastic ? &p->config : NULL,
                              !ols && p->banded ? &p->band_config : NULL,
-                             p->info.ar1, !ols && p->info.support_refit};
+                             p->info.ar1, !ols && p->info.support_refit,
+                             p->info.covariance_enabled ?
+                                 &p->info.covariance : NULL};
    result = THD_picard_plan_create_config(matrix, p->info.n, d, roles, p->rows,
                                           p->runs, p->info.nfull,
                                           p->info.rank_tol, &cfg, err, nerr);
