@@ -147,6 +147,14 @@ void THD_picard_workspace_free(THD_picard_workspace *w);
 int THD_picard_fit_batch(THD_picard_workspace *w, const double *y, int q,
                          const double *parameters, char *err, int nerr);
 const THD_picard_result *THD_picard_get_result(const THD_picard_workspace *w);
+/* HRF comparison after a successful unpenalized fit. Write q losses into
+   caller-owned scores: ||L^-1 residual||^2/n for explicit covariance, ordinary
+   residual MSE otherwise (including the historical -prewhite_ar1 policy).
+   Reuses private scratch without altering the borrowed fit/result arrays.
+   Compare only candidates sharing covariance and projected rank. This is a
+   conditional fit criterion, not a REML score or held-out performance. */
+int THD_picard_selection_mse(THD_picard_workspace *w, double *scores,
+                             char *err, int nerr);
 
 /* Repeated-condition tuning is a beta-replication score, not prediction of a
    held-out time series. One trial must describe each penalized column, in the
@@ -339,7 +347,8 @@ typedef struct {
    IDs are unique nonnegative integers <=16777215, exactly representable in
    float output maps. Exact score ties choose the smallest stable ID.
 
-   HRF: select by minimum full-data OLS residual MSE, requiring equal projected
+   HRF: select by minimum full-data unpenalized residual MSE (weighted by the
+   common R^-1 for explicit covariance), requiring equal projected
    rank. This is equivalent to maximizing fit R2 with a common denominator;
    it is NOT held-out performance. Then fit the selected design at a fixed
    parameter or tune its repeated-condition betas. Full-data HRF choice means

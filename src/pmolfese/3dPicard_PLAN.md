@@ -1,11 +1,20 @@
 # 3dPicard: next-generation single-trial estimation roadmap
 
-Updated 2026-11-08. **Status: planning only; no next-generation implementation
-or benchmark results are claimed.** This update authorizes documentation, not
-implementation. New milestones use NG identifiers; completed stages 1–7 and
-the previous roadmap are preserved below the horizontal rule. This section
-supersedes historical proposals where they conflict. Review each milestone's
-results before authorizing the next implementation stage.
+Updated 2026-11-08. **Status: NG1a–NG1e and the NG2 conditional adaptive
+pipeline are implemented and tested. NG3 is next; the full precision-qualified
+simulation study remains pending.** The user authorized
+NG1b/NG1c and then NG1d/NG1e together, with confirmation of working results.
+NG1a adds the contract, benchmark protocol and independent reference solver.
+NG1b/NG1c add supplied scalar/voxelwise covariance and REML parameter import.
+NG1d/NG1e add the crossed benchmark and native two-stage pilot REML, with
+reduced-pilot numerical validation rather than a scientific superiority claim.
+NG2 combines frozen pilot covariance, weighted HRF selection, shared original-time
+noise PCs and penalized GLS. Native adaptive use requires `-covariance_freeze`;
+independent outer-partition learning/evaluation remains NG3.
+New milestones use NG identifiers; completed stages 1–7
+and the previous roadmap are preserved below the horizontal rule. This section
+supersedes historical proposals where they conflict. Review each substep's
+results before moving to the next implementation stage.
 
 ## Next milestone — NG1
 
@@ -22,7 +31,7 @@ remain useful with ordinary AFNI matrices independently of Maker.
 
 | Workstream | Implemented foundation | Missing next-generation capability |
 |---|---|---|
-| Combine HRF adaptation, denoising, and penalized GLS | Per-voxel selection among supplied compatible HRF designs; staged run-local noise PCs and PC-count selection; fractional ridge, elastic net/lasso and banded ridge; fixed scalar AR(1) applied before nuisance projection. | Supplied voxelwise covariance, estimated white/AR(1)/ARMA models, covariance preserved across censor gaps, and validation of the combined adaptive workflow. |
+| Combine HRF adaptation, denoising, and penalized GLS | Per-voxel selection among supplied compatible HRF designs; staged run-local noise PCs and PC-count selection; fractional ridge, elastic net/lasso and banded ridge; supplied scalar/voxelwise covariance and native two-stage white/AR(1)/ARMA pilot REML with explicit censor-gap policies. | NG2 now combines these components under explicitly frozen/conditional learning. NG3 must provide independent outer-partition orchestration; joint noise/penalty optimization and whole-brain performance qualification remain separate work. |
 | Support the downstream analysis contract | Native beta labels/provenance, retained/full row maps, optional beta manifests, and the documented Picard -> 1dXmatTool -> MVPA/RSA route. | Machine-readable learning/evaluation boundaries, partition-specific fit orchestration, explicit estimands/scales and uncertainty contracts, and tests of downstream geometry rather than file interchange alone. |
 | Make the shrinkage target scientifically explicit | Explicit penalized/nuisance roles, supplied coefficient units, zero-centered ridge, band-specific penalties, and repeated-condition or prediction tuning. | First-class fixed targets or condition/behavior-centered trial deviations, identifiable parameterization, target-aware tuning and exports, and validation that meaningful trial variation survives. |
 | Inference | Coefficients and fit/selection diagnostics. | No current conventional t/F inference. Conditional uncertainty is proposed separately; no ordinary t/F labels for penalized or selected estimates. |
@@ -41,16 +50,355 @@ explicit later substep, not implied by accepting imported parameter maps.
 
 | Step | Deliverable | Acceptance gate |
 |---|---|---|
-| NG1a | Freeze covariance, scale, gaps, estimation provenance and benchmark contracts; independent dense reference solver. | Hand-computable white/AR(1) cases; documented ARMA convention, stationary initialization and parameter domain; benchmark configuration and metrics fixed before comparisons. |
-| NG1b | Common covariance preparation/application interface; fixed scalar and supplied voxelwise AR(1)/ARMA parameters; explicit gap policies. | Independent GLS/ridge agreement; identity and ARMA-to-AR(1) limits; censor/run/fold checks; compatibility with existing fixed AR(1) mode. |
-| NG1c | Import 3dREMLfit parameter maps and group compatible effective designs for bounded reuse. | Matched-covariance unpenalized agreement with 3dREMLfit under declared grid/truncation/rank settings; geometry and provenance rejection tests; memory/thread measurements. |
-| NG1d | Crossed simulation harness and first report using known covariance, supplied estimates and an external REML reference. | Reproducible seeds/configurations, independent numerical oracles, tuning separated from evaluation, paired Monte Carlo uncertainty, all failures reported. External AR(1)-restricted estimation must be explicitly implemented or verified, not inferred from an unrestricted ARMA result. |
-| NG1e | Native covariance estimation, initially a documented two-stage procedure; run-shared versus run-specific and pooling policies explicitly scoped. | Likelihood/parameter recovery references, low-information diagnostics, fold-local estimation, end-to-end rerun of the crossed benchmark. If deferred, NG1 is reported as partial, with imported covariance support only. |
+| NG1a (complete) | Freeze covariance, scale, gaps, estimation provenance and benchmark contracts; independent dense reference solver. | Hand-computable white/AR(1) cases; documented ARMA convention, stationary initialization and parameter domain; benchmark configuration and metrics fixed before comparisons. |
+| NG1b (complete) | Common covariance preparation/application interface; fixed scalar and supplied voxelwise AR(1)/ARMA parameters; explicit gap policies. | Independent GLS/ridge agreement; identity and ARMA-to-AR(1) limits; censor/run/fold checks; compatibility with existing fixed AR(1) mode. |
+| NG1c (complete) | Import 3dREMLfit parameter maps and group compatible effective designs for bounded reuse. | Matched-covariance unpenalized agreement with 3dREMLfit under declared grid/truncation/rank settings; geometry and provenance rejection tests; memory/thread measurements. |
+| NG1d (implemented; initial pilot validated) | Crossed simulation harness and first report using known covariance, supplied estimates and an external REML reference. | Reproducible seeds/configurations, independent numerical oracles, tuning separated from evaluation, paired Monte Carlo uncertainty, all failures reported. Full precision-qualified study remains pending. External AR(1)-restricted estimation is implemented independently with b=0, not inferred from unrestricted AFNI ARMA. |
+| NG1e (implemented; initial pilot validated) | Native covariance estimation as a documented two-stage procedure; parameters and variance shared across runs within each voxel, without spatial pooling. | Independent likelihood/parameter recovery references, low-information diagnostics, explicit fold-local estimation rows, end-to-end reduced benchmark rerun. Integrated native CV and staged selection remain NG2 work. |
 
 Do not begin by jointly optimizing HRF, PC count, covariance and penalty in one
 large search. Establish fixed-covariance correctness first. Joint variance-
 component estimation of shrinkage and temporal covariance is a later research
 extension, particularly for datasets without repeated conditions.
+
+### NG1a frozen contract and validation — 2026-11-08
+
+Implemented artifacts (test/reference code only):
+
+- [Dense covariance/GLS reference](tests/picard_covariance_reference.py).
+- [Independent known-answer checks](tests/test_picard_covariance_reference.py).
+- [Versioned benchmark protocol](tests/picard_ng1_benchmark.json).
+
+These specify the NG1b numerical target, not new production options. The
+reference accepts one response and scalar covariance parameters; voxel maps,
+run-specific parameters and AFNI adapters belong to later substeps. It uses
+NumPy/LAPACK rather than Picard/AFNI numerical functions. Do not use the dense
+reference as the production implementation or benchmark its speed as Picard.
+
+**Covariance convention.** For white noise use R=I. AR(1) is ARMA with b=0.
+For ARMA(1,1), `epsilon[t] = a*epsilon[t-1] + u[t] + b*u[t-1]`.
+With independent innovations of variance tau^2, stationary marginal variance is
+`tau^2*(1+2*a*b+b*b)/(1-a*a)`. Normalize to unit marginal variance:
+
+- `R(0)=1`;
+- `R(k)=a^(k-1)*(a+b)*(1+a*b)/(1+2*a*b+b*b)` for integer k>=1;
+- independent run/declared segment blocks have zero cross-correlation.
+
+The plus-MA convention agrees with `LAMBDA(a,b)` in `src/remla.c` and the
+`3dREMLfit -Rvar` help. The exact oracle performs no CORcut truncation. Source
+inspection confirms convention only; numerical REMLfit parity is NG1c work.
+Mathematical input domain is finite |a|<1 and |b|<1; no clipping. White requires
+zero a/b and AR(1) zero b. Native estimation's initial grid is narrower:
+[-0.9,0.9] at 0.1 spacing, with endpoints recorded. Boundary-grid estimates are
+flagged; this grid is not claimed to reproduce AFNI's search grid. Near
+AR/MA cancellation makes parameters weakly identified even when covariance is
+well identified; benchmark both parameter diagnostics and covariance error.
+
+**Timeline.** Original row IDs are nonnegative, strictly increasing integer TR
+indices; run IDs are nonnegative and nondecreasing. Runs may be absent because
+all their samples were censored. An entirely empty fit is rejected. Preserve
+uses actual lag within each run; reset creates independent stationary segments
+at nonconsecutive rows. Singleton segments have variance one. Leading and
+trailing missing samples do not require observed initialization values.
+No interpolation, imputed observations or held-out response access is allowed.
+Stationary initialization is exact in the reference; simulation uses Cholesky
+sampling of the full stationary run covariance before censoring, not zero-start
+filtering or rescaling each realized noise vector to sample variance one.
+
+**Scale.** The reference's `penalty` is the diagonal XtX penalty alpha, so
+`alpha = n*lambda` in the normalized production objective. Legacy AR(1) uses
+`F y` with first value sqrt(1-a^2)*y[0] and subsequent differences; the new
+unit-marginal convention uses `W=F/sqrt(1-a^2)` on each reset segment.
+Therefore `alpha_new=alpha_legacy/(1-a^2)` preserves the same fit when gap
+policies match and a is common. No single rescaling generally covers different
+run-specific a values. Fractional norms use the same projected weighted design
+and reference solution; the oracle currently tests explicit alpha only, not a
+fraction selector. Minimum-norm projected coefficients and subsequent minimum-
+norm nuisance recovery define the zero-penalty endpoint. Redundant nuisance
+columns do not change the modeled nuisance span. Rank cutoff is 1e-10 relative
+to the largest singular value; fully nuisance-explained columns use the existing
+Picard 64*epsilon*max(n,k) projection-cancellation rule. Positive ridge uses
+augmented least squares without the zero-penalty projected-rank truncation.
+
+**Invalid input and provenance.** Default is explicit failure, no white-noise
+fallback. Import/native adapters must report failed/nonfinite/non-PD fits,
+missing map coverage and invalid geometry. A future opt-in fallback would need
+a separate status map and provenance. Store model, parameters, sign convention,
+normalization, run/segment/row identities, gap policy, source/checksum, source
+revision, estimation design/rows, parameter grid and truncation, estimator status,
+and whether choices came from training-only, external-full-data or oracle truth.
+Unknown external provenance is labeled unknown, never training-only. Cache keys
+must distinguish these effective fitting choices; beta output retains units.
+
+**Benchmark v1.** The JSON freezes the six-run core: four tuning runs and two
+untouched evaluation runs, fixed correct HRF, no learned PCs, balanced repeated
+conditions, stationary unit-SD noise, three fitted families, two gap policies,
+and three censor patterns. Fixed seed streams draw the design, condition means,
+trial deviations and censor mask once per scenario; hold these fixed while
+varying the noise seed across Monte Carlo replicates. This supports conditional
+bias/variance decomposition. Additional design/truth seeds are sensitivity
+analyses reported separately, not pooled as noise replicates. Reuse identical
+truth/noise/censor realizations across compared methods. The benchmark generator
+and execution harness remain NG1d work; the JSON is not an executed experiment.
+
+Covariance estimation pools tuning runs under a common parameter pair while
+respecting independent run blocks. Compare full-trial and compact condition
+pilot designs. During inner penalty tuning, re-estimate covariance using only
+that fold's training runs; after selection, re-estimate on all four tuning runs
+and freeze parameters/fraction for evaluation. Held-out trial amplitudes use
+held-out observations, but held-out condition labels cannot update parameters.
+Full-data external estimates belong in a separate conditional comparison.
+Report evaluation beta MSE, conditional bias/variance, amplitude calibration,
+selected fractions, covariance error, failure/boundary counts and resource use.
+For uncertainty estimates use paired replicate differences; add batches until
+the protocol's MCSE target or cap, reporting an unmet target explicitly. Before
+scientific conclusions, NG1d must validate the generator and executable paths,
+record the protocol hash, and disclose deviations with a new protocol version.
+
+**Validation actually run:**
+`python3 src/pmolfese/tests/test_picard_covariance_reference.py` passed all
+10 tests with Python 3.15 / NumPy 2.5.4. Checks cover hand-computed covariance
+and ridge solutions, independent MA-infinity autocovariance, white/AR limits and
+cancellation, retained-row covariance, Cholesky whitening, nuisance redundancy,
+rank-deficient and wide designs, independent normal equations for positive
+ridge, legacy penalty normalization, invalid inputs, and protocol partition
+separation. This is reference validation, not a production or scientific result.
+No compiled source/build registration changed, so Make/CMake builds were not
+run for NG1a. The oracle tests are directly runnable; test registration alongside
+the production covariance tests is NG1b work. No numerical parity with the
+existing executable or new covariance CLI support is claimed at this stage.
+
+### NG1b/NG1c implementation and validation — 2026-11-08
+
+User authorized NG1b and NG1c together, with sequential validation. Implemented
+in the existing `3dPicard.c` and `thd_picard.[ch]`; no new production source file
+or additional numerical library was introduced. New tests are registered in
+`tests/CMakeLists.txt`; existing classic Make source/header rules remain valid.
+
+Implemented behavior:
+
+- `-covariance white|ar1|arma11`, `-covariance_ar A`, `-covariance_ma B`,
+  and `-covariance_gaps preserve|reset`. Default new gap policy is preserve;
+  legacy `-prewhite_ar1` behavior remains unchanged and is mutually exclusive.
+- A copied covariance specification belongs to each immutable numerical plan.
+  Exact dense Cholesky factors use retained original TR lags and independent
+  run blocks, with optional stationary segment resets. Transform X/Z/Y before
+  nuisance projection. Training folds, candidate comparisons and augmented PC
+  plans retain their covariance specification and rebuild their own factors.
+- `-covariance_map DSET` uses brick 0 for AR(1), or bricks 0/1 for ARMA a/b.
+  Accepts `3dREMLfit -Rvar`; remaining bricks are ignored for fitting. Map
+  geometry, real numeric data types and loaded selected-voxel parameters are
+  validated. No clipping, rounding, interpolation, estimation or white fallback.
+- Exact parameter sorting groups selected voxels. One group's immutable factors
+  and per-worker scratch are resident at a time, in addition to reference plans
+  used for metadata. Every voxel in that group reuses its full/fold/candidate
+  factors. No all-voxel factor cache or per-candidate coefficient tensor.
+- Covariance factors and group storage are included in conservative memory
+  estimates; reserve a quarter of the map-mode budget for the loaded map,
+  including unused Rvar bricks. Reject oversized input before loading it.
+- Append `Picard_CovarianceAR` and `Picard_CovarianceMA` maps for the new mode;
+  outside-mask values are -1. Record model, units, sign, gap policy, source path,
+  source dataset ID/history when available, optional `-covariance_source TEXT`,
+  group count, conditional-selection status and actual parameter maps. Scalar
+  header values are explicitly overridden by maps. No conventional t/F output.
+- Validate mode with maps requires input data/mask and validates each selected
+  covariance group's factors. It does not silently validate only a placeholder
+  scalar design. Fit failures prevent output writing through the existing
+  transaction path.
+
+Scope and limitations made explicit in help:
+
+- Supplied covariance is fixed in every fold; imported full-data or unknown
+  estimates are not advertised as training-only learned covariance. Source text
+  is caller-provided provenance, not verification of an external estimation
+  protocol. Dataset ID/history and exported parameters are recorded; an external
+  source-file content checksum is not yet computed.
+- Scalar covariance supports the existing staged workflow. Voxel-map mode
+  supports ordinary, repeated-condition, prediction and candidate fitting, but
+  explicitly rejects `-single_trial` and global tuning. Their combined learning
+  policy remains NG2 work; no silently different per-group global selection.
+- Parameters are shared across runs for each voxel; run-specific parameter maps
+  are not implemented. Dense factors cost O(n^2) memory and up to O(n^3)
+  preparation time per distinct covariance/design; this is an exact first
+  implementation, not a whole-brain performance claim. Nearly unique parameter
+  maps can require many factorizations despite bounded resident memory.
+- AFNI's normal loader is used for maps. Some loader paths repair source NaN/Inf
+  before Picard can inspect values. Picard rejects invalid *loaded* parameters;
+  it cannot diagnose values already repaired upstream. Native nonfinite payload
+  rejection with AFNI_FLOATSCAN=NO is covered. Existing AFNI readers unchanged.
+- REML parity is tested using actual exported Rvar parameters and `-CORcut 0`,
+  avoiding differences from ABfile grid rounding and covariance truncation.
+  Imported parameters are used exactly; this is not native REML estimation.
+
+Validation actually run:
+
+- CMake build in `/tmp/picard_ng1_build` with Homebrew GCC 14/arm64, plus focused
+  classic Make builds of Picard and REMLfit. The initial parallel Make invocation
+  hit a pre-existing recursive NIML object-move race; serial Make succeeded.
+  No local compiler/install settings were changed or broad cleanup run.
+- All nine focused CMake tests passed: five numerical units, independent NG1a
+  oracle, new covariance integration, existing Picard integration, staged
+  single-trial integration. Later focused reruns cover added source-provenance
+  and native-map checks and staged scalar covariance after PC augmentation.
+- [Covariance integration](tests/test_picard_covariance.py) checks 20 scalar
+  GLS/ridge combinations against the independent dense oracle, original-time
+  block-fold fractional selection/refit against independent solves, exact map
+  grouping, scalar/map agreement, batch/thread invariance, invalid values and
+  geometry, memory rejection, mask sentinels, native nonfinite rejection, and
+  actual REMLfit -> Rvar -> Picard coefficient parity (3e-5 absolute/relative
+  tolerance for float output and independent numerical implementations).
+- The covariance integration also passed against classic Make executables.
+  Existing integration and staged suites are run against classic executables
+  as well; logs are under `/tmp/picard_ng1_classic_*`.
+- ASan/UBSan serial adapter built with Apple clang and exercised the covariance
+  integration, including map/group cleanup and failure paths, without sanitizer
+  findings. Shared dependency libraries were not rebuilt with sanitizers.
+- Resource smoke measurement: 256 retained rows, 192 voxels, three exact ARMA
+  groups, fractional ridge 0.7, batch 16, GCC 14 CMake executable. One/two workers
+  produced bit-identical outputs; elapsed times were 0.275/0.145 seconds and peak
+  RSS 9,469,952/9,781,248 bytes via per-child wait4. Single runs include startup
+  and I/O; these are feasibility measurements, not speedup claims or the NG1d
+  scientific benchmark. Evidence in `/tmp/picard_ng1_resources_v2`.
+
+### NG1d/NG1e implementation and validation — 2026-11-08
+
+Implemented artifacts:
+
+- [Crossed benchmark driver](tests/benchmark_picard_covariance.py) with
+  independent reference and native Picard estimation backends.
+- [Versioned protocol](tests/picard_ng1_benchmark.json), now v4. Before the full
+  study, v2 corrected exact ties to prefer the largest fraction, matching
+  Picard; v3 makes noise draws replicate-major so cumulative sample-size
+  increases preserve earlier realizations. The original NG1a record above
+  describes the historical v1 freeze. Version 4 explicitly discards the unused
+  Cholesky triangle for noise multiplication: empirical generator checks found
+  nonzero scratch entries in the local SciPy factor. Prior pilot reports are
+  superseded for noise-scenario comparisons; triangular GLS/REML solves were
+  unaffected.
+- Native `THD_picard_reml()` and CLI adapter in existing Picard sources.
+- [Native REML integration tests](tests/test_picard_reml.py) and an independent
+  weighted-QR REML oracle in the covariance reference module.
+- [Generator and adaptive-driver tests](tests/test_picard_benchmark.py) for
+  balanced run-local designs, censor counts, stationary noise, independent
+  runs, replicate-prefix preservation, precision stopping and the replicate cap.
+
+**Native estimation.** Supply `-covariance white|ar1|arma11` and
+`-covariance_estimate PILOT.xmat.1D` with a fixed penalty. The supplied pilot
+may be full-trial or compact condition-plus-nuisance; its timeline, retained
+rows, run identities and TR must match the fitting matrix. Optional
+`-covariance_rows FILE` selects strictly increasing original retained row IDs,
+one per line. Without it, estimation uses all retained rows. Explicit subsets
+allow an outer driver to estimate on training data only. Changing held-out
+responses must not change those estimates.
+
+The fixed pilot column span is reduced once by SVD to an orthonormal basis B.
+For each candidate R, minimize
+`log|R| + log|B' R^-1 B| + (n-r)*log(RSS/(n-r))`, omitting constants common
+to that pilot. Thus redundant pilot columns do not change the likelihood.
+Do not compare absolute REML scores across different pilot spans. White uses
+a=b=0; AR(1) scans a with b=0; ARMA scans a,b on [-0.9,0.9] at 0.1 spacing.
+Original TR lags and independent runs are honored for preserve/reset gaps.
+Each voxel has its own pair and marginal variance, shared across runs; there
+is no spatial pooling, run-specific covariance or joint ridge/noise fitting.
+
+Outputs append `Picard_CovarianceSigma2`, `Picard_CovarianceREML`,
+`Picard_CovarianceRank`, `Picard_CovarianceStatus`, `Picard_CovarianceAR` and
+`Picard_CovarianceMA`. Sigma2 is marginal variance, not innovation variance.
+Status is 0 interior, 1 grid boundary, 3 flat likelihood or 4 tied optimum;
+ties favor smaller |a|+|b|. Flat/tied status takes precedence over boundary
+status; boundary parameters remain visible. Saturated pilots, invalid data
+and zero residual variance fail explicitly without writing a result.
+Headers record the pilot, actual estimation rows, grid, pooling, df and status
+definitions. No conventional t/F inference is added.
+
+Historical NG1 restriction (relaxed by NG2 below): native mode rejected
+internal CV, candidate manifests and staged single-trial fitting. Estimate separately for each training fold, then freeze
+and import the resulting AR/MA maps for validation. The parameter bricks are
+the final two bricks, not the first two of the main output bucket: extract
+them before using `-covariance_map`. Integrated learning with HRF selection,
+noise PCs and penalty tuning belongs to NG2. Exact dense factorizations are
+memory-budgeted, but the grid is rescanned per response batch; this is not a
+whole-brain runtime qualification.
+
+**Crossed benchmark.** The driver crosses true noise with fitted family,
+preserve/reset gaps, censor patterns and full/compact pilot models. It compares
+unpenalized and tuned fractional GLS, known-covariance GLS and external AFNI
+ARMA REML. Every inner fold re-estimates noise using only training rows; all
+final noise/penalty choices are frozen before evaluation. Actual Picard
+evaluation coefficients are checked against independent SVD fractional GLS.
+AFNI uses `-NEGcor -Grid 3 -MAXa .9 -MAXb .9 -CORcut 0`, with actual exported
+parameters recorded. Its search is not claimed to match the native grid.
+Restricted AR(1) estimation uses the independent/native b=0 grid, because
+setting AFNI MAXb=0 does not establish an AR-only search.
+
+Reports contain paired beta-MSE contrasts and MCSE, conditional bias/variance,
+amplitude calibration, covariance error, parameter/boundary/failure records,
+executable/script/protocol hashes, revision, thread settings, wall time and
+maximum child RSS. Runtime covers the entire validation harness and must not
+be interpreted as an estimator speed comparison. Child RSS excludes the Python
+driver and is not aggregate process memory. The reduced profile uses
+4x64 TRs, four conditions twice/run, three tuning runs, one evaluation run,
+three fractions and three noise truths. Full dimensions and all censor
+patterns require `--full --censor all`; add `--adaptive` for cumulative
+200-replicate batches through 2000, stopping at the prespecified MCSE target.
+Cumulative batches recompute the same earlier realizations; reports retain
+the expansion history. Precision stopping is not a significance test.
+
+Validation and initial report are recorded below. The full six-run study,
+additional design/truth seeds, multivoxel geometry and real-data validation
+remain pending. NG2–NG4 remain separate future milestones.
+
+Example fixed-penalty native fit (pilot may equal the fitting matrix):
+
+```sh
+3dPicard -input epi+orig -matrix trials.xmat.1D \
+  -covariance arma11 -covariance_gaps preserve \
+  -covariance_estimate pilot.xmat.1D -fraction 0.7 -prefix trial_betas
+```
+
+Validation actually run:
+
+- CMake and classic Make focused builds pass with GCC 14 on arm64 macOS.
+  All 11 focused CMake tests pass, including existing ordinary/staged fitting,
+  covariance import, numerical units, native REML and generator checks.
+- Native integration passes against both built executables and an Apple clang
+  ASan/UBSan adapter, without sanitizer findings. Shared dependency libraries
+  are not sanitizer-instrumented.
+- Independent weighted-QR likelihood/variance and GLS coefficients agree for
+  white/AR(1)/ARMA and both gap policies, including redundant pilots. Tests
+  cover batch invariance, held-out response isolation, flat-likelihood status,
+  saturated/zero-variance failures, invalid estimation rows, mismatched TR and
+  rejection of implicit native internal CV. A seeded 24-response AR(1) recovery
+  probe at true a=0.6 gives mean a=0.60833 and mean marginal variance=1.00351.
+- Python reference/benchmark environment: Python 3.13, NumPy 2.5.4, SciPy
+  1.18.1, one BLAS/OpenMP thread. Generator variance checks exposed the unused
+  Cholesky triangle issue described above; the corrected stationary-noise and
+  replicate-prefix tests pass. Adaptive orchestration is tested with simulated
+  child reports; a full 200–2000 replicate adaptive study has not been run.
+
+**Initial corrected v4 report:** 32 paired noise realizations, all three censor
+patterns, both pilot models and both gap policies. Each backend produced 252
+result records and 288 paired contrasts; all 108 fitting cells passed actual
+Picard-versus-independent coefficient checks, with zero failures. The largest
+per-realization beta-MSE difference between native and reference estimation
+was 7.58e-7. Maximum paired-contrast MCSE was 0.44399, exceeding the 0.01 target;
+no method ranking or completed full-study claim follows from this pilot.
+
+| Backend | Harness wall seconds | Maximum child RSS (bytes) | Failed cells |
+|---|---:|---:|---:|
+| Independent QR REML | 64.86 | 19,693,568 | 0 |
+| Native Picard REML | 156.71 | 19,382,272 | 0 |
+
+Local reports: `/tmp/ng1d_reference_v4.json` and `/tmp/ng1e_native_v4.json`.
+Both record protocol SHA256
+`c4d1d436f5d95523ec4e29d81a83ac506595958ba692c90a210657b1086e3ce8`,
+executable hashes and the benchmark script hash. Numerical coefficient checks
+use 2e-4 absolute/relative tolerance for float dataset boundaries; the separate
+likelihood tests use tighter references. Reports are local validation artifacts,
+not repository source or a durable published dataset. To reproduce this pilot,
+run the benchmark with explicit rebuilt `--picard` and `--remlfit` paths,
+`--replicates 32 --censor all --output REPORT.json`, once with
+`--estimator reference` and once with `--estimator native`.
 
 ### Covariance and penalized GLS contract
 
@@ -94,8 +442,8 @@ Implementation responsibilities:
   Bound caches and response batches; avoid voxel-by-candidate coefficient cubes.
 - Expose covariance fit status, boundary estimates, likelihood/rank diagnostics,
   model/parameter maps and fallback reasons. An unidentifiable fit must not
-  silently become a successful white-noise fit. Default fallback policy remains
-  a decision for NG1a, with explicit failure available.
+  silently become a successful white-noise fit. NG1a fixes the default
+  policy to explicit failure; no automatic white fallback is implemented.
 - Native estimation initially profiles a documented Gaussian restricted
   likelihood on a specified pilot design with sufficient residual rank.
   Compare full-trial and compact designs; neither is universally preferred.
@@ -195,40 +543,137 @@ not establish deployable tuning performance or failure of ARMA REML.
 
 ## NG2 — Combine HRF adaptation, denoising, and penalized GLS
 
-**Current position:** the orchestration already selects supplied HRFs per voxel,
-locks that choice, builds run-specific PCs, selects PC count, and fits/tunes a
-penalty. Fixed scalar AR(1) can participate. This is a substantial foundation;
-we are missing estimated covariance and validation of the complete interaction.
-HRF candidates preserve coefficient identities and equal projected ranks;
-selection among arbitrary basis dimensions is a separate future contract.
+**Implemented and validated, 2026-11-08.** This milestone supplies the combined
+conditional workflow. It does not introduce an inductive outer-test protocol;
+that boundary remains explicit NG3 work. Supplied HRF candidates retain the
+existing equal-rank and coefficient-identity contract. Selection among arbitrary
+basis dimensions and joint covariance/shrinkage optimization remain separate.
 
-Implementation after NG1:
+### Implemented learning order and scope
 
-1. Introduce an explicit stage configuration recording which design estimates
-   covariance, when HRFs/PCs are selected and which choices are then frozen.
-   Start with a declared pilot covariance followed by HRF selection, PC-count
-   selection and penalized refit. Compare a limited alternative ordering in
-   simulations; do not assert that this order is universally optimal.
-2. Apply the selected covariance consistently to every candidate's task and
-   nuisance columns and response. Existing PCA is computed in original time
-   space after nuisance removal; retain that as the initial explicit policy,
-   then whiten PC columns as nuisance during fitting. Whitening before PCA
-   would be a different denoising method requiring its own validation.
-3. Specify HRF scoring: with covariance fixed across HRF candidates, use a
-   declared common weighted-fit criterion. If covariance is re-estimated for
-   each candidate, raw residual SSE alone is not a likelihood comparison;
-   determinant terms and differing fixed-effect spaces need careful treatment.
-   Do not compare REML values across changing mean-model spaces uncritically.
-4. Wire covariance-aware plans into fixed, repeat and prediction paths without
-   duplicating regression solvers. Keep original-unit beta and output contracts;
-   expose intermediate stages and the effective settings of each final voxel.
-5. Implement partition-aware selection under NG3 before advertising independent
-   downstream prediction performance for the adaptive pipeline.
+1. **Freeze covariance.** Accept scalar parameters, voxelwise maps or native
+   pilot REML. Native estimation happens once, on its declared pilot and actual
+   estimation rows, before HRF/PC/penalty selection. Its mean-model span is not
+   changed by the subsequent HRF choice, and it is not rerun after adding PCs.
+   A new explicit `-covariance_freeze` flag permits native estimation with
+   candidate designs, staged single-trial fitting and conditional tuning.
+   Without that opt-in, native estimation retains the NG1 fixed-penalty,
+   single-design restriction. Imported covariance is already fixed.
+2. **Select and lock each HRF.** Explicit covariance uses the common weighted
+   unpenalized criterion `e' R^-1 e / n`, with the same R across candidates for
+   a given voxel. The determinant is common; no REML scores from different
+   mean-model spans are compared. An independent fixture demonstrates that
+   this can select a different HRF from raw residual MSE. Original-unit output
+   residuals remain unchanged. Legacy `-prewhite_ar1` retains its historical
+   original-unit selection criterion; white/no-covariance behavior is preserved.
+3. **Build shared original-time PCs.** The supplied pool or coarse-model R2
+   policy is evaluated once for the session, outside covariance groups. The
+   coarse-model criterion stays unweighted in original time. Run-local PCA
+   removes the supplied nuisance span and a constant, normalizes pool responses,
+   and extracts the existing signed/unit-SD components. PCA never uses task
+   residuals or voxel-specific whitening. Its vectors may be precomputed before
+   HRF scoring because they do not depend on the HRF choice; no PCs enter the
+   HRF comparison. Whitening before PCA would be a different method.
+4. **Choose one session-level PC count.** Each covariance group supplies its
+   weighted unpenalized beta-pair losses using locked HRFs and fixed no-PC
+   reference betas. Reduce the complete PC-selection mask exactly once, across
+   all groups. A group containing no selection voxels is valid. There is no
+   hidden group-specific pool, median or PC-count decision.
+5. **Refit/tune with frozen choices.** Append the selected PCs as unpenalized
+   original-time nuisance columns, then whiten X, augmented Z and y together
+   through the existing numerical plan constructor. Fractional ridge, banded
+   ridge and elastic net reuse their existing solvers. Staged fitting supports
+   fixed or repeated-condition penalties. Ordinary fixed/repeat/prediction and
+   candidate-prediction paths also accept explicitly frozen native covariance;
+   generic prediction remains a separate mode from `-single_trial`.
 
-Acceptance: each ablation matches its isolated reference; the joint pipeline
-passes independent multi-HRF/PC/covariance/penalty fixtures, run/censor and thread
-checks; held-out responses cannot change trained parameters in inductive mode.
-Full GLMsingle equivalence is neither the criterion nor an implied claim.
+The covariance is not re-estimated inside penalty folds. Those folds still
+rebuild training designs, nuisance factors and scales from their own row IDs,
+with correct gaps; their scores are conditional on the frozen upstream choices.
+`-covariance_rows` limits **only pilot covariance estimation**. It does not limit
+HRF selection, PC learning or PC-count selection to those rows. In particular,
+restricting that file alone does not make this adaptive pipeline inductive.
+Run-specific temporal PCs also use each run's own noise-pool observations.
+No independent downstream decoding/RSA performance is claimed by this mode.
+
+Example (all matrices share the retained/full timeline, runs and TR):
+
+```sh
+3dPicard -input epi+orig -mask analysis+orig \
+  -candidate_manifest candidates.tsv -candidate_policy hrf \
+  -single_trial -trial_info trials.1D \
+  -covariance arma11 -covariance_estimate pilot.xmat.1D -covariance_freeze \
+  -noise_pool pool+orig -pc_counts 0,1,2 -pc_mask selection+orig \
+  -fractions 1,.7,.4 -save_stages -save_candidates -prefix adaptive_trials
+```
+
+### Implementation, teaching comments and outputs
+
+- `THD_picard_selection_mse()` centralizes the weighted HRF criterion for both
+  ordinary candidate selection and staged selection. Its comments derive the
+  criterion and explain why exported residuals must stay in original units.
+- `prepare_covariances()` owns the once-only pilot/import decision;
+  `covariance_output()` serializes it after the selected PC count determines
+  bucket shape. There is no second estimation pass or provisional output file.
+- `single_score()`, `single_choose_count()` and `single_build_final()` separate
+  voxel scoring, the global decision and immutable plan construction. Exact
+  covariance groups are revisited for scoring and final fitting, with one
+  group's factors resident at a time in addition to metadata/reference plans.
+  Rebuilding trades runtime for bounded memory; there is no voxel-by-HRF-by-PC
+  coefficient cube. Optional stage-B maps retain the existing bounded output
+  contract rather than being required for selection.
+- Group views borrow the parent's PCA/maps and own their final plans/workspaces.
+  Named traversal passes and teaching comments explain the call path, array
+  dimensions, lifetimes, copying versus ownership, numerical geometry, global
+  reduction and cleanup ordering. Existing authorship/attribution is preserved.
+- `PICARD_STAGE_CONFIG` records the stage order, covariance refit policy, HRF
+  rows/criterion, original-time pool/PCA policy, PC-count scope and
+  `independent_outer_evaluation=0`. `PICARD_HRF_CRITERION` identifies weighted
+  versus original-space scoring. Native headers retain the actual pilot rows,
+  parameters and status; covariance provenance records the explicit opt-in.
+- Existing beta labels/units and stage-B/C names remain compatible. B/C are
+  unpenalized GLS under the selected covariance; D uses the final penalty.
+  The candidate-diagnostic header offset now includes saved appended-PC nuisance
+  coefficients. No conventional t/F inference or uncertainty export is added.
+- Global prediction tuning with voxel-map/native covariance remains unsupported.
+  Dense covariance factors still need whole-brain performance qualification.
+  Noise/HRF/PC/penalty learning in separate outer partitions and frozen-settings
+  transfer remain NG3, including the distinction between independent nuisance
+  inputs and test-run temporal-PC adaptation.
+
+### Validation and limited ordering probe
+
+- Focused classic Make and CMake builds pass on arm64 macOS with GCC 14.
+  Production changes stay in existing Picard source/header files, so existing
+  Make/CMake source lists remain applicable. CMake registers the added test.
+- All **12 focused CMake tests pass**, including the existing fixed, repeat,
+  prediction, candidate, staged, covariance-import and native-REML regressions.
+- [NG2 integration](tests/test_picard_ng2.py) passes against CMake and classic
+  executables and the Apple clang ASan/UBSan adapter. Dependency libraries are
+  not sanitizer-instrumented. Tests independently check weighted HRF losses and
+  winners, original-time PCs, global PC-count trends, stage-B/C betas, final
+  fractional selection, nuisance coefficients and original-unit reconstruction.
+- Fixtures cover native pilot QR-REML parity and import reuse, distinct map
+  groups (including a group without selection voxels), both gap policies,
+  censoring/run boundaries, mask sentinels, batch/thread changes, white and
+  zero-PC ablations, fixed counts, unpenalized endpoints, coarse-model pooling,
+  banded/elastic solvers and native frozen prediction/candidate-prediction.
+  Rejection without the explicit adaptive opt-in leaves no partial output.
+- [Ordering/ablation probe](tests/benchmark_picard_ng2.py) compares the production
+  covariance-first order with a reference-only alternative: select an HRF under
+  white noise, estimate covariance with that locked HRF's pilot, then select
+  PCs/penalty. It also includes white, no-PC and unpenalized ablations. No REML
+  likelihood comparison crosses mean-model spans. Actual production results for
+  covariance-first are checked against the independent reference each time.
+- Eight paired realizations per fitted family (AR(1), ARMA) pass with zero
+  failures under ARMA(0.6,0.2) truth: three 36-TR runs, four signal voxels, six
+  pool voxels, fixed design/trial truth and changing noise seeds. Mean paired
+  beta-MSE difference **covariance-first minus HRF-first reference** is 0.02860
+  (MCSE 0.03226) for AR(1), and 0.01724 (MCSE 0.04324) for ARMA. This small probe
+  establishes neither an optimal ordering nor scientific superiority. It does
+  not replace the precision-qualified NG1 study or an independent NG3 evaluation.
+  Local reports are `/tmp/picard_ng2_order_ar1.json` and
+  `/tmp/picard_ng2_order_arma11.json`, with executable/script hashes and seeds.
 
 ## NG3 — Support the downstream analysis contract
 

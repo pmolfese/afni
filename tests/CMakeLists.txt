@@ -589,12 +589,14 @@ if(ENABLE_TESTS)
 endif()
 
 if(TARGET 3dPicard)
-  add_test(NAME 3dPicard:ng2 COMMAND ${Python_EXECUTABLE}
-    ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_picard_ng2.py
-    $<TARGET_FILE:3dPicard> $<TARGET_FILE:3dDeconvolve>)
-  set_tests_properties(3dPicard:ng2 PROPERTIES
-    LABELS "3dPicard;numeric;integration"
-    ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1")
+  if(TARGET 3dDeconvolve)
+    add_test(NAME 3dPicard:ng2 COMMAND ${Python_EXECUTABLE}
+      ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_picard_ng2.py
+      $<TARGET_FILE:3dPicard> $<TARGET_FILE:3dDeconvolve>)
+    set_tests_properties(3dPicard:ng2 PROPERTIES
+      LABELS "3dPicard;numeric;integration"
+      ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1")
+  endif()
   add_test(NAME 3dPicard:benchmark_generator COMMAND ${Python_EXECUTABLE}
     ${CMAKE_SOURCE_DIR}/src/pmolfese/tests/test_picard_benchmark.py)
   set_tests_properties(3dPicard:benchmark_generator PROPERTIES

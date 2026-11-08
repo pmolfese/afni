@@ -1102,6 +1102,43 @@ int THD_picard_fit_ols(THD_picard_workspace *w, const double *y, int q,
    return picard_fit_model(w, y, q, NULL, 0, 1, err, nerr);
 }
 
+/* Score the residual in the SAME geometry used to estimate the coefficients.
+   A correlated-noise GLS fit minimizes e'R^-1 e, not e'e. With R fixed across
+   HRFs, its determinant is common, so weighted SSE provides a comparable
+   criterion. We deliberately do not re-estimate R per HRF: restricted
+   likelihoods from different mean-model spans cannot simply be ranked.
+
+   Residuals exported to users remain in original data units. Only a private
+   scratch copy is whitened here; a caller can still read fitted/residual maps
+   after scoring. Keeping this operation outside fit_model avoids an extra
+   dense triangular solve in ordinary fits that do not compare HRFs. */
+int THD_picard_selection_mse(THD_picard_workspace *w, double *scores,
+                             char *err, int nerr)
+{
+   const double *residual;
+   int row, response, n, q;
+   if (!w || !w->valid || !scores)
+      return picard_error(err, nerr, "HRF scoring needs a successful fit");
+   n = w->result.n;
+   q = w->result.q;
+   residual = w->residual;
+   if (w->plan->info.covariance_enabled) {
+      picard_whiten(w->plan, residual, q, w->whitened);
+      residual = w->whitened;
+   }
+   for (response = 0; response < q; response++) {
+      long double mse = 0;
+      for (row = 0; row < n; row++) {
+         long double value = residual[(size_t)row*q+response];
+         mse += value*value/n;
+      }
+      if (!isfinite(mse) || mse > DBL_MAX)
+         return picard_error(err, nerr, "HRF selection loss exceeds range");
+      scores[response] = (double)mse;
+   }
+   return 1;
+}
+
 /* NULL means no successful current fit. The returned view belongs to w and
    remains usable only until its next fit attempt or destruction. */
 const THD_picard_result *THD_picard_get_result(const THD_picard_workspace *w)
@@ -2611,7 +2648,6 @@ static int candidate_fit(THD_picard_candidates_workspace *w, const double *y,
       so neither is an independent assessment of the final chosen workflow. */
    for (c = 0; !forced && c < p->count; c++) {
       const THD_picard_predict_result *prediction = NULL;
-      const THD_picard_result *ols = NULL;
       if (w->predict[c]) {
          if (!THD_picard_predict_fit(w->predict[c], y, q, 0, -1, err, nerr))
             return 0;
@@ -2619,18 +2655,16 @@ static int candidate_fit(THD_picard_candidates_workspace *w, const double *y,
       } else {
          if (!THD_picard_fit_ols(w->fixed[c], y, q, err, nerr))
             return 0;
-         ols = THD_picard_get_result(w->fixed[c]);
+         if (!THD_picard_selection_mse(w->fixed[c], w->design_loss+(size_t)c*q,
+                                        err, nerr))
+            return 0;
       }
       for (o = 0; o < q; o++) {
          long double mse = 0;
          if (prediction)
             mse = prediction->loss[o];
-         else {
-            for (i = 0; i < d->n; i++) {
-               long double residual = ols->residual[(size_t)i * q + o];
-               mse += residual * residual / d->n;
-            }
-         }
+         else
+            mse = w->design_loss[(size_t)c*q+o];
          if (!isfinite(mse) || mse > DBL_MAX)
             return candidate_error(err, nerr,
                                    "candidate selection loss exceeds range");

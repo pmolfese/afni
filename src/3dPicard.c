@@ -21,6 +21,8 @@
      5. prepare_outputs() and write_outputs() package and save the results.
      6. single_prepare() adds the optional staged single-trial workflow.
      7. The manifest section above App owns candidate-table parsing.
+     8. prepare_covariances() freezes the pilot noise model; covariance_groups()
+        revisits one exact parameter group at a time for selection and fitting.
 
    Staged fitting has two distinct lifetimes. The serial prepass estimates
    noise PCs, freezes each voxel's original HRF choice, and selects one PC
@@ -29,6 +31,14 @@
    OLS maps are optional; scalar choices and provenance always survive until
    output. thd_picard.c section 5 owns the PCA/scoring math, while this adapter
    decides which spatial voxels enter each stage.
+
+   With voxelwise covariance, there are two serial/group passes around one
+   session-level decision. First, every group supplies HRF choices and scalar
+   PC-count losses. Next, the complete selection mask chooses one PC count.
+   Finally, groups are rebuilt with that count and their own covariance before
+   worker fitting. The shared PCA vectors never depend on group membership.
+   Rebuilding factors trades time for bounded memory; copying a small Single
+   view does NOT copy ownership of its maps or PCA accumulator.
 
    A "plan" is reusable work determined by the design, such as a matrix
    factorization. A "workspace" holds changing values for one batch of voxels.
@@ -97,6 +107,7 @@ typedef struct {
    THD_picard_covariance covariance;
    char *covariance_map, *covariance_source;
    char *covariance_estimate, *covariance_rows;
+   int covariance_freeze; /* Explicitly accept conditional adaptive scores. */
    double lambda;
    THD_elastic_config solver;
    double *grid;
@@ -575,6 +586,7 @@ typedef struct {
    for trial labels, the pre-PC HRF comparison and provenance. */
 typedef struct {
    int nh, chosen, nrun, added, nscore;
+   int shared_data; /* Group views borrow maps/PCA; final plans remain owned. */
    unsigned char *pool, *select;
    int *hrf;
    double *hrf_loss, *design_loss, *noise_r2, *beta_b, *trend;
@@ -582,6 +594,16 @@ typedef struct {
    THD_picard_plan **final;
    THD_picard_candidates *collection;
 } Single;
+
+/* One immutable covariance choice per selected voxel. Keeping this small
+   record, rather than all voxel-specific factorizations, makes it possible to
+   revisit groups for HRF/PC scoring and then final fitting with bounded memory.
+   Native likelihood diagnostics travel with their voxel through sorting. */
+typedef struct {
+   double ar, ma;
+   int voxel;
+   THD_picard_reml_result estimate;
+} CovarianceVoxel;
 
 /* Zero-initialized owner: free_app also handles partial setup failures.
    "Owns" means this object must eventually free the allocation. "Borrows"
@@ -610,12 +632,24 @@ typedef struct {
    int nvox, nselected;
    double *matrix; /* Temporary row-major copy, released after plan creation. */
    Worker *workers;
+   CovarianceVoxel *covariances;
+   char *covariance_estimation, *covariance_source_id, *covariance_history;
 } App;
 
 static void free_app(App *a);
 static int single_prepare(App *a, char *err, int nerr);
 static int single_output(App *a, char *err, int nerr);
 static int single_start(const App *a);
+/* Named passes make the two-stage group traversal visible at call sites.
+   Validation creates factors without fitting; scoring fills shared scalar
+   losses; final fitting consumes the now-frozen session-level choices. */
+typedef enum {
+   COVARIANCE_VALIDATE,
+   COVARIANCE_SCORE,
+   COVARIANCE_FIT
+} CovariancePass;
+static int covariance_groups(App *a, CovariancePass pass, double *scores,
+                             char *err, int nerr);
 
 /* Write a caller-owned error buffer and return false for concise checks. */
 static int failure(char *err, int nerr, const char *msg)
@@ -677,10 +711,12 @@ static void help(void)
       "whitening or automatic drift polynomials are used to estimate PCs.\n"
       "Requested PCs exceeding any run's numerical noise rank cause an error.\n"
       "Selected PCs enter as unpenalized, run-local nuisance columns; final\n"
-      "fitting preserves the chosen estimator and any fixed AR(1) policy.\n"
+      "fitting whitens PC columns with task/nuisance columns and response.\n"
+      "Scalar, mapped and native covariance use the same staged workflow.\n"
+      "Covariance groups share ONE noise pool and session-level PC count.\n"
       "\n"
-      "PC-count scoring compares cross-run, same-condition OLS trial betas\n"
-      "with a FIXED no-PC OLS reference. Pair MSE is divided by the reference\n"
+      "PC-count scoring compares cross-run, same-condition unpenalized betas\n"
+      "with a FIXED no-PC unpenalized reference. Pair MSE is divided by the reference\n"
       "sample beta variance, then the median is taken over pc_mask voxels.\n"
       "Zero-variance voxels are excluded; all undefined is an error. This is\n"
       "one-session scoring. Later penalty tuning uses the existing repeat\n"
@@ -798,7 +834,7 @@ static void help(void)
       "\n"
       "WHITENING AND SUPPORT REFITS -- CHECK THE INERTIAL DAMPERS\n"
       "-------------------------------------------------------\n"
-      "  -covariance white|ar1|arma11  Fixed unit-marginal covariance.\n"
+      "  -covariance white|ar1|arma11  Unit-marginal covariance family.\n"
       "  -covariance_ar A      AR parameter, default 0, strictly (-1,1).\n"
       "  -covariance_ma B      MA parameter (arma11 only), default 0.\n"
       "  -covariance_gaps preserve|reset  Default preserve: actual TR lags.\n"
@@ -807,9 +843,15 @@ static void help(void)
       "Default estimation uses all retained rows. Pilot must share the full\n"
       "timeline/censor/run map. AR/MA grid is [-.9,.9] by .1; AR1 fixes B=0.\n"
       "Parameters are shared across runs per voxel; no spatial pooling.\n"
-      "Native mode requires fixed penalty, not internal CV or staged fits.\n"
-      "For tuning, estimate separately on each training fold using rows,\n"
-      "freeze parameters, then fit validation data with the resulting maps.\n"
+      "  -covariance_freeze    Allow native covariance with adaptive fits.\n"
+      "This explicitly freezes the pilot estimate BEFORE HRF/PC/penalty\n"
+      "selection. All subsequent tuning scores are CONDITIONAL on it; the\n"
+      "pilot is NOT re-estimated in inner folds or after adding PCs. Without\n"
+      "this flag native estimation requires one design and fixed penalty.\n"
+      "For fold-local noise learning, use covariance_rows and explicit outer\n"
+      "fits. HRF/PC choices still use all retained fitting rows in this mode;\n"
+      "restricting pilot rows alone does not make the full pipeline inductive.\n"
+      "No independent outer-partition protocol is implemented here.\n"
       "Saturated pilots or zero residual variance fail explicitly. Outputs\n"
       "include marginal Sigma2, REML score, pilot rank, status and AR/MA.\n"
       "Status: 0 interior, 1 boundary, 3 flat, 4 tied; outside mask -1.\n"
@@ -819,9 +861,9 @@ static void help(void)
       "Without covariance_estimate, supply parameters. MA uses +B*u[t-1].\n"
       "Runs are independent; censored samples stay excluded, never filled.\n"
       "Exact dense Cholesky factors are memory-budgeted and shared by equal\n"
-      "parameter groups. No parameter rounding. Map mode excludes staged\n"
-      "single_trial and global tuning (future integration); scalar mode\n"
-      "supports existing workflows. Map estimates remain externally supplied\n"
+      "parameter groups. No parameter rounding. Map/native modes support\n"
+      "staged single_trial; global prediction tuning remains unsupported.\n"
+      "Map estimates remain externally supplied\n"
       "in every fold: scores are conditional, not independent noise tuning.\n"
       "Invalid loaded parameters/geometry fail; no white fallback. AFNI\n"
       "loaders may repair NaN/Inf; repaired values cannot be detected.\n"
@@ -840,8 +882,10 @@ static void help(void)
       "Fitts/errts and selection scores stay in original data/coefficient\n"
       "units;\n"
       "conditional prediction still projects the held-out nuisance span.\n"
-      "HRF selection uses unpenalized fits with the chosen whitening policy,\n"
-      "then compares original-unit residual MSE. It remains selection-only.\n"
+      "Legacy prewhite_ar1 HRF selection keeps original-unit residual MSE.\n"
+      "Explicit -covariance HRF selection uses e'R^-1 e/n with the SAME\n"
+      "fixed R for all candidates, including stage B. No cross-HRF REML\n"
+      "comparison is made. Both criteria remain selection-only.\n"
       "This is fixed AR(1), not voxel-specific ARMA estimation or REML\n"
       "fitting.\n"
       "\n"
@@ -1134,8 +1178,9 @@ static void help(void)
       "                             choose its smallest selected MSE.\n"
       "  -save_candidates           Add each design's MSE to the bucket.\n"
       "\n"
-      "HRF policy uses minimum OLS residual MSE before applying any\n"
-      "requested penalty. With the common nuisance span and response\n"
+      "HRF policy uses minimum unpenalized residual MSE before applying any\n"
+      "requested penalty; explicit covariance weights residuals by R^-1.\n"
+      "With the common covariance, nuisance span and response\n"
       "denominator, this selects the same winner as maximum fit R2.\n"
       "Candidates must have equal projected rank. Use a fixed\n"
       "fraction/lambda, or a parameter grid with -trial_info. HRF choice\n"
@@ -1525,6 +1570,10 @@ static int parse_options(int argc, char **argv, Options *o, char *err, int nerr)
          o->single = 1;
          continue;
       }
+      if (!strcmp(arg, "-covariance_freeze")) {
+         o->covariance_freeze = 1;
+         continue;
+      }
       if (!strcmp(arg, "-save_stages")) {
          o->save_stages = 1;
          continue;
@@ -1751,10 +1800,9 @@ static int parse_options(int argc, char **argv, Options *o, char *err, int nerr)
         (o->covariance.model < 2 && o->covariance.b != 0)))
       return failure(err, nerr, "parameters incompatible with covariance");
    if (o->covariance_map && (o->covariance_parameters ||
-       o->covariance.model == 0 || o->single || o->global))
+       o->covariance.model == 0 || o->global))
       return failure(err, nerr,
-          "covariance_map: no scalar parameters, white, single_trial or "
-          "global tuning; staged voxel covariance is deferred to NG2");
+          "covariance_map: no scalar parameters, white or global tuning");
    if (o->covariance_source && !o->covariance_map)
       return failure(err, nerr, "covariance_source requires covariance_map");
    if (o->support_refit && (!o->elastic || o->solver.rho <= 0))
@@ -1891,13 +1939,17 @@ static int parse_options(int argc, char **argv, Options *o, char *err, int nerr)
       return failure(err, nerr, "noise/PC/stage options require single_trial");
    if (o->covariance_rows && !o->covariance_estimate)
       return failure(err, nerr, "covariance_rows requires covariance_estimate");
+   if (o->covariance_freeze && !o->covariance_estimate)
+      return failure(err, nerr, "covariance_freeze requires covariance_estimate");
    if (o->covariance_estimate &&
-       (o->covariance_map || o->covariance_parameters || o->single ||
-        o->candidate_manifest || o->ngrid || o->global || !o->input))
+       (o->covariance_map || o->covariance_parameters || o->global || !o->input ||
+        (!o->covariance_freeze &&
+         (o->single || o->candidate_manifest || o->ngrid))))
       return failure(err, nerr,
-          "native covariance requires input and fixed penalty; no maps, "
-          "scalar parameters, candidates, staged mode or internal CV. "
-          "For fold-local tuning use covariance_rows and explicit folds.");
+          "native covariance requires input and fixed penalty, or explicit "
+          "covariance_freeze for conditional candidate/staged/tuned fits; "
+          "no maps, scalar parameters or global tuning. For fold-local "
+          "noise estimation use covariance_rows and explicit outer fits.");
    if (o->mask && !o->input)
       return failure(err, nerr, "mask requires input");
    if ((o->input && strchr(o->input, '[')) || (o->mask && strchr(o->mask, '[')))
@@ -2790,6 +2842,8 @@ static int attach_prediction_provenance(App *a, THD_3dim_dataset *out,
        out->dblk, "PICARD_TUNING",
        "prediction-v1; shared columns; training-only fits/scales/penalty "
        "preparation; "
+       "conditional on supplied/frozen covariance; covariance estimation "
+       "is NOT repeated inside these folds; "
        "train nuisance predicts from training gamma; project nuisance scores "
        "P(Ztest)Ytest against P(Ztest)Xtest beta (conditional signal). "
        "Baseline is training Y mean through the same test projection. "
@@ -2846,7 +2900,9 @@ static int attach_candidate_provenance(App *a, THD_3dim_dataset *out, char *err,
    }
    policy =
        a->opt.hrf_policy
-           ? "candidates-v1 HRF: minimum full-data unregularized residual MSE; "
+           ? "candidates-v2 HRF: minimum full-data unregularized residual MSE; "
+             "explicit covariance uses e'R^-1 e/n with common fixed R; "
+             "legacy prewhite_ar1 retains original-unit residual MSE; "
              "equal projected rank; common nuisance values; no CV for HRF "
              "choice. "
              "Then fixed-parameter fit or repeated-condition tuning on the "
@@ -2870,6 +2926,10 @@ static int attach_candidate_provenance(App *a, THD_3dim_dataset *out, char *err,
    THD_set_string_atr(out->dblk, "PICARD_CANDIDATE_POLICY",
                       a->opt.candidate_policy);
    THD_set_string_atr(out->dblk, "PICARD_CANDIDATE_SELECTION", (char *)policy);
+   if (a->opt.hrf_policy)
+      THD_set_string_atr(out->dblk, "PICARD_HRF_CRITERION",
+          a->opt.covariance_set ? "weighted_residual_SSE_over_n"
+                                : "original_residual_SSE_over_n");
    THD_set_string_atr(
        out->dblk, "PICARD_CANDIDATE_MAPS",
        "DesignID=stable manifest ID; DesignIndex=zero-based manifest row; "
@@ -2881,7 +2941,7 @@ static int attach_candidate_provenance(App *a, THD_3dim_dataset *out, char *err,
        "ranks.");
    if (out == a->out[OUT_MAIN]) {
       start = THD_picard_plan_info(a->plan)->p +
-              (a->opt.save_nuis ? THD_picard_plan_info(a->plan)->k : 0) +
+              saved_nuisance_count(a) +
               design_diagnostic_start(a);
       THD_set_int_atr(out->dblk, "PICARD_DESIGN_DIAGNOSTIC_START", 1, &start);
    }
@@ -3008,6 +3068,8 @@ static int attach_provenance(App *a, THD_3dim_dataset *out, char *err, int nerr)
           "normalization=unit_marginal "
           "MA_sign=plus factor=exact_dense_cholesky "
           "map=%s source=%s selection=conditional_on_covariance_parameters "
+          "native_policy=pilot_frozen_before_selection "
+          "inner_fold_covariance_refit=0 native_freeze_opt_in=%d "
           "voxel_parameters_override_scalars=1 "
           "parameter_bricks=CovarianceAR,CovarianceMA",
           a->opt.covariance.model == 0 ? "white" :
@@ -3017,7 +3079,8 @@ static int attach_provenance(App *a, THD_3dim_dataset *out, char *err, int nerr)
           a->opt.covariance_map ? a->opt.covariance_map : "none",
           a->opt.covariance_source ? a->opt.covariance_source :
           a->opt.covariance_map ? "unknown_external" :
-          a->opt.covariance_estimate ? "native_pilot_REML" : "fixed_scalar");
+          a->opt.covariance_estimate ? "native_pilot_REML" : "fixed_scalar",
+          a->opt.covariance_freeze);
       if (!cov) {
          free(text);
          return failure(err, nerr, "cannot allocate covariance metadata");
@@ -3066,6 +3129,8 @@ static int attach_provenance(App *a, THD_3dim_dataset *out, char *err, int nerr)
           out->dblk, "PICARD_TUNING",
           "repeat-v2: leave-one-run-out; fold-local nuisance, scaling and "
           "penalty preparation; "
+          "conditional on supplied/frozen covariance; no inner-fold "
+          "covariance re-estimation; "
           "all ordered cross-run same-condition trial pairs against held-out "
           "OLS; "
           "pooled MSE in coefficient units, pair-weighted; no session "
@@ -3522,11 +3587,16 @@ static int single_compare_double(const void *left, const void *right)
    double a = *(const double *)left, b = *(const double *)right;
    return (a > b) - (a < b);
 }
-/* Pick HRFs once using pre-PC unpenalized fits. Each count then uses that
-   fixed choice, a fixed zero-PC beta reference and the same selection voxels.
-   Only scalar selection losses are retained across count/voxel combinations;
-   coefficient arrays stay bounded by batch size. */
-static int single_select(App *a, char *err, int nerr)
+/* Score one set of voxels under its fixed covariance. First choose each
+   voxel's HRF from no-PC unpenalized fits in the declared residual geometry.
+   Then evaluate every PC count using that locked HRF and the same no-PC beta
+   reference. This function never chooses a session-level PC count.
+
+   scores[PC_count][spatial_voxel] belongs to the caller and spans ALL groups.
+   It keeps scalar losses only; temporary beta arrays are bounded by batch
+   size. Spatial indexing allows a later reducer to visit the complete mask in
+   its original order, regardless of the order covariance groups were scored. */
+static int single_score(App *a, double *scores, char *err, int nerr)
 {
    Single *s = a->single;
    const THD_picard_design_info *d = THD_picard_plan_info(a->plan);
@@ -3537,11 +3607,9 @@ static int single_select(App *a, char *err, int nerr)
    double *reference = calloc((size_t)d->p * a->opt.batch, sizeof(double));
    double *beta = calloc((size_t)d->p * a->opt.batch, sizeof(double));
    double *loss = calloc((size_t)a->opt.batch, sizeof(double));
-   double *scores = calloc((size_t)a->opt.npc * a->nselected, sizeof(double));
-   double *median = calloc((size_t)a->nselected, sizeof(double));
-   int c, h, i, j, o, start, q,
+   int c, h, j, o, start, q,
        ok = base && pcplan && pcwork && y && reference && beta && loss &&
-            scores && median;
+            scores;
    if (!ok)
       failure(err, nerr, "cannot allocate staged selection buffers");
    for (h = 0; h < s->nh && ok; h++) {
@@ -3562,25 +3630,19 @@ static int single_select(App *a, char *err, int nerr)
          if (!ok)
             break;
          fit = THD_picard_get_result(base[h]);
+         ok = THD_picard_selection_mse(base[h], loss, err, nerr);
+         if (!ok) break;
          for (o = 0; o < q; o++) {
             int v = a->vox[start + o];
-            long double mse = 0;
+            double mse = loss[o];
             int id = a->manifest ? a->manifest->entry[h].id : 0;
             int prior = a->manifest ? a->manifest->entry[s->hrf[v]].id : 0;
-            for (i = 0; i < d->n; i++) {
-               long double e = fit->residual[(size_t)i * q + o];
-               mse += e * e / d->n;
-            }
-            if (!isfinite(mse) || mse > DBL_MAX) {
-               ok = failure(err, nerr, "HRF MSE exceeds range");
-               break;
-            }
             if (s->design_loss)
-               s->design_loss[(size_t)h * a->nvox + v] = (double)mse;
-            if (!h || (double)mse < s->hrf_loss[v] ||
-                ((double)mse == s->hrf_loss[v] && id < prior)) {
+               s->design_loss[(size_t)h * a->nvox + v] = mse;
+            if (!h || mse < s->hrf_loss[v] ||
+                (mse == s->hrf_loss[v] && id < prior)) {
                s->hrf[v] = h;
-               s->hrf_loss[v] = (double)mse;
+               s->hrf_loss[v] = mse;
                if (s->beta_b)
                   for (j = 0; j < d->p; j++)
                      s->beta_b[(size_t)j * a->nvox + v] =
@@ -3625,7 +3687,7 @@ static int single_select(App *a, char *err, int nerr)
                                         loss, err, nerr);
          if (ok)
             for (o = 0; o < q; o++)
-               scores[(size_t)c * a->nselected + start + o] = loss[o];
+               scores[(size_t)c * a->nvox + a->vox[start + o]] = loss[o];
       }
       for (h = 0; h < s->nh; h++) {
          THD_picard_workspace_free(pcwork[h]);
@@ -3634,6 +3696,34 @@ static int single_select(App *a, char *err, int nerr)
          pcplan[h] = NULL;
       }
    }
+   for (h = 0; h < s->nh; h++) {
+      if (base)
+         THD_picard_workspace_free(base[h]);
+      if (pcwork)
+         THD_picard_workspace_free(pcwork[h]);
+      if (pcplan)
+         THD_picard_plan_free(pcplan[h]);
+   }
+   free(base);
+   free(pcwork);
+   free(pcplan);
+   free(y);
+   free(reference);
+   free(beta);
+   free(loss);
+   return ok;
+}
+/* Reduce once across the original selection mask, after ALL covariance
+   groups have supplied their losses. A group's size/order must not change the
+   scientific question from "one session-level count" to "one count per noise
+   parameter". Spatial indexing also makes the reduction order independent of
+   covariance sorting, batches and worker scheduling. */
+static int single_choose_count(App *a, const double *scores, char *err, int nerr)
+{
+   Single *s = a->single;
+   double *median = calloc((size_t)a->nselected, sizeof(double));
+   int c, i, ok = median != NULL;
+   if (!ok) return failure(err, nerr, "cannot allocate PC median scratch");
    if (ok && a->opt.npc > 1) {
       /* Eligibility depends only on the fixed zero-PC reference variance.
          Reuse that same voxel set for every count: changing denominators or
@@ -3641,8 +3731,8 @@ static int single_select(App *a, char *err, int nerr)
       for (c = 0; c < a->opt.npc; c++) {
          int count = 0;
          for (i = 0; i < a->nselected; i++)
-            if (s->select[a->vox[i]] && scores[i] >= 0)
-               median[count++] = scores[(size_t)c * a->nselected + i];
+            if (s->select[a->vox[i]] && scores[a->vox[i]] >= 0)
+               median[count++] = scores[(size_t)c * a->nvox + a->vox[i]];
          if (!count) {
             ok = failure(err, nerr,
                          "PC mask has no defined reference beta variance");
@@ -3663,35 +3753,54 @@ static int single_select(App *a, char *err, int nerr)
       }
    } else if (ok)
       s->chosen = a->opt.pc_counts[0];
-   for (h = 0; h < s->nh; h++) {
-      if (base)
-         THD_picard_workspace_free(base[h]);
-      if (pcwork)
-         THD_picard_workspace_free(pcwork[h]);
-      if (pcplan)
-         THD_picard_plan_free(pcplan[h]);
-   }
-   free(base);
-   free(pcwork);
-   free(pcplan);
-   free(y);
-   free(reference);
-   free(beta);
-   free(loss);
-   free(scores);
    free(median);
    return ok;
 }
+
+/* Freeze the chosen PC count into newly owned fitting plans. The PCA
+   accumulator remains in original time space; noise_plan appends its columns
+   BEFORE the ordinary plan constructor whitens X, Z and each response. Thus
+   PCs are nuisance regressors in the same GLS geometry as the task columns.
+   This helper is also used by temporary covariance-group views. */
+static int single_build_final(App *a, char *err, int nerr)
+{
+   Single *s = a->single;
+   THD_picard_candidates_config cfg = {0};
+   int *ids = NULL, c, ok = 1;
+   s->added = s->chosen * s->nrun;
+   ids = calloc((size_t)s->nh, sizeof(int));
+   if (!ids)
+      return failure(err, nerr, "cannot allocate staged HRF IDs");
+   for (c = 0; c < s->nh && ok; c++) {
+      ids[c] = a->manifest ? a->manifest->entry[c].id : 0;
+      s->final[c] = THD_picard_noise_plan(s->noise, single_base(a, c),
+                                          s->chosen, 0, err, nerr);
+      ok = s->final[c] != NULL;
+   }
+   cfg.policy = THD_PICARD_SELECT_HRF;
+   cfg.nparameter = a->opt.ngrid;
+   cfg.fixed_parameter = a->opt.fraction;
+   cfg.parameters = a->opt.grid;
+   cfg.trials = a->opt.ngrid ? a->trials : NULL;
+   if (ok)
+      s->collection =
+          THD_picard_candidates_create((const THD_picard_plan *const *)s->final,
+                                       ids, s->nh, &cfg, err, nerr);
+   free(ids);
+   if (!s->collection)
+      return 0;
+   return 1;
+}
+
 /* All learned settings become immutable before the OpenMP voxel-fitting loop.
    The final candidate collection receives locked HRFs, so added PCs cannot
    change their identities. App owns partial setup on every failure path. */
 static int single_prepare(App *a, char *err, int nerr)
 {
    Single *s;
-   THD_picard_candidates_config cfg = {0};
-   double *y = NULL;
-   int *poolvox = NULL, *ids = NULL;
-   int i, c, q, start, npool = 0, ok = 1,
+   double *y = NULL, *scores = NULL;
+   int *poolvox = NULL;
+   int i, q, start, npool = 0, ok = 1,
                        maxpc = a->opt.pc_counts[a->opt.npc - 1];
    a->single = s = calloc(1, sizeof(*s));
    if (!s)
@@ -3762,32 +3871,26 @@ static int single_prepare(App *a, char *err, int nerr)
    }
    free(poolvox);
    free(y);
+   if (ok) ok = THD_picard_noise_finish(s->noise, err, nerr);
+   /* PCA can be computed before the HRF comparison because its input is the
+      declared pool after original-time nuisance removal, not task residuals.
+      No PC column enters the HRF fits: single_score first locks no-PC HRFs,
+      and only then evaluates counts using those same fixed choices. */
+   /* Score only one covariance group at a time, retaining scalar losses.
+      Full voxel-by-HRF-by-PC coefficient arrays would be much larger and are
+      unnecessary: the fixed no-PC reference is recomputed in bounded batches. */
+   if (ok) {
+      scores = calloc((size_t)a->opt.npc*a->nvox, sizeof(double));
+      if (!scores) ok = failure(err, nerr, "cannot allocate PC scores");
+   }
    if (ok)
-      ok = THD_picard_noise_finish(s->noise, err, nerr) &&
-           single_select(a, err, nerr);
+      ok = a->covariances ? covariance_groups(a, COVARIANCE_SCORE, scores, err, nerr)
+                          : single_score(a, scores, err, nerr);
+   if (ok) ok = single_choose_count(a, scores, err, nerr);
+   free(scores);
    if (!ok)
       return 0;
-   s->added = s->chosen * s->nrun;
-   ids = calloc((size_t)s->nh, sizeof(int));
-   if (!ids)
-      return failure(err, nerr, "cannot allocate staged HRF IDs");
-   for (c = 0; c < s->nh && ok; c++) {
-      ids[c] = a->manifest ? a->manifest->entry[c].id : 0;
-      s->final[c] = THD_picard_noise_plan(s->noise, single_base(a, c),
-                                          s->chosen, 0, err, nerr);
-      ok = s->final[c] != NULL;
-   }
-   cfg.policy = THD_PICARD_SELECT_HRF;
-   cfg.nparameter = a->opt.ngrid;
-   cfg.fixed_parameter = a->opt.fraction;
-   cfg.parameters = a->opt.grid;
-   cfg.trials = a->opt.ngrid ? a->trials : NULL;
-   if (ok)
-      s->collection =
-          THD_picard_candidates_create((const THD_picard_plan *const *)s->final,
-                                       ids, s->nh, &cfg, err, nerr);
-   free(ids);
-   if (!s->collection)
+   if (!single_build_final(a, err, nerr))
       return 0;
    INFO_message(
        PROGRAM
@@ -3843,15 +3946,18 @@ static int single_output(App *a, char *err, int nerr)
                            a->opt.pc_counts[i], s->trend[i]);
    policy = THD_zzprintf(
        NULL,
-       "single-trial-v1; HRF=full-data no-PC unregularized fit, frozen; "
+       "single-trial-v2; HRF=full-data no-PC unregularized fit, frozen; "
+       "explicit covariance weights HRF residual MSE by R^-1; "
+       "legacy/no covariance retains original-unit HRF residual MSE; "
        "pool=%s; search=%s; coarse_model=%s; "
        "task_incremental_R2_threshold=%.17g; "
        "selection_mask=%s; pc_policy=%s; pc_stop=%.17g; "
        "defined_selection_voxels=%d; "
-       "PCA=per-run constant+supplied nuisance removal, unit-L2 pool voxels, "
+       "pool selection=original-time OLS coarse-model R2 or supplied mask; "
+       "PCA=original-time per-run constant+supplied nuisance removal, unit-L2 pool voxels, "
        "temporal Gram SVD, unit sample SD, positive largest-entry sign; "
        "PC storage=retained-row-major own-run components, max_count=%d; "
-       "PC loss=ordered cross-run condition pairs vs fixed no-PC OLS betas, "
+       "PC loss=ordered cross-run condition pairs vs fixed no-PC GLS betas, "
        "mean squared error divided by no-PC sample beta variance; "
        "zero variance excluded; one session; median across selection mask; "
        "first count reaching best improvement/pc_stop; no improvement=0 PCs; "
@@ -3859,7 +3965,7 @@ static int single_output(App *a, char *err, int nerr)
        "settings; "
        "ALL scores are conditional selection scores, NOT independent test "
        "performance; "
-       "StageB=no-PC OLS; StageC=selected-PC OLS; ordinary "
+       "StageB=no-PC unpenalized GLS; StageC=selected-PC unpenalized GLS; ordinary "
        "coefficients=StageD; "
        "external designs/HRFs; no automatic timing convolution, intensity "
        "pool, "
@@ -3884,6 +3990,24 @@ static int single_output(App *a, char *err, int nerr)
       if (a->out[t]) {
          THD_datablock *b = a->out[t]->dblk;
          THD_set_string_atr(b, "PICARD_SINGLE_TRIAL", policy);
+         THD_set_string_atr(b, "PICARD_STAGE_CONFIG",
+             "version=2\n"
+             "order=frozen_covariance,HRF,PC_count,penalty\n"
+             "covariance_design=PICARD_COVARIANCE_ESTIMATION_or_external\n"
+             "covariance_refit_after_selection=0\n"
+             "HRF_rows=all_retained\n"
+             "HRF_criterion=PICARD_HRF_CRITERION\n"
+             "HRF_frozen_before_PC_count=1\n"
+             "pool_model_space=original_time_unweighted\n"
+             "PCA_space=original_time_nuisance_residuals\n"
+             "PCA_rows=retained_within_each_run\n"
+             "PC_columns=whiten_with_design_and_response\n"
+             "PC_count_scope=one_session_selection_mask\n"
+             "penalty_scope=conditional_on_frozen_covariance_HRF_PCs\n"
+             "independent_outer_evaluation=0");
+         THD_set_string_atr(b, "PICARD_HRF_CRITERION",
+             a->opt.covariance_set ? "weighted_residual_SSE_over_n"
+                                   : "original_residual_SSE_over_n");
          THD_set_string_atr(b, "PICARD_PC_TREND", trend);
          if (maxpc)
             THD_set_string_atr(b, "PICARD_NOISE_PCS", values);
@@ -4458,16 +4582,18 @@ static void free_app(App *a)
       if (s->final)
          for (c = 0; c < s->nh; c++)
             THD_picard_plan_free(s->final[c]);
-      THD_picard_noise_free(s->noise);
       free(s->final);
-      free(s->pool);
-      free(s->select);
-      free(s->hrf);
-      free(s->hrf_loss);
-      free(s->design_loss);
-      free(s->noise_r2);
-      free(s->beta_b);
-      free(s->trend);
+      if (!s->shared_data) {
+         THD_picard_noise_free(s->noise);
+         free(s->pool);
+         free(s->select);
+         free(s->hrf);
+         free(s->hrf_loss);
+         free(s->design_loss);
+         free(s->noise_r2);
+         free(s->beta_b);
+         free(s->trend);
+      }
       free(s);
    }
    THD_picard_candidates_free(a->candidate_plan);
@@ -4490,16 +4616,15 @@ static void free_app(App *a)
    free(a->runs);
    free(a->vox);
    free(a->matrix);
+   free(a->covariances);
+   free(a->covariance_estimation);
+   free(a->covariance_source_id);
+   free(a->covariance_history);
 }
 
 /* Exact parameter grouping bounds resident factors to one covariance group
    (plus the metadata reference plans). Stable voxel IDs break ties, making
    batching/thread choices immaterial. Imported parameters are not rounded. */
-typedef struct {
-   double ar, ma;
-   int voxel;
-   THD_picard_reml_result estimate;
-} CovarianceVoxel;
 static int covariance_voxel_compare(const void *left, const void *right)
 {
    const CovarianceVoxel *a = left, *b = right;
@@ -4513,7 +4638,7 @@ static int covariance_voxel_compare(const void *left, const void *right)
    compact and full-trial models are both supplied as ordinary xmat files.
    Responses are batched; no candidate-by-voxel factor cache is retained. */
 static int estimate_covariance(App *a, CovarianceVoxel **values,
-                               int validate, char *err, int nerr)
+                               char *err, int nerr)
 {
    THD_xmat *pilot = THD_xmat_read(a->opt.covariance_estimate, err, nerr);
    int *rows = NULL, *runs = NULL;
@@ -4590,22 +4715,9 @@ static int estimate_covariance(App *a, CovarianceVoxel **values,
          CovarianceVoxel *v = *values+at+j;
          v->ar = result[j].a; v->ma = result[j].b;
          v->voxel = a->vox[at+j]; v->estimate = result[j];
-         if (!validate) {
-            Worker check = {0};
-            int base = DSET_NVALS(a->out[OUT_MAIN])-6;
-            ok = store_value(a->out[OUT_MAIN], base, v->voxel,
-                              result[j].sigma2, &check) &&
-                 store_value(a->out[OUT_MAIN], base+1, v->voxel,
-                              result[j].score, &check) &&
-                 store_value(a->out[OUT_MAIN], base+2, v->voxel,
-                              result[j].rank, &check) &&
-                 store_value(a->out[OUT_MAIN], base+3, v->voxel,
-                              result[j].status, &check);
-            if (!ok) failure(err, nerr, check.err);
-         }
       }
    }
-   if (ok && !validate) {
+   if (ok) {
       char *description = THD_zzprintf(NULL,
           "native_grid_REML pilot=%s grid=-0.9:0.1:0.9 "
           "pooling=per_voxel shared_across_runs=1 shared_variance=1 df=%d "
@@ -4616,11 +4728,7 @@ static int estimate_covariance(App *a, CovarianceVoxel **values,
          description = THD_zzprintf(description, "%s%d", i ? "," : "", rows[i]);
       if (!description)
          ok = failure(err, nerr, "cannot record REML provenance");
-      for (j = 0; ok && j < DATASET_COUNT; j++)
-         if (a->out[j]) THD_set_string_atr(a->out[j]->dblk,
-                                          "PICARD_COVARIANCE_ESTIMATION",
-                                          description);
-      free(description);
+      a->covariance_estimation = description;
    }
    free(rows);
    free(runs);
@@ -4636,14 +4744,15 @@ static int estimate_covariance(App *a, CovarianceVoxel **values,
    follows AFNI_FLOATSCAN; original values repaired by AFNI cannot be detected
    afterward. Extra Rvar bricks (lag-one correlation, sigma, likelihood) are
    not used as covariance parameters. No files are written on failure. */
-static int fit_covariance_groups(App *a, int validate, char *err, int nerr)
+static int prepare_covariances(App *a, char *err, int nerr)
 {
    THD_3dim_dataset *map = NULL;
    CovarianceVoxel *values = NULL;
-   int i, j, start, stop, groups = 0, ok = 1;
+   int i, ok = 1;
    int nb = a->opt.covariance.model == 1 ? 1 : 2;
+   if (!a->opt.covariance_map && !a->opt.covariance_estimate) return 1;
    if (a->opt.covariance_estimate)
-      ok = estimate_covariance(a, &values, validate, err, nerr);
+      ok = estimate_covariance(a, &values, err, nerr);
    else {
       if (!a->input || strchr(a->opt.covariance_map, '['))
          return failure(err, nerr,
@@ -4683,69 +4792,146 @@ static int fit_covariance_groups(App *a, int validate, char *err, int nerr)
              fabs(values[i].ar) >= 1 || fabs(values[i].ma) >= 1)
             ok = failure(err, nerr, "invalid selected covariance map parameter");
       }
-      if (ok && !validate) {
+      if (ok) {
          ATR_string *history = THD_find_string_atr(map->dblk, "HISTORY_NOTE");
-         for (j = 0; j < DATASET_COUNT; j++)
-            if (a->out[j]) {
-               THD_set_string_atr(a->out[j]->dblk, "PICARD_COVARIANCE_SOURCE_ID",
-                                  map->idcode.str);
-               if (history && history->ch)
-                  THD_set_string_atr(a->out[j]->dblk,
-                                     "PICARD_COVARIANCE_SOURCE_HISTORY",
-                                     history->ch);
-            }
+         a->covariance_source_id = strdup(map->idcode.str);
+         if (history && history->ch)
+            a->covariance_history = strdup(history->ch);
+         if (!a->covariance_source_id ||
+             (history && history->ch && !a->covariance_history))
+            ok = failure(err, nerr, "cannot retain covariance source metadata");
       }
       if (map) DSET_delete(map);
    }
+   /* Attach even a partial allocation: App cleanup is the single owner on
+      success and failure. Sorting moves diagnostics with the spatial ID. */
+   a->covariances = values;
    if (ok) qsort(values, (size_t)a->nselected, sizeof(*values),
                  covariance_voxel_compare);
+   return ok;
+}
+
+/* Publish the already frozen pilot decision only after output allocation.
+   Estimation must precede HRF/PC selection, but bucket shape depends on the
+   selected PC count. Separating learning from serialization resolves that
+   ordering without estimating twice or creating provisional output files. */
+static int covariance_output(App *a, char *err, int nerr)
+{
+   int voxel_index, dataset;
+   Worker check = {0};
+   if (!a->covariances) return 1;
+   if (a->opt.covariance_estimate) {
+      int first = DSET_NVALS(a->out[OUT_MAIN])-6;
+      for (voxel_index = 0; voxel_index < a->nselected; voxel_index++) {
+         const CovarianceVoxel *v = a->covariances+voxel_index;
+         store_value(a->out[OUT_MAIN], first, v->voxel, v->estimate.sigma2, &check);
+         store_value(a->out[OUT_MAIN], first+1, v->voxel, v->estimate.score, &check);
+         store_value(a->out[OUT_MAIN], first+2, v->voxel, v->estimate.rank, &check);
+         store_value(a->out[OUT_MAIN], first+3, v->voxel, v->estimate.status, &check);
+      }
+   }
+   for (dataset = 0; dataset < DATASET_COUNT; dataset++)
+      if (a->out[dataset]) {
+         THD_datablock *block = a->out[dataset]->dblk;
+         if (a->covariance_estimation)
+            THD_set_string_atr(block, "PICARD_COVARIANCE_ESTIMATION",
+                               a->covariance_estimation);
+         if (a->covariance_source_id)
+            THD_set_string_atr(block, "PICARD_COVARIANCE_SOURCE_ID",
+                               a->covariance_source_id);
+         if (a->covariance_history)
+            THD_set_string_atr(block, "PICARD_COVARIANCE_SOURCE_HISTORY",
+                               a->covariance_history);
+      }
+   return check.failed ? failure(err, nerr, check.err) : 1;
+}
+
+/* A temporary group owns its covariance-specific designs and workspaces but
+   borrows the session's frozen maps, noise PCs and selected count. The flag
+   tells free_app to release only the group's final-plan array/collection.
+   Shared scalar maps may be written during serial scoring, then become
+   read-only before parallel final fits. No group selects its own PC count. */
+static int single_group_view(App *group, const Single *session,
+                              char *err, int nerr)
+{
+   Single *view = malloc(sizeof(*view));
+   if (!view) return failure(err, nerr, "cannot allocate staged group view");
+   *view = *session;
+   view->shared_data = 1;
+   view->collection = NULL;
+   view->final = calloc((size_t)view->nh, sizeof(*view->final));
+   group->single = view;
+   if (!view->final) return failure(err, nerr, "cannot allocate group plans");
+   return 1;
+}
+
+/* Visit exact covariance groups with only one group's factors resident.
+   The scoring pass writes scores[PC_count][spatial_voxel]. The final pass
+   fits coefficients; validation only checks the designs. Two fitting passes cost
+   refactorization time, but avoid a whole-brain factor cache and, critically,
+   let all groups contribute to ONE global PC-count decision between passes. */
+static int covariance_groups(App *a, CovariancePass pass, double *scores,
+                             char *err, int nerr)
+{
+   const CovarianceVoxel *values = a->covariances;
+   int start, stop, index, dataset, groups = 0, ok = 1;
    for (start = 0; ok && start < a->nselected; start = stop) {
-      App g = {0};
+      App group = {0};
       stop = start+1;
       while (stop < a->nselected && values[stop].ar == values[start].ar &&
              values[stop].ma == values[start].ma) stop++;
       groups++;
-      g.opt = a->opt;
-      g.opt.covariance_map = NULL;
-      g.opt.covariance_estimate = g.opt.covariance_rows = NULL;
-      g.opt.covariance_source = NULL;
-      g.opt.covariance.a = values[start].ar;
-      g.opt.covariance.b = values[start].ma;
-      ok = prepare_candidate_manifest(&g, err, nerr) &&
-           prepare_design(&g, NULL, err, nerr) &&
-           prepare_candidate_designs(&g, err, nerr);
-      if (ok && !validate) {
-         if (g.input) DSET_delete(g.input);
-         g.input = a->input; /* Borrow loaded data and output buckets. */
-         for (j = 0; j < DATASET_COUNT; j++) g.out[j] = a->out[j];
-         g.nselected = stop-start;
-         g.vox = calloc((size_t)g.nselected, sizeof(int));
-         if (!g.vox) ok = failure(err, nerr, "cannot allocate group voxels");
-         for (i = 0; ok && i < g.nselected; i++)
-            g.vox[i] = values[start+i].voxel;
-         if (ok) ok = fit_voxels(&g, err, nerr);
-         g.input = NULL;
-         for (j = 0; j < DATASET_COUNT; j++) g.out[j] = NULL;
+      group.opt = a->opt;
+      /* The pilot has already been estimated. A group receives its fixed
+         scalar pair; passing the learning options onward would recurse or
+         accidentally relearn noise after HRF/PC selection. */
+      group.opt.covariance_map = NULL;
+      group.opt.covariance_estimate = group.opt.covariance_rows = NULL;
+      group.opt.covariance_source = NULL;
+      group.opt.covariance_freeze = 0;
+      group.opt.covariance.a = values[start].ar;
+      group.opt.covariance.b = values[start].ma;
+      ok = prepare_candidate_manifest(&group, err, nerr) &&
+           prepare_design(&group, NULL, err, nerr) &&
+           prepare_candidate_designs(&group, err, nerr);
+      if (ok && pass != COVARIANCE_VALIDATE) {
+         if (group.input) DSET_delete(group.input);
+         group.input = a->input;
+         group.nselected = stop-start;
+         group.vox = calloc((size_t)group.nselected, sizeof(int));
+         if (!group.vox) ok = failure(err, nerr, "cannot allocate group voxels");
+         for (index = 0; ok && index < group.nselected; index++)
+            group.vox[index] = values[start+index].voxel;
+         if (ok && a->single) ok = single_group_view(&group, a->single, err, nerr);
+         if (ok && pass == COVARIANCE_SCORE)
+            ok = single_score(&group, scores, err, nerr);
+         else if (ok) {
+            if (group.single) ok = single_build_final(&group, err, nerr);
+            for (dataset = 0; dataset < DATASET_COUNT; dataset++)
+               group.out[dataset] = a->out[dataset];
+            if (ok) ok = fit_voxels(&group, err, nerr);
+         }
       }
-      /* Options borrow the parent's heap arrays. All other group resources
-         are owned by g, including reopened header-only input/mask handles. */
-      g.opt.grid = NULL;
-      g.opt.band_values = NULL;
-      g.opt.pc_counts = NULL;
-      free_app(&g);
+      /* Detach borrowed resources BEFORE the group's ordinary destructor.
+         Header-only input handles from a failed setup still belong to group
+         and are freed normally; the loaded parent dataset is never freed here. */
+      if (group.input == a->input) group.input = NULL;
+      for (dataset = 0; dataset < DATASET_COUNT; dataset++) group.out[dataset] = NULL;
+      group.opt.grid = NULL;
+      group.opt.band_values = NULL;
+      group.opt.pc_counts = NULL;
+      free_app(&group);
    }
-   if (ok) {
+   if (ok && pass != COVARIANCE_SCORE) {
       char summary[128];
       snprintf(summary, sizeof(summary),
                "groups=%d exact_parameters=1 resident_groups=1", groups);
       INFO_message("Covariance: %s", summary);
-      if (!validate)
-         for (j = 0; j < DATASET_COUNT; j++)
-            if (a->out[j]) THD_set_string_atr(a->out[j]->dblk,
-                                            "PICARD_COVARIANCE_GROUPS",
-                                            summary);
+      if (pass != COVARIANCE_VALIDATE)
+         for (dataset = 0; dataset < DATASET_COUNT; dataset++)
+            if (a->out[dataset]) THD_set_string_atr(a->out[dataset]->dblk,
+                                            "PICARD_COVARIANCE_GROUPS", summary);
    }
-   free(values);
    return ok;
 }
 
@@ -4779,7 +4965,8 @@ int main(int argc, char **argv)
    if (ok && a.opt.validate &&
        (a.opt.covariance_map || a.opt.covariance_estimate))
       ok = load_inputs(&a, err, sizeof(err)) &&
-           fit_covariance_groups(&a, 1, err, sizeof(err));
+           prepare_covariances(&a, err, sizeof(err)) &&
+           covariance_groups(&a, COVARIANCE_VALIDATE, NULL, err, sizeof(err));
    if (ok && a.opt.validate) {
       const THD_picard_design_info *d = THD_picard_plan_info(a.plan);
       int j;
@@ -4831,15 +5018,18 @@ int main(int argc, char **argv)
    } else if (ok) {
       /* Output preparation allocates in-memory buckets and metadata only.
          No files are written until every selected voxel has fitted safely. */
-      ok = (a.opt.single ? load_inputs(&a, err, sizeof(err)) &&
-                               single_prepare(&a, err, sizeof(err))
-                         : 1) &&
+      /* Learning order: native/supplied covariance is frozen before the
+         optional staged selector sees a response. PCA stays in original time
+         space; group-specific whitening happens when augmented plans are made.
+         Outputs are allocated only once their selected nuisance count is known. */
+      ok = load_inputs(&a, err, sizeof(err)) &&
+           prepare_covariances(&a, err, sizeof(err)) &&
+           (!a.opt.single || single_prepare(&a, err, sizeof(err))) &&
            prepare_outputs(&a, argc, argv, err, sizeof(err)) &&
-           (a.opt.single ? single_output(&a, err, sizeof(err))
-                         : load_inputs(&a, err, sizeof(err))) &&
-           ((a.opt.covariance_map || a.opt.covariance_estimate) ?
-                fit_covariance_groups(&a, 0, err, sizeof(err)) :
-                fit_voxels(&a, err, sizeof(err))) &&
+           covariance_output(&a, err, sizeof(err)) &&
+           (!a.opt.single || single_output(&a, err, sizeof(err))) &&
+           (a.covariances ? covariance_groups(&a, COVARIANCE_FIT, NULL, err, sizeof(err))
+                          : fit_voxels(&a, err, sizeof(err))) &&
            write_outputs(&a, err, sizeof(err));
       if (ok)
          INFO_message(PROGRAM ": fit %d voxels; wrote %s", a.nselected,
