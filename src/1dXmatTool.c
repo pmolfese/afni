@@ -42,6 +42,13 @@ static void usage(void)
 "  -rank_tol T       Relative singular-value cutoff on unit-norm columns\n"
 "                    (default 1e-7). Duplicate pairs use 1-abs(cosine)<=T.\n"
 "  -json FILE        Optional JSON report with describe/validate.\n"
+"  -force_inferred_metadata  With describe/validate only: allow support reports\n"
+"                    using reader defaults for missing RunStart, GoodList or\n"
+"                    NRowFull. Warns and labels diagnostics as inferred. Does\n"
+"                    not repair metadata or bypass extraction/validation errors.\n"
+"  -warn_support_frac F  With describe/validate, warn when the retained IM\n"
+"                    support-row fraction is below F (0..1). Opt-in only;\n"
+"                    never changes validity or exit status. Needs full support.\n"
 "  -select_columns LIST  Zero-based column indices, e.g. 0..3,8,10.\n"
 "  -select_labels LIST   Exact comma-separated ColumnLabels.\n"
 "  -select_stimuli LIST  Exact comma-separated StimLabels.\n"
@@ -160,6 +167,31 @@ static void usage(void)
 "XmatSource* indices and the support file/tolerance. No files are overwritten.\n"
 "All selected runs are checked before writing. Existing outputs cause failure.\n"
 "\n"
+"Dangers and diagnostics:\n"
+"* Use -uncensored X.nocensor.xmat.1D for censored designs, including\n"
+"  -validate -for lss and -validate -for reml. Quote paths containing spaces\n"
+"  or parentheses. Without a reference, pre-censor fractions are unknown.\n"
+"* Fully censored IM: error 'loses its support after censoring'. Without a\n"
+"  reference: 'trial may be fully censored'. Zero in the full design: check\n"
+"  onsets/basis. Cross-run support is a separate ownership error.\n"
+"* Partial loss: -describe -warn_support_frac 0.5 can warn 'support fraction\n"
+"  0.25, peak fraction 0.015'. This is a heuristic, not a power/quality test.\n"
+"  Support rows have abs(value)>zero_tol*full_peak; peak fraction uses abs\n"
+"  peaks. Zero full peak gives unknown ratios. No default warning threshold.\n"
+"* IMCounts reports assigned IM columns per run (trial counts for one-column\n"
+"  IM bases). Original counts can differ legitimately; censoring losses warn,\n"
+"  e.g. 'run 4: 11 of 12 assigned IM columns retained after censoring'.\n"
+"* Event mismatch: 'missing event for run R volume V' or 'events contain\n"
+"  unmatched rows'. Check run/volume indexing and event/design correspondence;\n"
+"  censoring alone does not establish the cause. Lost IMs fail extraction.\n"
+"* Failed extraction preserves NKept; unavailable derived diagnostics use -1\n"
+"  (condition: nan). Unknown support ratios use unknown / JSON null.\n"
+"  Missing timeline metadata suppresses support/count diagnostics and input\n"
+"  run rows by default (JSON null support/counts; empty runs). Explicit force\n"
+"  permits inferred reports only: one run, consecutive rows, stored row count\n"
+"  are the respective defaults. These assumptions cannot recover censoring.\n"
+"  -describe warns but exits 0; -validate exits 2 for failed checks.\n"
+"\n"
 "Policy:\n"
 "* Requires explicit RunStart, NRowFull and GoodList. No timing is guessed.\n"
 "* Drops columns inactive in the selected run; retains shared nuisance columns.\n"
@@ -253,6 +285,8 @@ typedef struct {
    int describe,validate,select,manifest,drop_glts;
    int show_trs,tr_fraction,tr_threshold_set;
    double tr_threshold;
+   double warn_support_frac;
+   int warn_support_set,force_inferred_metadata;
    const char *tr_window;
    const char *compare,*json,*for_tool,*columns,*labels,*stimuli,*groups;
    const char *events,*subject,*beta,*beta_pattern,*manifest_format;
@@ -336,6 +370,92 @@ static int xt_lss(const THD_xmat *a,double tol,char *err,int nerr)
    if(bad)snprintf(err,nerr,"%d LSS trial model(s) rank deficient at requested tolerance",bad);
    return bad==0;
 }
+typedef struct {
+   int full,kept,owner;
+   double peak,kept_peak;
+} XT_support;
+
+/* Summarize one IM column against ref using full-timeline row indices.
+ * owner=-1 denotes zero or cross-run support. a/ref are borrowed matrices. */
+static XT_support xt_column_support(const THD_xmat *a,const THD_xmat *ref,
+                                    int c,double tol)
+{
+   XT_support out={0,0,-1,0,0};int r,mixed=0;
+   for(r=0;r<ref->nrow;r++)out.peak=MAX(out.peak,fabs(ref->mat[(size_t)c*ref->nrow+r]));
+   for(r=0;r<ref->nrow;r++)if(fabs(ref->mat[(size_t)c*ref->nrow+r])>tol*out.peak){
+      int run=THD_xmat_run_of(ref,ref->good[r]);
+      out.full++;
+      if(out.owner<0)out.owner=run;else if(out.owner!=run)mixed=1;
+   }
+   for(r=0;r<a->nrow;r++){
+      double z=fabs(a->mat[(size_t)c*a->nrow+r]);
+      out.kept_peak=MAX(out.kept_peak,z);if(z>tol*out.peak)out.kept++;
+   }
+   if(mixed)out.owner=-1;
+   return out;
+}
+
+/* Reader defaults are useful for ordinary matrices but cannot establish the
+ * original run/censor timeline. Diagnostics require all three explicit fields. */
+static int xt_explicit_timeline(const THD_xmat *a)
+{
+   return THD_xmat_attr(a,"RunStart") && THD_xmat_attr(a,"GoodList") &&
+          THD_xmat_attr(a,"NRowFull");
+}
+
+/* Support is |value| > zero_tol * full-column peak. Counts describe sampled
+ * design support, not statistical power. Without a valid full reference,
+ * pre-censor fractions and original counts are unknown. No matrices mutate. */
+static void xt_support_report(const THD_xmat *a,const THD_xmat *u,
+                             const XT_options *o,double tol,FILE *json)
+{
+   const THD_xmat *ref=u?u:a;
+   int known=u || a->nrow==a->nfull,c,run,first=1,previous=-1,unequal=0;
+   if(json)fputs("  \"im_support\": [",json);
+   for(c=0;c<a->ncol;c++)if(xt_is_im(a,xt_stim(a,c))){
+      XT_support support=xt_column_support(a,ref,c,tol);
+      int full=support.full,kept=support.kept,owner=support.owner;
+      double fraction=0,ratio=0;
+      if(known && full){fraction=(double)kept/full;ratio=support.kept_peak/support.peak;}
+      printf("# IMSupport Column=%d Run=%d RetainedSupportRows=%d FullSupportRows=%d SupportFraction=",
+             c,owner<0?-1:owner+1,kept,known?full:-1);
+      if(known && full)printf("%.9g PeakFraction=%.9g\n",fraction,ratio);
+      else puts("unknown PeakFraction=unknown");
+      if(o->warn_support_set && known && full && fraction<o->warn_support_frac)
+         fprintf(stderr,"# WARNING: IM column %d (%s), run %d: support fraction %.6g, peak fraction %.6g (support threshold %.6g).\n",
+                 c,a->collab[c],owner<0?-1:owner+1,fraction,ratio,o->warn_support_frac);
+      if(json){
+         fprintf(json,"%s{\"column\": %d, \"label\": ",first?"":",",c);xt_json_text(json,a->collab[c]);
+         fputs(", \"run\": ",json);if(owner<0)fputs("null",json);else fprintf(json,"%d",owner+1);
+         fprintf(json,", \"retained_support_rows\": %d, \"full_support_rows\": ",kept);
+         if(known)fprintf(json,"%d",full);else fputs("null",json);
+         fputs(", \"support_fraction\": ",json);if(known && full)fprintf(json,"%.17g",fraction);else fputs("null",json);
+         fputs(", \"peak_fraction\": ",json);if(known && full)fprintf(json,"%.17g",ratio);else fputs("null",json);
+         fputc('}',json);first=0;
+      }
+   }
+   if(json)fputs("],\n  \"im_counts\": [",json);
+   for(run=0;run<a->nrun;run++){
+      int original=0,retained=0,ambiguous=0;
+      for(c=0;c<a->ncol;c++)if(xt_is_im(a,xt_stim(a,c))){
+         XT_support support=xt_column_support(a,ref,c,tol);
+         if(support.owner<0){ambiguous=1;continue;}
+         if(support.owner!=run)continue;
+         original++;retained+=support.kept>0;
+      }
+      printf("# IMCounts Run=%d Retained=%d Original=%d%s\n",run+1,retained,known?original:-1,
+             ambiguous?" (unassigned IM columns exist)":"");
+      if(known && original>retained)
+         fprintf(stderr,"# WARNING: run %d: %d of %d assigned IM columns retained after censoring.\n",run+1,retained,original);
+      if(known && !ambiguous){if(previous>=0 && previous!=original)unequal=1;previous=original;}
+      if(json){fprintf(json,"%s{\"run\": %d, \"retained\": %d, \"original\": ",run?",":"",run+1,retained);
+         if(known)fprintf(json,"%d",original);else fputs("null",json);
+         fprintf(json,", \"unassigned_columns\": %s}",ambiguous?"true":"false");}
+   }
+   if(unequal)puts("# IMCounts: original counts differ across runs; unequal trial counts can be intentional.");
+   if(json)fputs("],\n",json);
+}
+
 /* Describe full/run-local designs and optionally enforce LSS/REML checks.
  * Extraction uses the same support/censor rules as -split_runs, so diagnostics
  * describe the matrices a downstream command would actually receive.
@@ -344,8 +464,12 @@ static int xt_lss(const THD_xmat *a,double tol,char *err,int nerr)
  */
 static int xt_report(const THD_xmat *a,const THD_xmat *u,const XT_options *o,double zero_tol)
 {
-   THD_xmat_diagnostic d;FILE *json=NULL;char err[1024]="";int run,s,ok,failed=0;
+   THD_xmat_diagnostic d;FILE *json=NULL;char err[1024]="";int run,s,ok,failed=0,failed_runs=0,reference_ok=1;
+   int input_timeline=xt_explicit_timeline(a);
+   int explicit_timeline=input_timeline && (!u || xt_explicit_timeline(u));
+   int inferred=!explicit_timeline && o->force_inferred_metadata;
    if(!xt_metadata(a,err,sizeof(err)) || !THD_xmat_diagnostics(a,o->rank_tol,&d,err,sizeof(err))){fprintf(stderr,"** %s\n",err);return 1;}
+   if(u)reference_ok=THD_xmat_validate_reference(a,u,err,sizeof(err));
    if(o->json){json=xt_open(o->json);if(!json)return 1;}
    printf("# 1dXmatTool %s; rank uses unit-norm columns, tolerance %.9g\n",o->validate?"validation":"description",o->rank_tol);
    printf("# Matrix: %s\n# FullModel Rows=%d Columns=%d FullRows=%d Runs=%d Stimuli=%d Rank=%d DF=%d Condition=%.9g ZeroColumns=%d DuplicatePairs=%d MaxAbsCosine=%.9g\n",
@@ -362,20 +486,41 @@ static int xt_report(const THD_xmat *a,const THD_xmat *u,const XT_options *o,dou
       /* JSON has no NaN/Infinity literals; null marks an undefined condition
        * number while the text report may display the floating-point value. */
       if(isfinite(d.condition))fprintf(json,"%.17g",d.condition);else fputs("null",json);
-      fprintf(json,",\n  \"rank_tolerance\": %.17g, \"runs\": [\n",o->rank_tol);
+      fprintf(json,",\n  \"rank_tolerance\": %.17g, \"support_zero_tolerance\": %.17g,\n",o->rank_tol,zero_tol);
    }
+   if(!reference_ok)fprintf(stderr,"# WARNING: reference mismatch; support comparisons unavailable.\n");
+   if(!explicit_timeline){
+      fprintf(stderr,"# WARNING: %s lacks explicit RunStart, GoodList or NRowFull; %s\n",
+              !input_timeline?"input":"uncensored reference",
+              inferred?"-force_inferred_metadata uses reader defaults for diagnostics only; run/censor assignments may be wrong.":
+                       "timeline-dependent diagnostics unavailable. Use -force_inferred_metadata only to inspect reader assumptions.");
+      if(inferred)puts("# INFERRED METADATA: missing RunStart assumes one run; missing GoodList assumes consecutive rows; missing NRowFull assumes the stored row count.");
+   }
+   if(json)fprintf(json,"  \"timeline_metadata_explicit\": %s, \"forced_inferred_metadata\": %s,\n",
+                   explicit_timeline?"true":"false",inferred?"true":"false");
+   if(reference_ok && (explicit_timeline || inferred))xt_support_report(a,u,o,zero_tol,json);
+   else{
+      puts("# IMSupport/IMCounts unavailable: explicit timeline metadata and a matching reference (if supplied) are required.");
+      if(json)fputs("  \"im_support\": null, \"im_counts\": null,\n",json);
+   }
+   if(!input_timeline){
+      failed=1;
+      puts("# RunIssue: run extraction requires explicit RunStart, NRowFull and GoodList; force does not waive this requirement.");
+   }
+   if(json)fputs("  \"runs\": [\n",json);
    puts("# Columns: Run Start Length NKept NColumns Rank ResidualDF Condition ZeroColumns DuplicatePairs Valid");
-   for(run=0;run<a->nrun;run++){
+   for(run=0;(input_timeline || inferred) && run<a->nrun;run++){
       THD_xmat_run_map *map=NULL;THD_xmat *x=THD_xmat_extract_run(a,u,run,zero_tol,&map,err,sizeof(err));
-      THD_xmat_diagnostic rd={0};int nr=0,nc=0;ok=x!=NULL;
-      if(ok){nr=x->nrow;nc=x->ncol;ok=THD_xmat_diagnostics(x,o->rank_tol,&rd,err,sizeof(err));}
+      THD_xmat_diagnostic rd={0};int nr=0,nc=-1,r,diagnosed=0;ok=x!=NULL;
+      for(r=0;r<a->nrow;r++)if(THD_xmat_run_of(a,a->good[r])==run)nr++;
+      if(ok){nr=x->nrow;nc=x->ncol;ok=THD_xmat_diagnostics(x,o->rank_tol,&rd,err,sizeof(err));diagnosed=ok;}
       if(ok && o->for_tool && !strcmp(o->for_tool,"lss"))ok=xt_lss(x,o->rank_tol,err,sizeof(err));
       else if(ok && (rd.rank<nc || rd.residual_df<1)){ok=0;snprintf(err,sizeof(err),"rank deficient or no residual degrees of freedom");}
       if(ok && o->for_tool && !strcmp(o->for_tool,"reml") && x->nrow<9){ok=0;snprintf(err,sizeof(err),"3dREMLfit requires at least 9 rows");}
-      if(!ok){failed=1;printf("# RunIssue %d %s\n",run+1,err);}
-      printf("%d %d %d %d %d %d %d %.9g %d %d %d\n",run+1,a->runstart[run],THD_xmat_run_length(a,run),nr,nc,x?rd.rank:-1,x?rd.residual_df:-1,x?rd.condition:NAN,rd.zero_columns,rd.duplicate_pairs,ok);
+      if(!ok){failed=1;failed_runs++;printf("# RunIssue %d %s\n",run+1,err);}
+      printf("%d %d %d %d %d %d %d %.9g %d %d %d\n",run+1,a->runstart[run],THD_xmat_run_length(a,run),nr,nc,diagnosed?rd.rank:-1,diagnosed?rd.residual_df:-1,diagnosed?rd.condition:NAN,diagnosed?rd.zero_columns:-1,diagnosed?rd.duplicate_pairs:-1,ok);
       if(json){
-         fprintf(json,"    %s{\"run\": %d, \"start\": %d, \"length\": %d, \"retained\": %d, \"columns\": %d, \"rank\": %d, \"residual_df\": %d, \"valid\": %s, \"issue\": ",run?",":"",run+1,a->runstart[run],THD_xmat_run_length(a,run),nr,nc,x?rd.rank:-1,x?rd.residual_df:-1,ok?"true":"false");
+         fprintf(json,"    %s{\"run\": %d, \"start\": %d, \"length\": %d, \"retained\": %d, \"columns\": %d, \"rank\": %d, \"residual_df\": %d, \"valid\": %s, \"issue\": ",run?",":"",run+1,a->runstart[run],THD_xmat_run_length(a,run),nr,nc,diagnosed?rd.rank:-1,diagnosed?rd.residual_df:-1,ok?"true":"false");
          xt_json_text(json,ok?"":err);fputs("}\n",json);
       }
       THD_xmat_free(x);THD_xmat_run_map_free(map);
@@ -383,6 +528,7 @@ static int xt_report(const THD_xmat *a,const THD_xmat *u,const XT_options *o,dou
    if(o->for_tool)printf("# %s preflight checks matrix structure/estimability; dataset, spatial and runtime checks remain with the fitting program.\n",o->for_tool);
    if(json){fprintf(json,"  ], \"valid\": %s\n}\n",failed?"false":"true");if(!xt_close(json,o->json))return 1;}
    if(o->validate)printf("# Validation %s\n",failed?"FAIL":"PASS");
+   if(failed)fprintf(stderr,"# WARNING: design checks failed (%d failing run(s); full-model or metadata checks may also fail). -validate returns 2 for validation failures.\n",failed_runs);
    return o->validate && failed?2:0;
 }
 /* Compare matrix meaning independently of column ordering. Unique labels
@@ -669,7 +815,7 @@ static int xt_manifest_run(const THD_xmat *a,const THD_xmat *x,
    int c,r,local=0;
    for(c=0;c<x->ncol;c++)if(m->columns[c]>=a->stim[im].bot && m->columns[c]<=a->stim[im].top){
       for(r=0;r<events->nrow;r++){int rr,vv;xt_integer(DT_CELL(events,r,ri),&rr);xt_integer(DT_CELL(events,r,vi),&vv);if(rr==run+1 && vv==local)break;}
-      if(r==events->nrow){snprintf(err,nerr,"missing event for run %d volume %d",run+1,local);return 0;}
+      if(r==events->nrow){snprintf(err,nerr,"missing event for run %d volume %d; check run/volume indexing and event-to-design correspondence",run+1,local);return 0;}
       seen[r]=1;(*total)++;
       {char *sample=THD_zzprintf(NULL,"%s_r%02d_v%04d",o->subject,run+1,local),*sel=NULL;
        THD_1D_print_token(fp,sample);fputc(' ',fp);THD_1D_print_token(fp,o->subject);
@@ -726,7 +872,10 @@ static int xt_manifest(const THD_xmat *a,const THD_xmat *u,const XT_options *o,c
    }
    /* Having found every design trial is insufficient: extra event rows would
     * otherwise leave incorrect or stale metadata unnoticed. */
-   for(r=0;ok && r<events->nrow;r++)if(!seen[r]){snprintf(err,sizeof(err),"events contain unmatched rows");ok=0;}
+   for(r=0;ok && r<events->nrow;r++)if(!seen[r]){
+      snprintf(err,sizeof(err),"events contain unmatched rows: row %d, run %s volume %s; check run/volume indexing and event-to-design correspondence",
+               r+1,DT_CELL(events,r,ri),DT_CELL(events,r,vi));ok=0;
+   }
    if(ok){ok=xt_close(fp,path);fp=NULL;}
    if(ok)printf("# Exported %d trials -> %s\n",total,path);
    if(fp){fclose(fp);unlink(path);}if(!ok)fprintf(stderr,"** manifest: %s\n",*err?err:"cannot write output");
@@ -1367,7 +1516,7 @@ static int xt_split_write(const THD_xmat *a,const THD_xmat *u,
    if(!out->x || !out->maps || !out->paths || !out->summary) return xt_error(err,nerr,"out of memory");
    sprintf(out->summary,"%s.runs.1D",prefix);
    if(!u && a->nrow<a->nfull)
-      fprintf(stderr,"++ Support inferred from retained rows only; use -uncensored for pre-censor support.\n");
+      fprintf(stderr,"# WARNING: support inferred from retained rows only; use -uncensored for pre-censor support.\n");
    for(i=0;i<out->n;i++){
       if(out->runs->ar[i]<1 || out->runs->ar[i]>a->nrun) return xt_error(err,nerr,"-runs index outside the input run range");
       for(j=0;j<i;j++) if(out->runs->ar[i]==out->runs->ar[j]) return xt_error(err,nerr,"duplicate run in -runs");
@@ -1440,6 +1589,7 @@ int main(int argc,char **argv)
       if(!strcmp(argv[i],"-help") || !strcmp(argv[i],"--help")){usage();return 0;}
       if(!strcmp(argv[i],"-describe") || !strcmp(argv[i],"-show")){ops.describe=1;continue;}
       if(!strcmp(argv[i],"-show_trs")){ops.show_trs=1;continue;}
+      if(!strcmp(argv[i],"-force_inferred_metadata")){ops.force_inferred_metadata=1;continue;}
       if(!strcmp(argv[i],"-validate")){ops.validate=1;continue;}
       if(!strcmp(argv[i],"-export_manifest")){ops.manifest=1;continue;}
       if(!strcmp(argv[i],"-drop_glts")){ops.drop_glts=1;continue;}
@@ -1481,6 +1631,13 @@ int main(int argc,char **argv)
          if(errno || end==v || *end || !isfinite(d) || d<0 || (!strcmp(opt,"-rank_tol") && (d<=0 || d>=1))){fprintf(stderr,"** invalid tolerance\n");return 1;}
          if(!strcmp(opt,"-rank_tol"))ops.rank_tol=d;else if(!strcmp(opt,"-atol"))ops.atol=d;else ops.rtol=d;
       }
+      else if(!strcmp(argv[i],"-warn_support_frac")){
+         const char *v=argv[++i];char *end;double d;errno=0;d=strtod(v,&end);
+         if(errno || end==v || *end || !isfinite(d) || d<0 || d>1){
+            fprintf(stderr,"** -warn_support_frac must be in [0,1]\n");return 1;
+         }
+         ops.warn_support_frac=d;ops.warn_support_set=1;
+      }
       else if(!strcmp(argv[i],"-zero_tol")){
          char *end; const char *v=argv[++i]; errno=0; tol=strtod(v,&end);
          if(errno || end==v || *end || !isfinite(tol) || tol<0 || tol>=1){
@@ -1490,6 +1647,12 @@ int main(int argc,char **argv)
    }
    /* In a TR query the selectors identify the ideal, not a second operation. */
    ops.select=!ops.show_trs && (ops.columns || ops.labels || ops.stimuli || ops.groups);
+   if(ops.force_inferred_metadata && !(ops.describe || ops.validate)){
+      fprintf(stderr,"** -force_inferred_metadata requires -describe or -validate\n");return 1;
+   }
+   if(ops.warn_support_set && !(ops.describe || ops.validate)){
+      fprintf(stderr,"** -warn_support_frac requires -describe or -validate\n");return 1;
+   }
    problem=xt_options_error(&ops,in,unc,prefix,runlist,split);
    if(problem){fprintf(stderr,"** 1dXmatTool: %s\n",problem);return 1;}
    if(ops.beta_manifest) {
@@ -1499,6 +1662,8 @@ int main(int argc,char **argv)
    }
    a=THD_xmat_read(in,err,sizeof(err));
    if(a && unc)u=THD_xmat_read(unc,err,sizeof(err));
+   if(a && !unc && a->nrow<a->nfull && (ops.describe || ops.validate || ops.manifest))
+      fprintf(stderr,"# WARNING: support is inferred only from retained rows; supply -uncensored for pre-censor support.\n");
    if(!a || (unc && !u))fprintf(stderr,"** 1dXmatTool: %s\n",err);
    else if(split)rc=xt_split_runs(a,u,prefix,runlist,tol);
    else if(ops.show_trs)rc=xt_show_trs(a,u,&ops,runlist);

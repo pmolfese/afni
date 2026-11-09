@@ -645,6 +645,40 @@ static int xm_subset(const THD_xmat *a,THD_xmat *x,const THD_xmat_run_map *m,
    return ok;
 }
 
+/* Validate a full-timeline reference without requiring extractable IM runs. */
+int THD_xmat_validate_reference(const THD_xmat *a,const THD_xmat *u,
+                               char *err,int nerr)
+{
+   int r,c,s;
+   if(!xm_structure_valid(a) || !xm_structure_valid(u))
+      return xm_failure(err,nerr,"invalid reference matrix structure");
+   if(!THD_xmat_validate_metadata(a,err,nerr) ||
+      !THD_xmat_validate_metadata(u,err,nerr)) return 0;
+   if(u->nrow!=a->nfull || u->nfull!=a->nfull ||
+      u->ncol!=a->ncol || u->nrun!=a->nrun || u->nstim!=a->nstim || u->tr!=a->tr)
+      return xm_failure(err,nerr,"uncensored reference dimensions, stimuli or TR do not match");
+   for(r=0;r<u->nrow;r++) if(u->good[r]!=r)
+      return xm_failure(err,nerr,"uncensored reference must contain every full-timeline row");
+   for(r=0;r<a->nrun;r++) if(a->runstart[r]!=u->runstart[r])
+      return xm_failure(err,nerr,"uncensored reference RunStart does not match");
+   for(s=0;s<a->nstim;s++)
+      if(a->stim[s].id!=u->stim[s].id ||
+         strcmp(a->stim[s].formula?a->stim[s].formula:"",u->stim[s].formula?u->stim[s].formula:"") ||
+         a->stim[s].bot!=u->stim[s].bot || a->stim[s].top!=u->stim[s].top ||
+         strcmp(a->stim[s].label,u->stim[s].label) ||
+         strcmp(a->stim[s].option?a->stim[s].option:"",u->stim[s].option?u->stim[s].option:""))
+         return xm_failure(err,nerr,"uncensored reference stimulus metadata does not match");
+   for(c=0;c<a->ncol;c++){
+      for(r=0;r<u->nrow;r++)if(!isfinite(u->mat[(size_t)c*u->nrow+r]))
+         return xm_failure(err,nerr,"uncensored reference contains a non-finite value");
+      if(strcmp(a->collab[c],u->collab[c])) return xm_failure(err,nerr,"uncensored reference ColumnLabels do not match");
+      for(r=0;r<a->nrow;r++)
+         if(a->mat[(size_t)c*a->nrow+r]!=u->mat[(size_t)c*u->nrow+a->good[r]])
+            return xm_failure(err,nerr,"uncensored reference differs at a retained matrix value");
+   }
+   return 1;
+}
+
 /* Populate caller-owned output objects; failure leaves them safe to destroy. */
 static int xm_extract_run(const THD_xmat *a,const THD_xmat *u,
    int run,double tol,THD_xmat *x,THD_xmat_run_map *m,char *err,int nerr)
@@ -659,29 +693,7 @@ static int xm_extract_run(const THD_xmat *a,const THD_xmat *u,
       !THD_xmat_attr(a,"GoodList"))
       return xm_failure(err,nerr,"run extraction requires explicit RunStart, NRowFull and GoodList");
    if(!THD_xmat_validate_metadata(a,err,nerr)) return 0;
-   if(u){
-      if(!THD_xmat_validate_metadata(u,err,nerr)) return 0;
-      if(!xm_structure_valid(u) || u->nrow!=a->nfull || u->nfull!=a->nfull ||
-         u->ncol!=a->ncol || u->nrun!=a->nrun || u->nstim!=a->nstim || u->tr!=a->tr)
-         return xm_failure(err,nerr,"uncensored reference dimensions, stimuli or TR do not match");
-      for(r=0;r<u->nrow;r++) if(u->good[r]!=r)
-         return xm_failure(err,nerr,"uncensored reference must contain every full-timeline row");
-      for(r=0;r<a->nrun;r++) if(a->runstart[r]!=u->runstart[r])
-         return xm_failure(err,nerr,"uncensored reference RunStart does not match");
-      for(s=0;s<a->nstim;s++)
-         if(a->stim[s].id!=u->stim[s].id ||
-            strcmp(a->stim[s].formula?a->stim[s].formula:"",u->stim[s].formula?u->stim[s].formula:"") ||
-            a->stim[s].bot!=u->stim[s].bot || a->stim[s].top!=u->stim[s].top ||
-            strcmp(a->stim[s].label,u->stim[s].label) ||
-            strcmp(a->stim[s].option?a->stim[s].option:"",u->stim[s].option?u->stim[s].option:""))
-            return xm_failure(err,nerr,"uncensored reference stimulus metadata does not match");
-      for(c=0;c<a->ncol;c++){
-         if(strcmp(a->collab[c],u->collab[c])) return xm_failure(err,nerr,"uncensored reference ColumnLabels do not match");
-         for(r=0;r<a->nrow;r++)
-            if(a->mat[(size_t)c*a->nrow+r]!=u->mat[(size_t)c*u->nrow+a->good[r]])
-               return xm_failure(err,nerr,"uncensored reference differs at a retained matrix value");
-      }
-   }
+   if(u && !THD_xmat_validate_reference(a,u,err,nerr)) return 0;
    start=a->runstart[run]; end=start+THD_xmat_run_length(a,run);
    if(!m || !x) return xm_failure(err,nerr,"out of memory");
    m->run=run; m->start=start; m->length=end-start; m->source_ncol=a->ncol;
@@ -711,8 +723,15 @@ static int xm_extract_run(const THD_xmat *a,const THD_xmat *u,
          double z=fabs(a->mat[(size_t)c*a->nrow+m->rows[r]]);
          if(z>kept) kept=z;
       }
-      if(xm_im(a,s) && (owner<0 || mixed)){
-         xm_err(err,nerr,"IM column '%s' has zero or cross-run support; run ownership is ambiguous",a->collab[c]);
+      if(xm_im(a,s) && owner<0){
+         if(!u && a->nrow<a->nfull)
+            xm_err(err,nerr,"IM column '%s' has no nonzero value in any retained row; the trial may be fully censored. Re-run with -uncensored <X.nocensor.xmat.1D> to identify the run and confirm",a->collab[c]);
+         else
+            xm_err(err,nerr,"IM column '%s' has no nonzero value in the uncensored design; check onsets and basis specification",a->collab[c]);
+         return 0;
+      }
+      if(xm_im(a,s) && mixed){
+         xm_err(err,nerr,"IM column '%s' has cross-run support; run ownership is ambiguous",a->collab[c]);
          return 0;
       }
       if(xm_im(a,s) && local>0 && kept<=tol*peak){

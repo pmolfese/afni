@@ -78,6 +78,10 @@ extern void       THD_xmat_free( THD_xmat *xm ) ;
     objects. Returns 0 with a diagnostic on inconsistent/ambiguous metadata. */
 extern int THD_xmat_validate_metadata(const THD_xmat *,char *,int);
 
+/*! Check a matching full-row reference, including retained values and metadata.
+    Borrows both matrices. Returns 0 with a diagnostic on mismatch. */
+extern int THD_xmat_validate_reference(const THD_xmat *,const THD_xmat *,char *,int);
+
 /*! A header attribute by name (case-insensitive), as written; NULL if absent. */
 extern const char * THD_xmat_attr( const THD_xmat *xm , const char *name ) ;
 

@@ -289,7 +289,7 @@ def main():
     crossed = data.copy(); crossed[6, 1] = .2
     bad(crossed, attrs, 'cross-run support')
     zero = data.copy(); zero[:, 1] = 0
-    bad(zero, attrs, 'zero or cross-run support')
+    bad(zero, attrs, 'no nonzero value in the uncensored design')
     broken = data.copy(); broken[0, 0] = np.nan
     bad(broken, attrs, 'non-finite')
     bad(data[:5], dict(attrs, GoodList='0..4'), 'no retained rows',
