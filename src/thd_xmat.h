@@ -140,6 +140,14 @@ typedef struct {
 extern THD_xmat *THD_xmat_extract_run(const THD_xmat *source,
    const THD_xmat *uncensored, int run, double zero_tol,
    THD_xmat_run_map **map, char *err, int nerr);
+/* As above, but nonzero drop_censored allows IM columns with exactly zero
+   retained support to be omitted. Requires a matching uncensored reference;
+   empty original/cross-run IM columns and partially retained failures remain
+   errors, as does losing every IM trial in a run. inverse is -1 for excluded
+   columns. Ownership is unchanged. */
+extern THD_xmat *THD_xmat_extract_run_censored(const THD_xmat *source,
+   const THD_xmat *uncensored, int run, double zero_tol, int drop_censored,
+   THD_xmat_run_map **map, char *err, int nerr);
 extern void THD_xmat_run_map_free(THD_xmat_run_map *map);
 
 /* Write a complete, 3dDeconvolve/3dLSS-compatible NIML-comment matrix.
