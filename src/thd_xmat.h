@@ -1,3 +1,11 @@
+/* How to read this file (3dInSync callers)
+   Design metadata and original-time stimulus/run support; used by -xmat_*
+   selections.
+   Read the public contracts in thd_xmat.h before the implementations.
+   These helpers are shared with other AFNI programs: keep ISC-specific policy
+   in thd_insync*.c. The call flow is documented in thd_insync.c; ownership,
+   dimensions, and failure rules remain defined at each shared API below.
+*/
 #ifndef _THD_XMAT_HEADER_
 #define _THD_XMAT_HEADER_
 /*----------------------------------------------------------------------------
